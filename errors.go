@@ -6,41 +6,55 @@ import (
 	"strings"
 )
 
-// Severity levels
 type Severity int
 
 const (
 	SevError Severity = iota
 	SevWarn
-	SevHint
+	SevNote
 )
 
-// Span holds source location
 type Span struct {
-	File  string
-	Line  int // 1-based
-	Col   int // 1-based
-	Len   int // width of the underline (chars), 0 = single caret
+	File string
+	Line int // 1-based
+	Col  int // 1-based
+	Len  int // underline width; 0 = single caret
 }
 
-// Diagnostic is one error/warning
 type Diagnostic struct {
 	Sev     Severity
 	Span    Span
 	Message string
-	Hint    string // optional suggestion
+	Hint    string  // green suggestion line
 	Notes   []string
 }
 
-var diagnostics []Diagnostic
-var hadError bool
+var (
+	allDiagnostics []Diagnostic
+	hadError       bool
+	diagCount      int
+)
+
+const maxDiags = 20 // stop printing after this many errors
+
+func resetDiags() {
+	allDiagnostics = nil
+	hadError = false
+	diagCount = 0
+}
 
 func emitDiag(d Diagnostic) {
-	diagnostics = append(diagnostics, d)
+	allDiagnostics = append(allDiagnostics, d)
 	if d.Sev == SevError {
 		hadError = true
 	}
-	printDiag(d)
+	diagCount++
+	if diagCount <= maxDiags {
+		printDiag(d)
+	} else if diagCount == maxDiags+1 {
+		fmt.Fprintf(os.Stderr, "%s%stoo many errors — stopping here%s\n\n",
+			colorBold, colorRed, colorReset)
+	}
 }
 
 func errAt(span Span, msg string, hint string) {
@@ -51,10 +65,13 @@ func warnAt(span Span, msg string, hint string) {
 	emitDiag(Diagnostic{Sev: SevWarn, Span: span, Message: msg, Hint: hint})
 }
 
+func noteAt(span Span, msg string) {
+	emitDiag(Diagnostic{Sev: SevNote, Span: span, Message: msg})
+}
+
 func printDiag(d Diagnostic) {
 	w := os.Stderr
 
-	// ── header line ──────────────────────────────────────────────
 	var sevColor, sevLabel string
 	switch d.Sev {
 	case SevError:
@@ -63,58 +80,76 @@ func printDiag(d Diagnostic) {
 	case SevWarn:
 		sevColor = colorYellow
 		sevLabel = "warning"
-	case SevHint:
+	case SevNote:
 		sevColor = colorCyan
-		sevLabel = "hint"
+		sevLabel = "note"
 	}
 
+	// ── header ───────────────────────────────────────────────────────────────
 	fmt.Fprintf(w, "%s%s%s%s: %s%s%s\n",
 		colorBold, sevColor, sevLabel, colorReset,
 		colorBold, d.Message, colorReset,
 	)
 
-	// ── location ──────────────────────────────────────────────────
 	sp := d.Span
+	if sp.File == "" {
+		fmt.Fprintln(w)
+		return
+	}
+
+	// ── location arrow ───────────────────────────────────────────────────────
 	fmt.Fprintf(w, "  %s-->%s %s:%d:%d\n",
 		colorBlue+colorBold, colorReset,
 		sp.File, sp.Line, sp.Col,
 	)
 
-	// ── source snippet ────────────────────────────────────────────
+	// ── source line ──────────────────────────────────────────────────────────
 	lines := getSourceLines(sp.File)
-	if lines != nil && sp.Line >= 1 && sp.Line <= len(lines) {
-		lineText := lines[sp.Line-1]
+	if lines == nil || sp.Line < 1 || sp.Line > len(lines) {
+		fmt.Fprintln(w)
+		return
+	}
 
-		// print the line
-		gutter := fmt.Sprintf("%4d", sp.Line)
-		fmt.Fprintf(w, "%s%s%s │%s %s\n",
-			colorBlue+colorBold, gutter, colorReset,
-			colorReset, lineText,
+	lineText := lines[sp.Line-1]
+
+	// optional context line above
+	if sp.Line > 1 {
+		fmt.Fprintf(w, "  %s%4d%s %s│%s %s\n",
+			colorDim, sp.Line-1, colorReset,
+			colorBlue+colorBold, colorReset,
+			colorDim+lines[sp.Line-2]+colorReset,
 		)
+	}
 
-		// underline
-		underLen := d.Span.Len
-		if underLen <= 0 {
-			underLen = 1
-		}
-		under := buildUnderline(sp.Col-1, underLen, d.Sev)
-		fmt.Fprintf(w, "     %s│%s %s\n", colorBlue+colorBold, colorReset, under)
+	// the offending line
+	fmt.Fprintf(w, "  %s%4d%s %s│%s %s\n",
+		colorBold, sp.Line, colorReset,
+		colorBlue+colorBold, colorReset,
+		lineText,
+	)
 
-		// hint on same underline row
-		if d.Hint != "" {
-			hintPad := strings.Repeat(" ", maxInt(sp.Col-1, 0))
-			fmt.Fprintf(w, "     %s│%s %s%s%s %s%s\n",
-				colorBlue+colorBold, colorReset,
-				hintPad,
-				colorGreen+colorBold, "hint:", colorReset,
-				colorGreen+d.Hint+colorReset,
-			)
-		}
+	// underline row
+	underLen := sp.Len
+	if underLen <= 0 {
+		underLen = 1
+	}
+	under := buildUnderline(sp.Col-1, underLen, d.Sev)
+	fmt.Fprintf(w, "       %s│%s %s\n", colorBlue+colorBold, colorReset, under)
+
+	// hint on its own line, aligned with underline
+	if d.Hint != "" {
+		pad := strings.Repeat(" ", maxInt(sp.Col-1, 0))
+		fmt.Fprintf(w, "       %s│%s %s%s%s %s%s\n",
+			colorBlue+colorBold, colorReset,
+			pad,
+			colorGreen+colorBold, "hint:", colorReset,
+			colorGreen+d.Hint+colorReset,
+		)
 	}
 
 	// notes
 	for _, n := range d.Notes {
-		fmt.Fprintf(w, "     %s=%s %snote:%s %s\n",
+		fmt.Fprintf(w, "       %s=%s %snote:%s %s\n",
 			colorBlue+colorBold, colorReset,
 			colorWhite+colorBold, colorReset, n,
 		)
@@ -123,10 +158,12 @@ func printDiag(d Diagnostic) {
 	fmt.Fprintln(w)
 }
 
-func buildUnderline(col0 int, length int, sev Severity) string {
-	pad := strings.Repeat(" ", maxInt(col0, 0))
-	var ch string
-	var color string
+func buildUnderline(col0, length int, sev Severity) string {
+	if col0 < 0 {
+		col0 = 0
+	}
+	pad := strings.Repeat(" ", col0)
+	var ch, color string
 	switch sev {
 	case SevError:
 		ch = "^"

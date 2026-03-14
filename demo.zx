@@ -1,114 +1,140 @@
-// demo.zx — showcase most ZX features
+// demo.zx — full ZX language showcase
 
 import "stdio.h"
 import "math.h"
 
 extern fn sqrt(x: float) -> float;
 extern fn pow(base: float, exp: float) -> float;
+extern fn printf(fmt: str, ...) -> int;
+extern fn strlen(s: str) -> int;
 
-struct Point {
+struct Vec2 {
     x: float,
     y: float
 }
 
-fn distance(a: Point, b: Point) -> float {
-    let dx: float = a.x - b.x;
-    let dy: float = a.y - b.y;
-    return sqrt(dx * dx + dy * dy);
+struct Player {
+    name: str,
+    health: int,
+    speed: float
 }
 
-fn factorial(n: int) -> int {
-    if n <= 1 {
-        return 1;
-    }
-    return n * factorial(n - 1);
+fn vec2_len(v: Vec2) -> float {
+    return sqrt(v.x * v.x + v.y * v.y);
 }
 
-fn is_even(n: int) -> bool {
-    return n % 2 == 0;
+fn max(a: int, b: int) -> int {
+    if a > b { return a; }
+    return b;
+}
+
+fn min(a: int, b: int) -> int {
+    if a < b { return a; }
+    return b;
 }
 
 fn clamp(val: int, lo: int, hi: int) -> int {
-    if val < lo { return lo; }
-    if val > hi { return hi; }
-    return val;
+    return max(lo, min(hi, val));
+}
+
+fn factorial(n: int) -> int {
+    if n <= 1 { return 1; }
+    return n * factorial(n - 1);
+}
+
+fn is_prime(n: int) -> bool {
+    if n < 2 { return false; }
+    let i: int = 2;
+    while i * i <= n {
+        if n % i == 0 { return false; }
+        i += 1;
+    }
+    return true;
 }
 
 // ── main code ──────────────────────────────────────────────────────────────
 
-println("=== ZX language demo ===");
+println("=== ZX v0.2 demo ===");
 
-// variables and arithmetic
-let x: int = 10;
-let y: int = 3;
-println(x + y);
-println(x - y);
-println(x * y);
-println(x / y);
-println(x % y);
+// basic arithmetic
+let a: int = 42;
+let b: int = 7;
+println(a + b);
+println(a - b);
+println(a * b);
+println(a / b);
+println(a % b);
 
 // floats
-let pi: float = 3.14159;
-let r: float = 5.0;
-let area: float = pi * r * r;
-println(area);
+const PI: float = 3.14159265;
+let r: float = 10.0;
+let area: float = PI * r * r;
+printf("circle area = %.4f\n", area);
 
-// booleans
-let flag: bool = true;
-if flag {
-    println("flag is true");
-} else {
-    println("flag is false");
-}
-
-// for range loop
+// for range
 let sum: int = 0;
-for i in 1..11 {
+for i in 1..101 {
     sum += i;
 }
-println(sum);       // prints 55
+printf("sum 1..100 = %lld\n", sum);
 
-// while loop
-let countdown: int = 5;
-while countdown > 0 {
-    print(countdown);
-    countdown -= 1;
+// while + break
+let x: int = 0;
+while true {
+    x += 1;
+    if x >= 5 { break; }
+}
+println(x);
+
+// primes
+print("primes: ");
+for n in 2..30 {
+    if is_prime(n) {
+        printf("%lld ", n);
+    }
 }
 println("");
 
-// function calls
-println(factorial(10));
-println(is_even(42));
-println(clamp(200, 0, 100));
+// factorials
+for i in 1..11 {
+    printf("%lld! = %lld\n", i, factorial(i));
+}
 
 // structs
-let p1: Point = new Point { x: 0.0, y: 0.0 };
-let p2: Point = new Point { x: 3.0, y: 4.0 };
-let d: float = distance(p1, p2);
-println(d);         // prints 5
+let v: Vec2 = new Vec2 { x: 3.0, y: 4.0 };
+printf("vec len = %g\n", vec2_len(v));
 
-// nested ifs / elif
-let score: int = 75;
-if score >= 90 {
-    println("A");
-} elif score >= 80 {
-    println("B");
-} elif score >= 70 {
-    println("C");
-} else {
-    println("F");
-}
+let p: Player = new Player { name: "Hero", health: 100, speed: 5.5 };
+printf("player: %s  hp=%lld  speed=%g\n", p.name, p.health, p.speed);
 
-// const
-const MAX: int = 255;
-println(MAX);
+// clamp
+println(clamp(200, 0, 100));
+println(clamp(-5,  0, 100));
 
-// break & continue
-for i in 0..20 {
-    if i % 2 == 0 { continue; }
-    if i > 9 { break; }
-    print(i);
-}
-println("");
+// bitwise
+let flags: int = 0b1010;   // hex 0xA — use int literal
+flags = flags | 0x1;       // set bit 0
+flags = flags & ~0x2;      // clear bit 1
+printf("flags = %lld\n", flags);
 
-println("done!");
+// sizeof
+printf("sizeof int    = %lld bytes\n", sizeof(int));
+printf("sizeof float  = %lld bytes\n", sizeof(float));
+printf("sizeof char   = %lld bytes\n", sizeof(char));
+
+// cast
+let f: float = 9.99;
+let i: int = int(f);
+printf("cast 9.99 -> %lld\n", i);
+
+// char literal
+let ch: char = 'A';
+printf("char = %c  code = %lld\n", ch, int(ch));
+
+// address / pointer
+let n: int = 100;
+let p2: ptr<int> = &n;
+*p2 = 999;
+println(n);
+
+println("=== done ===");

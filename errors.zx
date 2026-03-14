@@ -1,18 +1,21 @@
-// errors.zx — intentional errors to show ZX diagnostics
+// errors.zx — intentional errors to showcase ZX diagnostics
+// Run:  zxc check examples/errors.zx
+// Each error has its E-code commented next to it
 
-let x: int = "hello";        // type mismatch: str → int
+// E11: type mismatch on init
+let score: int = "oops";
 
-let y = z + 1;               // undefined variable z
+// E27: undefined variable
+let y = z + 1;
 
-const PI: float = 3.14;
-PI = 2.71;                   // assign to const
+// E32: string concatenation with +
+let greeting: str = "hello" + " world";
 
-fn greet(name: str) -> str {
-    return 42;               // return type mismatch
-}
+// E10: cannot infer type — no annotation and no init
+let mystery;
 
-fn add(a: int, b: int) -> int {
-    return a + b;
-}
+// E34: division by zero
+let bad: int = 42 / 0;
 
-add(1, 2, 3);                // wrong number of args
+// E13: const without init
+const MISSING_VALUE: float;
