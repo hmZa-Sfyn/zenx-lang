@@ -1,0 +1,18 @@
+// errors.zx — intentional errors to show ZX diagnostics
+
+let x: int = "hello";        // type mismatch: str → int
+
+let y = z + 1;               // undefined variable z
+
+const PI: float = 3.14;
+PI = 2.71;                   // assign to const
+
+fn greet(name: str) -> str {
+    return 42;               // return type mismatch
+}
+
+fn add(a: int, b: int) -> int {
+    return a + b;
+}
+
+add(1, 2, 3);                // wrong number of args

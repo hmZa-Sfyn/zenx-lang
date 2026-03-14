@@ -1,0 +1,114 @@
+// demo.zx — showcase most ZX features
+
+import "stdio.h"
+import "math.h"
+
+extern fn sqrt(x: float) -> float;
+extern fn pow(base: float, exp: float) -> float;
+
+struct Point {
+    x: float,
+    y: float
+}
+
+fn distance(a: Point, b: Point) -> float {
+    let dx: float = a.x - b.x;
+    let dy: float = a.y - b.y;
+    return sqrt(dx * dx + dy * dy);
+}
+
+fn factorial(n: int) -> int {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+fn is_even(n: int) -> bool {
+    return n % 2 == 0;
+}
+
+fn clamp(val: int, lo: int, hi: int) -> int {
+    if val < lo { return lo; }
+    if val > hi { return hi; }
+    return val;
+}
+
+// ── main code ──────────────────────────────────────────────────────────────
+
+println("=== ZX language demo ===");
+
+// variables and arithmetic
+let x: int = 10;
+let y: int = 3;
+println(x + y);
+println(x - y);
+println(x * y);
+println(x / y);
+println(x % y);
+
+// floats
+let pi: float = 3.14159;
+let r: float = 5.0;
+let area: float = pi * r * r;
+println(area);
+
+// booleans
+let flag: bool = true;
+if flag {
+    println("flag is true");
+} else {
+    println("flag is false");
+}
+
+// for range loop
+let sum: int = 0;
+for i in 1..11 {
+    sum += i;
+}
+println(sum);       // prints 55
+
+// while loop
+let countdown: int = 5;
+while countdown > 0 {
+    print(countdown);
+    countdown -= 1;
+}
+println("");
+
+// function calls
+println(factorial(10));
+println(is_even(42));
+println(clamp(200, 0, 100));
+
+// structs
+let p1: Point = new Point { x: 0.0, y: 0.0 };
+let p2: Point = new Point { x: 3.0, y: 4.0 };
+let d: float = distance(p1, p2);
+println(d);         // prints 5
+
+// nested ifs / elif
+let score: int = 75;
+if score >= 90 {
+    println("A");
+} elif score >= 80 {
+    println("B");
+} elif score >= 70 {
+    println("C");
+} else {
+    println("F");
+}
+
+// const
+const MAX: int = 255;
+println(MAX);
+
+// break & continue
+for i in 0..20 {
+    if i % 2 == 0 { continue; }
+    if i > 9 { break; }
+    print(i);
+}
+println("");
+
+println("done!");

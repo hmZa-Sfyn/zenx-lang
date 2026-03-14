@@ -1,0 +1,19 @@
+// fib.zx
+fn fib(n: int) -> int {
+    if n <= 1 { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+for i in 0..15 {
+    println(fib(i));
+}
+
+//vars
+let x:str = "hello";
+
+//declare extern function
+extern fn sqrt(x: float) -> float;
+extern fn printf(fmt: str, ..) -> int;
+
+let r: float = sqrt(2.0);
+printf("root 2 = %f\n", r);

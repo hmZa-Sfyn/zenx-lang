@@ -1,0 +1,3 @@
+// hello.zx — classic hello world in ZX
+
+println("Hello, World!");
