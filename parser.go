@@ -62,6 +62,12 @@ func (p *Parser) expectSemi() {
 	p.ok = false
 }
 
+// eatSemi consumes a semicolon if present, but does not require one.
+// Used for top-level declarations (import, extern, struct) where ; is optional.
+func (p *Parser) eatSemi() {
+	if p.at(TK_SEMI) { p.advance() }
+}
+
 // ── program ───────────────────────────────────────────────────────────────────
 
 func (p *Parser) parseProgram() *Program {
@@ -93,7 +99,7 @@ func (p *Parser) parseImport() *ImportDecl {
 	path := p.expect(TK_STRING)
 	alias := ""
 	if p.at(TK_AS) { p.advance(); alias = p.expect(TK_IDENT).Value }
-	p.expectSemi()
+	p.eatSemi() // optional semicolon
 	return &ImportDecl{Sp: sp, Path: path.Value, Alias: alias}
 }
 
@@ -108,7 +114,7 @@ func (p *Parser) parseExtern() *ExternDecl {
 	p.expect(TK_RPAREN)
 	ret := TypVoid
 	if p.at(TK_ARROW) { p.advance(); ret = p.parseType() }
-	p.expectSemi()
+	p.eatSemi() // optional semicolon
 	return &ExternDecl{Sp: sp, Name: name.Value, Params: params, Variadic: variadic, RetType: ret}
 }
 
@@ -128,6 +134,7 @@ func (p *Parser) parseStruct() *StructDecl {
 		if p.at(TK_COMMA) { p.advance() }
 	}
 	p.expect(TK_RBRACE)
+	p.eatSemi() // optional semicolon after struct body
 	return &StructDecl{Sp: sp, Name: name.Value, Fields: fields}
 }
 
@@ -523,10 +530,6 @@ func (p *Parser) parsePrimary() Node {
 		p.expect(TK_RPAREN)
 		return &CastExpr{Sp: t.Span, ToType: toType, Operand: operand}
 	case TK_IDENT:
-		// Foo { } struct init
-		if p.peek2().Kind == TK_LBRACE {
-			return p.parseStructInit()
-		}
 		p.advance()
 		return &Ident{Sp: t.Span, Name: t.Value}
 	default:

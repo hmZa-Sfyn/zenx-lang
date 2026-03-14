@@ -273,8 +273,38 @@ func (t *Tokenizer) lexNumber() {
 	if t.pos-start == 1 && t.src[start] == '0' && !t.eof() &&
 		(t.peek(0) == 'x' || t.peek(0) == 'X') {
 		t.advance()
-		for !t.eof() && isHex(t.peek(0)) { t.advance() }
-		raw := string(t.src[start:t.pos])
+		for !t.eof() && (isHex(t.peek(0)) || t.peek(0) == '_') { t.advance() }
+		raw := strings.ReplaceAll(string(t.src[start:t.pos]), "_", "")
+		sp.Len = t.pos - start
+		t.push(TK_INT, raw, sp)
+		return
+	}
+	// binary: 0b...
+	if t.pos-start == 1 && t.src[start] == '0' && !t.eof() &&
+		(t.peek(0) == 'b' || t.peek(0) == 'B') {
+		t.advance()
+		binStart := t.pos
+		for !t.eof() && (t.peek(0) == '0' || t.peek(0) == '1' || t.peek(0) == '_') {
+			t.advance()
+		}
+		// parse binary digits manually
+		binStr := strings.ReplaceAll(string(t.src[binStart:t.pos]), "_", "")
+		val := int64(0)
+		for _, c := range binStr {
+			val = val*2 + int64(c-'0')
+		}
+		sp.Len = t.pos - start
+		t.push(TK_INT, fmt.Sprintf("%d", val), sp)
+		return
+	}
+	// octal: 0o...
+	if t.pos-start == 1 && t.src[start] == '0' && !t.eof() &&
+		(t.peek(0) == 'o' || t.peek(0) == 'O') {
+		t.advance()
+		for !t.eof() && (t.peek(0) >= '0' && t.peek(0) <= '7' || t.peek(0) == '_') {
+			t.advance()
+		}
+		raw := strings.ReplaceAll(string(t.src[start:t.pos]), "_", "")
 		sp.Len = t.pos - start
 		t.push(TK_INT, raw, sp)
 		return
