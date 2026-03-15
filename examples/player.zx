@@ -105,12 +105,12 @@ say "-- Initial --"
 hero->Status()
 printf("[%s] HP: %lld  Dmg: %lld\n", boss->name, boss->hp, boss->damage)
 
-say "\n-- Battle! --"
+say "\n-- Battle! --";
 
-my round: int = 1
+my round: int = 1;
 until boss->IsAlive() == 0 {
     printf("\n[Round %lld]\n", round)
-    boss->TakeDamage(20)
+    boss->TakeDamage(20);
     printf("  %s hits %s for 20! (%s has %lld HP)\n",
         hero->name, boss->name, boss->name, boss->hp)
     if boss->IsAlive() {
