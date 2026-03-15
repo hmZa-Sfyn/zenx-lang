@@ -117,7 +117,7 @@ printf("sizeof float = %lld\n", sizeof(float));
 
 // Pointer with & and ^
 my num: int = 42;
-my p: ref int = &num;
+my p: &int = &num;
 ^p = 999;
 say num;
 
