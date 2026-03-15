@@ -10,7 +10,7 @@ import "netinet/in.h"
 import "arpa/inet.h"
 
 extern fn socket(domain: int, type_: int, protocol: int) -> int
-extern fn bind(sockfd: int, addr: ptr<void>, addrlen: int) -> int
+//extern fn bind(sockfd: int, addr: ptr<void>, addrlen: int) -> int
 extern fn listen(sockfd: int, backlog: int) -> int
 extern fn accept(sockfd: int, addr: ptr<void>, addrlen: ptr<int>) -> int
 extern fn send(sockfd: int, buf: ptr<void>, len_: int, flags: int) -> int

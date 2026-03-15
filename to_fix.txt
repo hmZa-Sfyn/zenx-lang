@@ -1,0 +1,45 @@
+(myenv)  ✘ hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  ./zxc emit /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/server.zx
+
+✖ error: expected 'identifier', got '<'
+   ╭─ /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/server.zx:13:38
+   │   12  extern fn socket(domain: int, type_: int, protocol: int) -> int
+   │   13  extern fn bind(sockfd: int, addr: ptr<void>, addrlen: int) -> int
+   │                                            ^
+   │                                            hint: add identifier here
+   ╰─
+
+✖ error: expected ')', got '>'
+   ╭─ /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/server.zx:13:43
+   │   12  extern fn socket(domain: int, type_: int, protocol: int) -> int
+   │   13  extern fn bind(sockfd: int, addr: ptr<void>, addrlen: int) -> int
+   │                                                 ^
+   │                                                 hint: add ) here
+   ╰─
+
+ aborting: 2 error(s)
+
+  💡 fix errors and re-run: zxc /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/server.zx
+
+(myenv)  ✘ hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  ./zxc emit /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/server.zx
+
+✖ error: expected 'identifier', got '<'
+   ╭─ /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/server.zx:15:40
+   │   14  extern fn listen(sockfd: int, backlog: int) -> int
+   │   15  extern fn accept(sockfd: int, addr: ptr<void>, addrlen: ptr<int>) -> int
+   │                                              ^
+   │                                              hint: add identifier here
+   ╰─
+
+✖ error: expected ')', got '>'
+   ╭─ /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/server.zx:15:45
+   │   14  extern fn listen(sockfd: int, backlog: int) -> int
+   │   15  extern fn accept(sockfd: int, addr: ptr<void>, addrlen: ptr<int>) -> int
+   │                                                   ^
+   │                                                   hint: add ) here
+   ╰─
+
+ aborting: 2 error(s)
+
+  💡 fix errors and re-run: zxc /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/server.zx
+
+(myenv)  ✘ hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  
