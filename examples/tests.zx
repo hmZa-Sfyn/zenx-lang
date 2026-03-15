@@ -1,0 +1,22 @@
+@test
+fn test_addition() {
+   assert 1 + 1 == 2, "math is broken";
+}
+
+
+@test
+@args={"n":5}
+@expect=11
+fn abc(n: int) -> any {
+   return (n*2);
+}
+
+extern fn sleep(...) -> int 
+
+@test
+@benchmark
+@expect=123
+fn aaa() -> any {
+   sleep(1);
+   return 123;
+}

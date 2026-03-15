@@ -1,131 +1,127 @@
 // demo.zx — ZX v0.4 full showcase
 // Run: ./zxc examples/demo.zx
 
-use std::math
-use std::str
-use std::sys
-
-extern fn printf(fmt: str, ...) -> int
+use std::math;
+use std::str;
+use std::sys;
+extern fn printf(fmt: str, ...) -> int;
 
 // ── Go-style struct ───────────────────────────────────────────────────────────
-
 type Vec2 struct {
-    x float
-    y float
-}
+    x float;
+    y float;
+};
 
 fn (v Vec2) Len() -> float {
-    return sqrt(v.x * v.x + v.y * v.y)
-}
+    return sqrt(v.x * v.x + v.y * v.y);
+};
 
-fn (v ref Vec2) Scale(factor: float) {
-    v->x = v->x * factor
-    v->y = v->y * factor
-}
+fn (v *Vec2) Scale(factor: float) {
+    v->x = v->x * factor;
+    v->y = v->y * factor;
+};
 
 // ── Optional types ────────────────────────────────────────────────────────────
-
-fn add(a, b) {        // no types — long long by default
-    return a + b
-}
+fn add(a, b) -> any { // no types — long long by default
+    return a + b;
+};
 
 fn greet(name) {
-    say "Hello, " name "!"
-}
+    say "Hello, " name "!";
+};
 
 // ── Main ──────────────────────────────────────────────────────────────────────
+say "=== ZX v0.4 ===";
 
-say "=== ZX v0.4 ==="
+my x = 10;
+my y = 3.14;
+our MAX = 100;
 
-# Perl-style: my / our
-my x = 10
-my y = 3.14
-our MAX = 100
-
-# for range
-my total = 0
+// for range
+my total = 0;
 for i in 1..11 {
-    total += i
-}
-printf("sum 1..10 = %lld\n", total)
+    total += i;
+};
 
-# while / until
-my n = 1
+printf("sum 1..10 = %lld\n", total);
+
+// while / until
+my n = 1;
 until n >= 128 {
-    n *= 2
-}
-say n
+    n *= 2;
+};
+say n;
 
-# unless
-my logged = 0
+// unless
+my logged = 0;
 unless logged {
-    say "please log in"
-}
+    say "please log in";
+};
 
-# multiline adjacent string concat
+// multiline adjacent string concat
 const HTTP_OK: str =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: text/html\r\n"
     "Connection: close\r\n"
-    "\r\n"
+    "\r\n";
 
-printf("Response header length: %lld chars\n", len(HTTP_OK))
+printf("Response header length: %lld chars\n", len(HTTP_OK));
 
-# struct
-my v1: Vec2 = new Vec2 { x: 3.0, y: 4.0 }
-printf("v1 len = %g\n", v1.Len())
+// struct
+my v1: Vec2 = new Vec2 { x: 3.0, y: 4.0 };
+printf("v1 len = %g\n", v1.Len());
 
-# heap-allocated struct — @ prefix (friendly address-of)
-my v2 = @Vec2{ x: 5.0, y: 12.0 }
-v2->Scale(2.0)
-printf("v2 scaled len = %g\n", v2->Len())
+// heap-allocated struct — & prefix
+my v2 = &Vec2{ x: 5.0, y: 12.0 };
+v2->Scale(2.0);
+printf("v2 scaled len = %g\n", v2->Len());
 
-# Pipe operator |>
-fn double(x) { return x * 2 }
-fn inc(x) { return x + 1 }
+// Pipe operator |>
+fn doublef(x) -> any { return x * 2 };
+fn incf(x) -> any { return x + 1 };
 
-my result = 5 |> double |> inc
-printf("5 |> double |> inc = %lld\n", result)
+my result = 5 |> doublef |> incf;
+printf("5 |> doublef |> incf = %lld\n", result);
 
-# Builtins — no import needed
-printf("abs(-42.5) = %g\n", abs(-42.5))
-printf("max(3, 7) = %lld\n", max(3, 7))
-printf("min(3, 7) = %lld\n", min(3, 7))
-printf("len('hello') = %lld\n", len("hello"))
-printf("to_int(9.9) = %lld\n", to_int(9.9))
-printf("to_float(7) = %g\n", to_float(7))
+// Builtins
+printf("abs(-42.5) = %g\n", abs(-42.5));
+printf("max(3, 7) = %lld\n", max(3, 7));
+printf("min(3, 7) = %lld\n", min(3, 7));
+printf("len('hello') = %lld\n", len("hello"));
+printf("to_int(9.9) = %lld\n", to_int(9.9));
+printf("to_float(7) = %g\n", to_float(7));
 
-# std::math
-printf("sqrt(2) = %g\n", sqrt(2.0))
-printf("pow(2, 10) = %g\n", pow(2.0, 10.0))
-printf("sin(0) = %g\n", sin(0.0))
+// std::math
+printf("sqrt(2) = %g\n", sqrt(2.0));
+printf("pow(2, 10) = %g\n", pow(2.0, 10.0));
+printf("sin(0) = %g\n", sin(0.0));
 
-# std::str
-printf("str_len('world') = %lld\n", str_len("world"))
-printf("str_cmp('a','a') = %lld\n", str_cmp("a", "a"))
-printf("str_upper('a') = %c\n", str_upper(97))
+// std::str
+printf("str_len('world') = %lld\n", str_len("world"));
+printf("str_cmp('a','a') = %lld\n", str_cmp("a", "a"));
+printf("str_upper('a') = %c\n", str_upper(97));
 
-# add (untyped)
-say add(10, 20)
-greet("ZX")
+// add (untyped)
+say add(10, 20);
+greet("ZX");
 
-# Bitwise & hex & binary
-my flags = 0b1010
-flags = flags | 0x1
-flags = flags & ~0x2
-printf("flags = %lld\n", flags)
+// Bitwise & hex & binary
+my flags = 0b1010;
+flags = flags | 0x1;
+flags = flags & ~0x2;
+printf("flags = %lld\n", flags);
 
-# sizeof
-printf("sizeof int   = %lld\n", sizeof(int))
-printf("sizeof float = %lld\n", sizeof(float))
+// sizeof
+printf("sizeof int = %lld\n", sizeof(int));
+printf("sizeof float = %lld\n", sizeof(float));
 
-# Pointer with @ and ^
-my num: int = 42
-my p: ref int = @num
-^p = 999
-say num     # prints 999
+// Pointer with & and ^
+my num: int = 42;
+my p: ref int = &num;
+^p = 999;
+say num;
 
-# die (Perl style — prints to stderr and exits)
-# die "something went wrong"   ← uncomment to test
+// die (Perl style — prints to stderr and exits)
+// die "something went wrong" ← uncomment to test
 
-say "=== done ==="
+say "=== done ===";
