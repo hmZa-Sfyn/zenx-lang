@@ -79,11 +79,11 @@ func printUsage() {
   }
 
 %sONE-LINER EXAMPLES:%s
-  zxc -c "say 'Hello!'"
+  zxc -c "say \"Hello!\""
   zxc -c "say max(3, 9)"
-  zxc -c "say cmd!('uname -a')"
-  zxc -c "say readfile!('/etc/hostname')"
-  zxc -c "let s = input('name: '); say f'hello, {s}!'"
+  zxc -c "say cmd!(\"uname -a\")"
+  zxc -c "say readfile!(\"/etc/hostname\")"
+  zxc -c "let s = input(\"name: \"); say \"hello, \" s \"\!\""
 
 %sSTD MODULES%s
   use std::str    string ops: str_len, str_cmp, str_cat, str_find, str_dup ...
