@@ -1,0 +1,113 @@
+// tiny_web_server.zx — fixed version (no ++ operator)
+
+import "stdio.h"
+import "stdlib.h"
+import "string.h"
+import "unistd.h"
+import "sys/socket.h"
+import "netinet/in.h"
+import "arpa/inet.h"
+
+extern fn socket(domain: int, type_: int, protocol: int) -> int;
+extern fn setsockopt(sockfd: int, level: int, optname: int, optval: ptr<void>, optlen: int) -> int;
+extern fn bind(sockfd: int, addr: ptr<SockAddr>, addrlen: int) -> int;
+extern fn listen(sockfd: int, backlog: int) -> int;
+extern fn accept(sockfd: int, addr: ptr<SockAddr>, addrlen: ptr<int>) -> int;
+extern fn read(fd: int, buf: ptr<void>, count: int) -> int;
+extern fn write(fd: int, buf: ptr<void>, count: int) -> int;
+extern fn close(fd: int) -> int;
+extern fn htons(hostshort: int) -> int;
+extern fn perror(s: str) -> void;
+//extern fn exit(status: int) -> void;
+
+// Minimal structs (opaque enough for bind/accept)
+struct SockAddr {
+    sa_family: short,
+    // rest is opaque
+}
+
+struct SockAddrIn {
+    sin_family: short,
+    sin_port:   int,
+    sin_addr:   int,
+    sin_zero:   [8]char,
+}
+
+const PORT: int     = 8080;
+const BACKLOG: int  = 10;
+const BUF_SIZE: int = 1024;
+
+// Fixed: adjacent string literals (C automatically concatenates them)
+const RESPONSE: str =
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Type: text/html; charset=utf-8\r\n"
+    "Connection: close\r\n"
+    "\r\n"
+    "<!DOCTYPE html>\n"
+    "<html lang=\"en\">\n"
+    "<head>\n"
+    "  <meta charset=\"utf-8\">\n"
+    "  <title>ZX Tiny Server</title>\n"
+    "</head>\n"
+    "<body>\n"
+    "  <h1>Hello from ZX language! 🚀</h1>\n"
+    "  <p>This is a tiny web server written in ZX (compiles to C).</p>\n"
+    "  <p>Refresh the page or open in another tab.</p>\n"
+    "</body>\n"
+    "</html>\n";
+
+// ── main ─────────────────────────────────────────────────────────────
+
+fn main() -> int {
+    let server_fd: int = socket(2, 1, 0);  // AF_INET, SOCK_STREAM, 0
+    if server_fd == -1 {
+        perror("socket failed");
+        exit(1);
+    }
+
+    let opt: int = 1;
+    setsockopt(server_fd, 6 /* SOL_SOCKET */, 2 /* SO_REUSEADDR */,
+               &opt as ptr<void>, sizeof(int));
+
+    let addr: SockAddrIn;
+    addr.sin_family = 2;                    // AF_INET
+    addr.sin_port   = htons(PORT);
+    addr.sin_addr   = 0;                    // INADDR_ANY
+
+    if bind(server_fd, &addr as ptr<SockAddr>, sizeof(SockAddrIn)) < 0 {
+        perror("bind failed");
+        close(server_fd);
+        exit(1);
+    }
+
+    if listen(server_fd, BACKLOG) < 0 {
+        perror("listen failed");
+        close(server_fd);
+        exit(1);
+    }
+
+    println("ZX tiny web server listening on http://localhost:8080/");
+    println("Press Ctrl+C to stop\n");
+
+    let buf: [BUF_SIZE]char;
+
+    while true {
+        let client_fd: int = accept(server_fd, null, null);
+        if client_fd < 0 {
+            perror("accept failed");
+            continue;
+        }
+
+        let bytes_read: int = read(client_fd, &buf, BUF_SIZE - 1);
+        if bytes_read > 0 {
+            buf[bytes_read] = 0;
+            printf("Request:\n%s\n---\n", &buf);
+        }
+
+        write(client_fd, RESPONSE, strlen(RESPONSE));
+        close(client_fd);
+    }
+
+    close(server_fd);
+    return 0;
+}
