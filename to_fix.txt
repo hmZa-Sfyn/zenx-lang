@@ -83,6 +83,7 @@ extern fn printf(fmt: str, ...) -> int;
 fn double(x: int) -> int { return x * 2 };
 fn square(x: int) -> int { return x * x };
 
-my val = 3 |> double |> square;
+my val = 3 |> double |> square; 
 printf("\n3 |> double |> square = %lld\n", val);
 (myenv)  hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  
+# but if i just change the function names, it all works fine;  XD!
