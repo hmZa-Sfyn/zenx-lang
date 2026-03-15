@@ -1,0 +1,9 @@
+// Pipe operator demo
+extern fn printf(fmt: str, ...) -> int;
+
+
+fn doubleAA(x: int) -> int { return x * 2 };
+fn squareAA(x: int) -> int { return x * x };
+
+my val = 3 |> doubleAA |> squareAA; // square(double(3))
+printf("\n3 |> doubleAA |> squareAA = %lld\n", val);

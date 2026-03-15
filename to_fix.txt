@@ -43,3 +43,46 @@
   💡 fix errors and re-run: zxc /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/server.zx
 
 (myenv)  ✘ hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  
+
+----
+----
+
+- don allow users to name their functions as same as types or structs!!!
+(myenv)  hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  ./zxc /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/pipes.zx
+
+✖ gcc compilation error — the generated C has a problem:
+
+  /tmp/zx_2192766338.c:33:11: error: both ‘long long’ and ‘double’ in declaration specifiers
+     33 | long long double(long long x);
+        |           ^~~~~~
+  /tmp/zx_2192766338.c:33:18: error: expected identifier or ‘(’ before ‘long’
+     33 | long long double(long long x);
+        |                  ^~~~
+  /tmp/zx_2192766338.c:36:11: error: both ‘long long’ and ‘double’ in declaration specifiers
+     36 | long long double(long long x) {
+        |           ^~~~~~
+  /tmp/zx_2192766338.c:36:18: error: expected identifier or ‘(’ before ‘long’
+     36 | long long double(long long x) {
+        |                  ^~~~
+  /tmp/zx_2192766338.c: In function ‘main’:
+  /tmp/zx_2192766338.c:45:28: error: expected expression before ‘double’
+     45 |     long long val = square(double(3LL));
+        |                            ^~~~~~
+
+💡 run 'zxc emit /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/pipes.zx' to inspect the generated C
+
+(myenv)  ✘ hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  
+
+while: 
+
+(myenv)  ✘ hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  cat /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/pipes.zx
+// Pipe operator demo
+extern fn printf(fmt: str, ...) -> int;
+
+
+fn double(x: int) -> int { return x * 2 };
+fn square(x: int) -> int { return x * x };
+
+my val = 3 |> double |> square;
+printf("\n3 |> double |> square = %lld\n", val);
+(myenv)  hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  
