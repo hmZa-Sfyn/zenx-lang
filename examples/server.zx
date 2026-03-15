@@ -41,33 +41,35 @@ const RESPONSE: str =
     "  <p>This is a tiny web server written in ZX (compiles to C).</p>\n"
     "  <p>Refresh the page or open in another tab.</p>\n"
     "</body>\n"
-    "</html>\n"
+    "</html>\n";
 
-const PORT: int = 8080
-const BACKLOG: int = 10
-const AF_INET_VAL: int = 2
-const SOCK_STREAM_VAL: int = 1
+const PORT: int = 8080;
+const BACKLOG: int = 10;
+const AF_INET_VAL: int = 2;
+const SOCK_STREAM_VAL: int = 1;
 
-println("ZX tiny HTTP server — listening on port 8080")
-println("Open http://localhost:8080 in your browser")
+println("ZX tiny HTTP server — listening on port 8080");
+println("Open http://localhost:8080 in your browser");
 
-let server_fd: int = socket(AF_INET_VAL, SOCK_STREAM_VAL, 0)
+// Create socket
+
+let server_fd: int = socket(AF_INET_VAL, SOCK_STREAM_VAL, 0);
 if server_fd < 0 {
-    die "socket() failed"
+    die "socket() failed";
 }
 
 // Set SO_REUSEADDR so we can restart quickly
-extern fn setsockopt(sockfd: int, level: int, optname: int, optval: ptr<void>, optlen: int) -> int
-let opt: int = 1
-setsockopt(server_fd, 1, 2, &opt, sizeof(int))
+extern fn setsockopt(sockfd: int, level: int, optname: int, optval: ptr<void>, optlen: int) -> int;
+let opt: int = 1;
+setsockopt(server_fd, 1, 2, &opt, sizeof(int));
 
 // Build sockaddr_in using raw C via printf trick — we just emit C directly
 // For demo purposes use printf to show the address
-printf("Binding to 0.0.0.0:%lld\n", PORT)
+printf("Binding to 0.0.0.0:%lld\n", PORT);
 
 println("(run: zxc emit examples/server.zx  to see the generated C)")
 println("Note: full socket bind/listen requires inline C for struct layout.")
 println("This demo shows the string concat + extern interop features.")
 
-close(server_fd)
-println("Server closed.")
+close(server_fd);
+println("Server closed.");
