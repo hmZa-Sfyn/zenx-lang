@@ -13,11 +13,11 @@ const (
 	TK_STRING
 	TK_BOOL
 	TK_NIL
-	TK_TEMPLATE_STR // f"..." interpolated string
+	TK_TEMPLATE_STR // f"..."
+	TK_ANNOTATION   // @test @ignore @args={...}
 
 	TK_IDENT
 
-	// keywords
 	TK_LET
 	TK_MY
 	TK_CONST
@@ -67,15 +67,14 @@ const (
 	TK_DEFER
 	TK_ASSERT
 	TK_SPAWN
-	TK_CMD      // cmd!
-	TK_READFILE // readfile!
-	TK_WRITE    // writefile!
-	TK_INPUT    // input() — read from stdin
+	TK_CMD
+	TK_READFILE
+	TK_WRITE
+	TK_INPUT
 	TK_STDIN
 	TK_STDOUT
 	TK_STDERR
 
-	// types
 	TK_TYPE_INT
 	TK_TYPE_FLOAT
 	TK_TYPE_BOOL
@@ -85,7 +84,6 @@ const (
 	TK_TYPE_REF
 	TK_TYPE_ANY
 
-	// operators
 	TK_PLUS
 	TK_MINUS
 	TK_STAR
@@ -116,9 +114,9 @@ const (
 	TK_FAT_ARROW
 	TK_PIPE_ARROW
 	TK_QUESTION
-	TK_ELVIS // -> => |> ? ?:
+	TK_ELVIS
 	TK_AT
-	TK_HAT // @ = addr-of,  ^ = deref
+	TK_HAT
 	TK_DOT
 	TK_DOTDOT
 	TK_ELLIPSIS
@@ -132,7 +130,7 @@ const (
 	TK_SEMI
 	TK_COLON
 	TK_DCOLON
-	TK_BANG // :: and !
+	TK_BANG
 
 	TK_EOF
 )
@@ -140,7 +138,8 @@ const (
 var tkNames = map[TK]string{
 	TK_INT: "int-literal", TK_FLOAT: "float-literal",
 	TK_STRING: "string-literal", TK_TEMPLATE_STR: "f-string",
-	TK_BOOL: "bool-literal", TK_NIL: "nil",
+	TK_ANNOTATION: "annotation",
+	TK_BOOL:       "bool-literal", TK_NIL: "nil",
 	TK_IDENT: "identifier",
 	TK_LET:   "let", TK_MY: "my", TK_CONST: "const", TK_OUR: "our",
 	TK_FN: "fn", TK_SUB: "sub", TK_RETURN: "return",
@@ -211,12 +210,10 @@ var keywords = map[string]TK{
 	"input": TK_INPUT, "stdin": TK_STDIN, "stdout": TK_STDOUT, "stderr": TK_STDERR,
 	"true": TK_BOOL, "false": TK_BOOL,
 	"nil": TK_NIL, "null": TK_NIL, "NULL": TK_NIL, "undef": TK_NIL,
-	// types
 	"int": TK_TYPE_INT, "float": TK_TYPE_FLOAT, "bool": TK_TYPE_BOOL,
 	"str": TK_TYPE_STR, "string": TK_TYPE_STR,
 	"void": TK_TYPE_VOID, "char": TK_TYPE_CHAR,
 	"ref": TK_TYPE_REF, "any": TK_TYPE_ANY,
-	// Go/Rust aliases
 	"int8": TK_TYPE_INT, "int16": TK_TYPE_INT, "int32": TK_TYPE_INT,
 	"int64": TK_TYPE_INT, "uint": TK_TYPE_INT, "uint64": TK_TYPE_INT,
 	"float32": TK_TYPE_FLOAT, "float64": TK_TYPE_FLOAT,
@@ -292,7 +289,7 @@ func (t *Tokenizer) nextToken() {
 
 	// f"..." template string
 	if ch == 'f' && t.pos+1 < len(t.src) && t.src[t.pos+1] == '"' {
-		t.advance() // consume 'f'
+		t.advance()
 		t.lexTemplateString()
 		return
 	}
@@ -322,6 +319,13 @@ func (t *Tokenizer) nextToken() {
 	t.advance()
 
 	switch ch {
+	case '@':
+		// Could be @annotation or just @ (address-of)
+		if !t.eof() && (isAlpha(t.peek(0)) || t.peek(0) == '_') {
+			t.lexAnnotation(sp)
+		} else {
+			t.push(TK_AT, "@", sp)
+		}
 	case '+':
 		if t.tryEat('=') {
 			t.push(TK_PLUS_EQ, "+=", sp)
@@ -368,18 +372,16 @@ func (t *Tokenizer) nextToken() {
 		} else {
 			t.push(TK_PIPE, "|", sp)
 		}
+	case '^':
+		t.push(TK_HAT, "^", sp)
 	case '~':
 		t.push(TK_TILDE, "~", sp)
-	case '@':
-		t.push(TK_AT, "@", sp)
 	case '?':
 		if t.tryEat(':') {
 			t.push(TK_ELVIS, "?:", sp)
 		} else {
 			t.push(TK_QUESTION, "?", sp)
 		}
-	case '^':
-		t.push(TK_HAT, "^", sp) // deref
 	case '!':
 		if t.tryEat('=') {
 			t.push(TK_NEQ, "!=", sp)
@@ -449,17 +451,53 @@ func (t *Tokenizer) nextToken() {
 	}
 }
 
-// lexTemplateString handles f"hello {name}, you are {age} years old"
-// Stores the raw f-string content — parser handles interpolation
+// lexAnnotation reads @name or @name={"key":"val","key2":123}
+// The full annotation including args is stored as the token Value.
+// Format of Value: "name" or "name={\"key\":\"val\"}"
+func (t *Tokenizer) lexAnnotation(sp Span) {
+	start := t.pos
+	for !t.eof() && (isAlphaNum(t.peek(0)) || t.peek(0) == '_') {
+		t.advance()
+	}
+	name := string(t.src[start:t.pos])
+
+	// check for ={"key":val,...}
+	raw := name
+	if !t.eof() && t.peek(0) == '=' {
+		t.advance() // consume =
+		if !t.eof() && t.peek(0) == '{' {
+			// collect the entire {...} including nested braces
+			raw += "="
+			depth := 0
+			for !t.eof() {
+				c := t.peek(0)
+				raw += string(c)
+				t.advance()
+				if c == '{' {
+					depth++
+				} else if c == '}' {
+					depth--
+					if depth == 0 {
+						break
+					}
+				}
+			}
+		}
+	}
+
+	sp.Len = t.pos - start + 1
+	t.push(TK_ANNOTATION, raw, sp)
+}
+
 func (t *Tokenizer) lexTemplateString() {
 	sp := t.here(1)
-	t.advance() // consume '"'
+	t.advance() // consume "
 	var sb strings.Builder
 	for !t.eof() && t.peek(0) != '"' {
 		ch := t.peek(0)
 		if ch == '\n' {
-			errAt(sp, "unterminated template string — newline before closing quote",
-				`add a closing " before end of line, or use a backtick string for multiline`)
+			errAt(sp, "unterminated f-string — newline before closing quote",
+				`add a closing " before end of line`)
 			t.ok = false
 			return
 		}
@@ -467,7 +505,7 @@ func (t *Tokenizer) lexTemplateString() {
 		t.advance()
 	}
 	if t.eof() {
-		errAt(sp, "unterminated template string — reached end of file", `add a closing "`)
+		errAt(sp, "unterminated f-string — reached end of file", `add a closing "`)
 		t.ok = false
 		return
 	}
@@ -546,18 +584,18 @@ func (t *Tokenizer) lexIdent() {
 	}
 	val := string(t.src[start:t.pos])
 	sp.Len = len(val)
-	// check for cmd!, readfile!, etc.
+	// check for special bang-suffixed identifiers: cmd! readfile! writefile!
 	if !t.eof() && t.peek(0) == '!' {
 		switch val {
 		case "cmd", "sh", "shell", "run":
 			t.advance()
 			t.push(TK_CMD, val+"!", sp)
 			return
-		case "readfile", "slurp":
+		case "readfile", "slurp", "read_file":
 			t.advance()
 			t.push(TK_READFILE, val+"!", sp)
 			return
-		case "writefile", "write":
+		case "writefile", "write_file":
 			t.advance()
 			t.push(TK_WRITE, val+"!", sp)
 			return
@@ -578,7 +616,7 @@ func (t *Tokenizer) lexString(quote rune) {
 		ch := t.peek(0)
 		if ch == '\n' && quote != '`' {
 			errAt(sp, "unterminated string — newline inside string literal",
-				fmt.Sprintf("add a closing %c before the end of the line, or use backtick strings for multiline", quote))
+				fmt.Sprintf("add a closing %c before the end of the line, or use backtick strings for multi-line", quote))
 			t.ok = false
 			return
 		}
@@ -617,7 +655,7 @@ func (t *Tokenizer) lexString(quote rune) {
 		}
 	}
 	if t.eof() {
-		errAt(sp, fmt.Sprintf("unterminated string literal — reached end of file"),
+		errAt(sp, "unterminated string literal — reached end of file",
 			fmt.Sprintf("add a closing %c", quote))
 		t.ok = false
 		return
@@ -663,7 +701,7 @@ func (t *Tokenizer) lexCharLit() {
 	}
 	if t.eof() || t.peek(0) != '\'' {
 		errAt(sp, "char literal not closed",
-			"single quotes are for chars: 'a'  — for strings use double quotes: \"abc\"")
+			"single quotes are for chars: 'a' — for strings use double quotes: \"abc\"")
 		t.ok = false
 		return
 	}
@@ -741,11 +779,16 @@ func (t *Tokenizer) advance() rune {
 	}
 	return ch
 }
-func (t *Tokenizer) here(l int) Span { return Span{File: t.file, Line: t.line, Col: t.col, Len: l} }
+func (t *Tokenizer) here(l int) Span {
+	return Span{File: t.file, Line: t.line, Col: t.col, Len: l}
+}
 func (t *Tokenizer) push(k TK, v string, sp Span) {
 	t.tokens = append(t.tokens, Token{Kind: k, Value: v, Span: sp})
 }
+
 func isDigit(r rune) bool    { return r >= '0' && r <= '9' }
 func isAlpha(r rune) bool    { return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') }
 func isAlphaNum(r rune) bool { return isAlpha(r) || isDigit(r) }
-func isHex(r rune) bool      { return isDigit(r) || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') }
+func isHex(r rune) bool {
+	return isDigit(r) || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+}
