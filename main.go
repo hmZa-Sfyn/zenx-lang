@@ -113,7 +113,7 @@ func printUsage() {
   p->field   field via ref (preferred)
   p.field    also works    (gets a friendly 😄 warning)
 
-`,
+%s`,
 		colorCyan, colorReset,
 		colorBold+colorYellow, version, colorReset,
 		colorBold+colorCyan, colorReset,
