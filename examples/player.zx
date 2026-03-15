@@ -1,142 +1,137 @@
 // player.zx — Go-style classes with methods in ZX
-
-use std::math
-
-extern fn printf(fmt: str, ...) -> int
+use std::math;
+extern fn printf(fmt: str, ...) -> int;
 
 // ── Structs ───────────────────────────────────────────────────────────────────
-
 type Player struct {
-    name      str
-    level     int
-    health    float
-    maxHealth float
-    alive     bool
-}
+    name str;
+    level int;
+    health float;
+    maxHealth float;
+    alive bool;
+};
 
 type Monster struct {
-    name   str
-    hp     int
-    damage int
-}
+    name str;
+    hp int;
+    damage int;
+};
 
-// ── Constructor — returns ref Player ─────────────────────────────────────────
-
-fn NewPlayer(name: str) -> ref Player {
-    return @Player{
-        name:      name,
-        level:     1,
-        health:    100.0,
+// ── Constructors ─────────────────────────────────────────────────────────────
+fn NewPlayer(name: str) -> *Player {
+    return &Player{
+        name: name,
+        level: 1,
+        health: 100.0,
         maxHealth: 100.0,
-        alive:     1
-    }
-}
+        alive: 1
+    };
+};
 
-fn NewMonster(name: str, hp: int, dmg: int) -> ref Monster {
-    return @Monster{ name: name, hp: hp, damage: dmg }
-}
+fn NewMonster(name: str, hp: int, dmg: int) -> *Monster {
+    return &Monster{ name: name, hp: hp, damage: dmg };
+};
 
 // ── Methods ───────────────────────────────────────────────────────────────────
-
-fn (p ref Player) TakeDamage(amt: float) {
-    p.health = p->health - amt;
+fn (p *Player) TakeDamage(amt: float) {
+    p->health = p->health - amt;
     if p->health <= 0.0 {
-        p->health = 0.0
-        p->alive  = 0
-    }
-}
+        p->health = 0.0;
+        p->alive = 0;
+    };
+};
 
-fn (p ref Player) Heal(amt: float) {
+fn (p *Player) Heal(amt: float) {
     if p->alive {
         p->health = p->health + amt;
         if p->health > p->maxHealth {
-            p->health = p->maxHealth
-        }
-    }
-}
+            p->health = p->maxHealth;
+        };
+    };
+};
 
-fn (p ref Player) LevelUp() {
-    p->level     += 1
-    p->maxHealth  = p->maxHealth + 20.0
-    p->health     = p->maxHealth
-    printf("  *** %s leveled up to Lv%lld! ***\n", p->name, p->level)
-}
+fn (p *Player) LevelUp() {
+    p->level += 1;
+    p->maxHealth = p->maxHealth + 20.0;
+    p->health = p->maxHealth;
+    printf(" *** %s leveled up to Lv%lld! ***\n", p->name, p->level);
+};
 
-fn (p ref Player) IsAlive() -> bool {
-    return p->alive != 0
-}
+fn (p *Player) IsAlive() -> bool {
+    return p->alive != 0;
+};
 
-fn (p ref Player) Status() {
-    let status: str = "alive"
-    unless p->alive { status = "dead" }
-    printf("[%s] Lv%lld  HP: %.1f/%.1f  (%s)\n",
-        p->name, p->level, p->health, p->maxHealth, status)
-}
+fn (p *Player) Status() {
+    let status: str = "alive";
+    unless p->alive { status = "dead" };
+    printf("[%s] Lv%lld HP: %.1f/%.1f (%s)\n",
+        p->name, p->level, p->health, p->maxHealth, status);
+};
 
-fn (m ref Monster) TakeDamage(amt: int) {
-    m->hp -= amt
-}
+fn (m *Monster) TakeDamage(amt: int) {
+    m->hp -= amt;
+};
 
-fn (m ref Monster) IsAlive() -> bool {
-    return m->hp > 0
-}
+fn (m *Monster) IsAlive() -> bool {
+    return m->hp > 0;
+};
 
-// ── Utility functions (Perl-style, no types) ──────────────────────────────────
+// ── Utility functions ────────────────────────────────────────────────────────
+fn clamp(val, lo, hi) -> any {
+    if val < lo { return lo };
+    if val > hi { return hi };
+    return val;
+};
 
-fn clamp(val, lo, hi) {
-    if val < lo { return lo }
-    if val > hi { return hi }
-    return val
-}
-
-fn abs_diff(a, b) {
-    if a > b { return a - b }
-    return b - a
-}
+fn abs_diff(a, b) -> any {
+    if a > b { return a - b };
+    return b - a;
+};
 
 // ── Main battle ───────────────────────────────────────────────────────────────
+say "=== ZX RPG Demo ===";
+my hero = NewPlayer("Hamza");
+my boss = NewMonster("Shadow Dragon", 60, 12);
 
-say "=== ZX RPG Demo ==="
-
-my hero  = NewPlayer("Hamza")
-my boss  = NewMonster("Shadow Dragon", 60, 12)
-
-say "-- Initial --"
-hero->Status()
-printf("[%s] HP: %lld  Dmg: %lld\n", boss->name, boss->hp, boss->damage)
-
+say "-- Initial --";
+hero->Status();
+printf("[%s] HP: %lld Dmg: %lld\n", boss->name, boss->hp, boss->damage);
 say "\n-- Battle! --";
 
-my round: int = 1;
+my round: int = 1;   // ← This is the FIRST declaration
+
 until boss->IsAlive() == 0 {
-    printf("\n[Round %lld]\n", round)
+    printf("\n[Round %lld]\n", round);
     boss->TakeDamage(20);
-    printf("  %s hits %s for 20! (%s has %lld HP)\n",
-        hero->name, boss->name, boss->name, boss->hp)
+    printf(" %s hits %s for 20! (%s has %lld HP)\n",
+        hero->name, boss->name, boss->name, boss->hp);
+
     if boss->IsAlive() {
-        hero->TakeDamage(float(boss->damage))
-        printf("  %s hits %s for %lld!\n", boss->name, hero->name, boss->damage)
-    }
-    hero->Status()
-    round += 1
-    if round > 8 { break }
-}
+        hero->TakeDamage(float(boss->damage));
+        printf(" %s hits %s for %lld!\n", boss->name, hero->name, boss->damage);
+    };
 
-say "\n-- Result --"
+    hero->Status();
+    round += 1;
+    if round > 8 { break };
+};
+
+say "\n-- Result --";
 if boss->IsAlive() == 0 {
-    say "Victory!"
-    hero->LevelUp()
-    hero->Heal(50.0)
+    say "Victory!";
+    hero->LevelUp();
+    hero->Heal(50.0);
 } else {
-    say "The dragon survived..."
-}
-hero->Status()
+    say "The dragon survived...";
+};
 
-# Pipe operator demo
-fn double(x) { return x * 2 }
-fn square(x) { return x * x }
+hero->Status();
 
-my val = 3 |> double |> square
-printf("\n3 |> double |> square = %lld\n", val)
+// Pipe operator demo
+fn double(x) -> any { return x * 2 };
+fn square(x) -> any { return x * x };
 
-say "\ndone!"
+my val = 3 |> double |> square;
+printf("\n3 |> double |> square = %lld\n", val);
+
+say "\ndone!";

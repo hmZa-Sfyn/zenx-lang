@@ -300,24 +300,3 @@ error: E11: type mismatch — cannot initialize int variable with str value
 | E55  | Inconsistent types in array literal |
 | E56  | Unknown type used in annotation or parameter |
 
----
-
-## File Layout
-
-```
-zx/
-├── main.go          CLI: run / build / emit / check
-├── colors.go        ANSI color constants
-├── errors.go        Pretty diagnostic printer
-├── ast.go           AST node types + type system
-├── tokenizer.go     Fast hand-written tokenizer
-├── parser.go        Recursive-descent parser
-├── typechecker.go   Type checker with 56 error codes
-├── emitter.go       C code emitter
-├── go.mod
-└── examples/
-    ├── hello.zx     Hello world
-    ├── fib.zx       Fibonacci + C interop
-    ├── demo.zx      Full language showcase
-    └── errors.zx    Intentional errors demo
-```
