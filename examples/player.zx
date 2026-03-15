@@ -39,7 +39,7 @@ fn NewMonster(name: str, hp: int, dmg: int) -> ref Monster {
 // ── Methods ───────────────────────────────────────────────────────────────────
 
 fn (p ref Player) TakeDamage(amt: float) {
-    p.health = p->health - amt
+    p.health = p->health - amt;
     if p->health <= 0.0 {
         p->health = 0.0
         p->alive  = 0
@@ -48,7 +48,7 @@ fn (p ref Player) TakeDamage(amt: float) {
 
 fn (p ref Player) Heal(amt: float) {
     if p->alive {
-        p->health = p->health + amt
+        p->health = p->health + amt;
         if p->health > p->maxHealth {
             p->health = p->maxHealth
         }
