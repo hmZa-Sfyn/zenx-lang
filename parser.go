@@ -7,6 +7,10 @@ import (
 	"strings"
 )
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Parser
+// ─────────────────────────────────────────────────────────────────────────────
+
 type Parser struct {
 	tokens []Token
 	pos    int
@@ -96,27 +100,27 @@ func (p *Parser) isTypeStart() bool {
 	return false
 }
 
-// ── Annotation parsing ────────────────────────────────────────────────────────
+// ── Annotation helpers ────────────────────────────────────────────────────────
 
-// parseAnnotations collects all consecutive @xxx tokens before a declaration
+// parseAnnotations collects all consecutive @xxx tokens.
 func (p *Parser) parseAnnotations() []Annotation {
 	var anns []Annotation
 	for p.at(TK_ANNOTATION) {
 		t := p.advance()
-		ann := parseAnnotationToken(t)
-		anns = append(anns, ann)
+		anns = append(anns, parseAnnotationValue(t))
 	}
 	return anns
 }
 
-// parseAnnotationToken parses a single annotation token value like:
+// parseAnnotationValue converts a TK_ANNOTATION token into an Annotation struct.
+// Token.Value is one of:
 //
-//	"test"               → Annotation{Name:"test"}
-//	"ignore"             → Annotation{Name:"ignore"}
-//	"args={\"n\":42}"    → Annotation{Name:"args", Args:{"n":"42"}}
-//	"expect=42"          → Annotation{Name:"expect", Args:{"value":"42"}}
-//	"timeout=1000"       → Annotation{Name:"timeout", Args:{"ms":"1000"}}
-func parseAnnotationToken(t Token) Annotation {
+//	"test"                 → {Name:"test"}
+//	"ignore"               → {Name:"ignore"}
+//	"args={\"n\":42}"      → {Name:"args", Args:{"n":"42"}}
+//	"expect=84"            → {Name:"expect", Args:{"value":"84"}}
+//	"timeout=1000"         → {Name:"timeout", Args:{"value":"1000"}}
+func parseAnnotationValue(t Token) Annotation {
 	raw := t.Value
 	ann := Annotation{Sp: t.Span}
 
@@ -125,13 +129,11 @@ func parseAnnotationToken(t Token) Annotation {
 		ann.Name = raw
 		return ann
 	}
-
 	ann.Name = raw[:eqIdx]
 	rest := raw[eqIdx+1:]
 
-	// try JSON object: {"key":"val","key2":123}
 	if strings.HasPrefix(rest, "{") {
-		// parse the JSON map
+		// JSON object: @args={"key":"val","key2":123}
 		var m map[string]interface{}
 		if err := json.Unmarshal([]byte(rest), &m); err == nil {
 			ann.Args = make(map[string]string)
@@ -139,165 +141,21 @@ func parseAnnotationToken(t Token) Annotation {
 				ann.Args[k] = fmt.Sprintf("%v", v)
 			}
 		} else {
-			// invalid JSON in annotation — report error but continue
 			warnAt(t.Span,
-				fmt.Sprintf("invalid JSON in @%s annotation: %v", ann.Name, err),
+				fmt.Sprintf("invalid JSON in @%s: %v", ann.Name, err),
 				`use valid JSON: @args={"key": value}`)
-			ann.Args = map[string]string{"raw": rest}
+			ann.Args = map[string]string{"_raw": rest}
 		}
 	} else {
-		// simple scalar: @expect=42  @timeout=500
+		// scalar: @expect=42  @timeout=500
 		ann.Args = map[string]string{"value": rest}
 	}
 	return ann
 }
 
-// ── Program ───────────────────────────────────────────────────────────────────
-
-func (p *Parser) parseProgram() *Program {
-	prog := &Program{}
-	if p.at(TK_MOD) {
-		saved := p.pos
-		p.advance()
-		// mod name { ... } block vs  mod name;  declaration
-		if p.at(TK_IDENT) && p.peekN(1).Kind != TK_LBRACE {
-			prog.Module = p.advance().Value
-			p.eatSemi()
-		} else {
-			// mod name { ... } — parse as a ModBlock
-			p.pos = saved
-			mb := p.parseModBlock("")
-			prog.ModBlocks = append(prog.ModBlocks, mb)
-		}
-	}
-	for !p.at(TK_EOF) && p.ok {
-		// collect annotations first
-		anns := p.parseAnnotations()
-
-		switch p.peek().Kind {
-		case TK_IMPORT, TK_USE:
-			if len(anns) > 0 {
-				warnAt(p.peek().Span, "annotations on import statements are ignored", "remove the @annotation before import")
-			}
-			prog.Imports = append(prog.Imports, p.parseImport())
-
-		case TK_MOD:
-			if len(anns) > 0 {
-				warnAt(p.peek().Span, "annotations on mod blocks are not yet supported", "")
-			}
-			mb := p.parseModBlock("")
-			prog.ModBlocks = append(prog.ModBlocks, mb)
-
-		case TK_EXTERN:
-			prog.Externs = append(prog.Externs, p.parseExtern())
-
-		case TK_STRUCT:
-			sd := p.parseStruct()
-			sd.Annotations = anns
-			prog.Structs = append(prog.Structs, sd)
-
-		case TK_TYPE:
-			sd := p.parseTypeStruct()
-			sd.Annotations = anns
-			prog.Structs = append(prog.Structs, sd)
-
-		case TK_FN, TK_SUB:
-			if p.isFnMethod() {
-				md := p.parseMethod()
-				md.Annotations = anns
-				prog.Methods = append(prog.Methods, md)
-			} else {
-				fn := p.parseFnWithAnnotations(anns)
-				prog.TopStmts = append(prog.TopStmts, fn)
-			}
-
-		default:
-			if len(anns) > 0 {
-				warnAt(p.peek().Span,
-					fmt.Sprintf("annotation @%s cannot be applied here — expected fn, struct, or type", anns[0].Name),
-					"annotations go directly before fn, struct, or type declarations")
-			}
-			if s := p.parseStmt(); s != nil {
-				prog.TopStmts = append(prog.TopStmts, s)
-			}
-		}
-	}
-	return prog
-}
-
-// parseModBlock parses:  mod name { fn ... @test fn ... mod nested { ... } }
-func (p *Parser) parseModBlock(parentPath string) *ModBlock {
-	sp := p.peek().Span
-	p.expect(TK_MOD)
-	name := p.expect(TK_IDENT).Value
-	p.expect(TK_LBRACE)
-
-	modPath := name
-	if parentPath != "" {
-		modPath = parentPath + "::" + name
-	}
-
-	mb := &ModBlock{Sp: sp, Name: name}
-
-	for !p.at(TK_RBRACE) && !p.at(TK_EOF) && p.ok {
-		anns := p.parseAnnotations()
-
-		switch p.peek().Kind {
-		case TK_MOD:
-			nested := p.parseModBlock(modPath)
-			mb.Mods = append(mb.Mods, nested)
-
-		case TK_STRUCT:
-			sd := p.parseStruct()
-			sd.Annotations = anns
-			mb.Structs = append(mb.Structs, sd)
-
-		case TK_TYPE:
-			sd := p.parseTypeStruct()
-			sd.Annotations = anns
-			mb.Structs = append(mb.Structs, sd)
-
-		case TK_FN, TK_SUB:
-			if p.isFnMethod() {
-				md := p.parseMethod()
-				md.Annotations = anns
-				mb.Mods = append(mb.Mods, &ModBlock{}) // placeholder
-			} else {
-				fn := p.parseFnWithAnnotations(anns)
-				fn.ModPath = modPath
-				// check if it's a @test function
-				if fn.HasAnnotation(AnnTest) {
-					td := buildTestDecl(fn, modPath)
-					mb.Tests = append(mb.Tests, td)
-				} else {
-					mb.Fns = append(mb.Fns, fn)
-				}
-			}
-
-		case TK_SEMI:
-			p.advance()
-
-		default:
-			// skip unknown tokens inside mod blocks with a warning
-			t := p.peek()
-			if t.Kind != TK_RBRACE && t.Kind != TK_EOF {
-				warnAt(t.Span,
-					fmt.Sprintf("unexpected %q inside mod block — only fn, struct, type, and nested mod are allowed", t.Value),
-					"remove this or move it outside the mod block")
-				p.advance()
-			}
-		}
-	}
-	p.expect(TK_RBRACE)
-	p.eatSemi()
-	return mb
-}
-
-func (p *Parser) isFnMethod() bool {
-	return p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Kind == TK_LPAREN
-}
-
-// buildTestDecl converts a @test-annotated FnDecl into a TestDecl
+// buildTestDecl converts a @test-annotated FnDecl into a TestDecl.
+// NOTE: This is used by both the parser (inside mod blocks) and the test runner,
+// so it lives here to avoid the undefined-symbol problem.
 func buildTestDecl(fn *FnDecl, modPath string) *TestDecl {
 	td := &TestDecl{Fn: fn, ModPath: modPath}
 	for _, ann := range fn.Annotations {
@@ -321,30 +179,202 @@ func buildTestDecl(fn *FnDecl, modPath string) *TestDecl {
 	return td
 }
 
-// ── Import ────────────────────────────────────────────────────────────────────
+// ── Program ───────────────────────────────────────────────────────────────────
+
+func (p *Parser) parseProgram() *Program {
+	prog := &Program{}
+
+	// optional top-level: mod name;
+	if p.at(TK_MOD) && p.peekN(1).Kind == TK_IDENT && p.peekN(2).Kind != TK_LBRACE {
+		p.advance()
+		prog.Module = p.expect(TK_IDENT).Value
+		p.eatSemi()
+	}
+
+	for !p.at(TK_EOF) && p.ok {
+		anns := p.parseAnnotations()
+
+		switch p.peek().Kind {
+		case TK_IMPORT, TK_USE:
+			if len(anns) > 0 {
+				warnAt(anns[0].Sp, "annotations on imports are ignored", "")
+			}
+			prog.Imports = append(prog.Imports, p.parseImport())
+
+		case TK_MOD:
+			// mod name { ... }
+			mb := p.parseModBlock("")
+			prog.ModBlocks = append(prog.ModBlocks, mb)
+
+		case TK_EXTERN:
+			prog.Externs = append(prog.Externs, p.parseExtern())
+
+		case TK_STRUCT:
+			sd := p.parseStruct()
+			sd.Annotations = anns
+			prog.Structs = append(prog.Structs, sd)
+
+		case TK_TYPE:
+			sd := p.parseTypeStruct()
+			sd.Annotations = anns
+			prog.Structs = append(prog.Structs, sd)
+
+		case TK_FN, TK_SUB:
+			if p.isFnMethod() {
+				md := p.parseMethod()
+				md.Annotations = anns
+				prog.Methods = append(prog.Methods, md)
+			} else {
+				fn := p.parseFnDecl(anns)
+				prog.TopStmts = append(prog.TopStmts, fn)
+			}
+
+		default:
+			if len(anns) > 0 {
+				warnAt(anns[0].Sp,
+					fmt.Sprintf("@%s cannot be applied here — annotations go before fn, struct, or type", anns[0].Name),
+					"move the annotation directly above a fn or struct declaration")
+			}
+			if s := p.parseStmt(); s != nil {
+				prog.TopStmts = append(prog.TopStmts, s)
+			}
+		}
+	}
+	return prog
+}
+
+// isFnMethod: fn ( ... is a method receiver
+func (p *Parser) isFnMethod() bool {
+	return p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Kind == TK_LPAREN
+}
+
+// ── mod name { ... } block ────────────────────────────────────────────────────
+
+func (p *Parser) parseModBlock(parentPath string) *ModBlock {
+	sp := p.peek().Span
+	p.expect(TK_MOD)
+	name := p.expect(TK_IDENT).Value
+	p.expect(TK_LBRACE)
+
+	path := name
+	if parentPath != "" {
+		path = parentPath + "::" + name
+	}
+
+	mb := &ModBlock{Sp: sp, Name: name, Path: path}
+
+	for !p.at(TK_RBRACE) && !p.at(TK_EOF) && p.ok {
+		anns := p.parseAnnotations()
+
+		switch p.peek().Kind {
+		case TK_MOD:
+			nested := p.parseModBlock(path)
+			mb.Mods = append(mb.Mods, nested)
+
+		case TK_STRUCT:
+			sd := p.parseStruct()
+			sd.Annotations = anns
+			mb.Structs = append(mb.Structs, sd)
+
+		case TK_TYPE:
+			sd := p.parseTypeStruct()
+			sd.Annotations = anns
+			mb.Structs = append(mb.Structs, sd)
+
+		case TK_FN, TK_SUB:
+			fn := p.parseFnDecl(anns)
+			fn.ModPath = path
+			if fn.HasAnnotation(AnnTest) {
+				mb.Tests = append(mb.Tests, buildTestDecl(fn, path))
+			} else {
+				mb.Fns = append(mb.Fns, fn)
+			}
+
+		case TK_SEMI:
+			p.advance()
+
+		default:
+			t := p.peek()
+			if t.Kind != TK_RBRACE && t.Kind != TK_EOF {
+				warnAt(t.Span,
+					fmt.Sprintf("unexpected %q inside mod block — only fn, struct, type, and nested mod are allowed", t.Value),
+					"remove this line or move it outside the mod block")
+				p.advance()
+			}
+		}
+	}
+	p.expect(TK_RBRACE)
+	p.eatSemi()
+	return mb
+}
+
+// ── Import parsing ────────────────────────────────────────────────────────────
+//
+// All forms supported:
+//
+//   use std::str              stdlib module
+//   use std::math as m        stdlib with alias
+//   import "stdio.h"          C header
+//   use "mylib.h"             C header (use keyword)
+//   use "mylib.h" as lib      C header with alias
+//
+// The difference between stdlib and C header is detected automatically:
+//   - starts with std:: → stdlib
+//   - is a string literal → C header
+//   - is a bare identifier (no std:: prefix) → user module
 
 func (p *Parser) parseImport() *ImportDecl {
 	sp := p.peek().Span
-	p.advance()
+	p.advance() // consume import or use
+
 	var imp ImportDecl
 	imp.Sp = sp
 
 	if p.at(TK_STRING) {
-		imp.Path = p.advance().Value
-	} else if p.at(TK_IDENT) || p.atAny(TK_TYPE_STR) {
+		// import "stdio.h"  or  use "mylib.h"
+		path := p.advance().Value
+		imp.Path = path
+		imp.IsStd = false
+		imp.IsUser = false
+
+		// Friendly error: forgot quotes around std module
+		if strings.Contains(path, "::") {
+			warnAt(sp,
+				fmt.Sprintf("did you mean: use %s (without quotes)?", path),
+				fmt.Sprintf("to import a ZX stdlib module, write: use %s", path))
+		}
+	} else if p.at(TK_IDENT) || p.atAny(TK_TYPE_STR, TK_TYPE_INT, TK_TYPE_FLOAT, TK_TYPE_BOOL) {
+		// use std::str  or  use mymodule
 		name := p.advance().Value
 		for p.at(TK_DCOLON) {
 			p.advance()
-			name += "::" + p.advance().Value
+			next := p.peek()
+			// accept both identifiers and type keywords as path segments (e.g. use std::str)
+			if next.Kind == TK_IDENT || next.Kind >= TK_TYPE_INT && next.Kind <= TK_TYPE_ANY {
+				name += "::" + p.advance().Value
+			} else {
+				break
+			}
 		}
 		imp.Module = name
 		imp.IsStd = strings.HasPrefix(name, "std::")
 		imp.IsUser = !imp.IsStd
+
+		// E100: warn if unknown std module
+		if imp.IsStd {
+			if LookupStdModule(name) == nil {
+				warnAt(sp,
+					fmt.Sprintf("unknown stdlib module %q", name),
+					"known modules: std::str, std::io, std::math, std::sys, std::fs, std::cmd, std::mem, std::conv, std::time, std::net")
+			}
+		}
 	} else {
-		errAt(sp, "expected a string path or module name after import/use",
-			`use "stdio.h"  or  use std::str`)
+		errAt(sp,
+			"expected a string path or module name after import/use",
+			`examples:  use std::str    use "stdio.h"    import "mylib.h"`)
 		p.ok = false
 	}
+
 	if p.at(TK_AS) {
 		p.advance()
 		imp.Alias = p.expect(TK_IDENT).Value
@@ -352,6 +382,8 @@ func (p *Parser) parseImport() *ImportDecl {
 	p.eatSemi()
 	return &imp
 }
+
+// ── Extern ────────────────────────────────────────────────────────────────────
 
 func (p *Parser) parseExtern() *ExternDecl {
 	sp := p.peek().Span
@@ -371,6 +403,8 @@ func (p *Parser) parseExtern() *ExternDecl {
 	p.eatSemi()
 	return &ExternDecl{Sp: sp, Name: name.Value, Params: params, Variadic: variadic, RetType: ret}
 }
+
+// ── Struct declarations ───────────────────────────────────────────────────────
 
 func (p *Parser) parseStruct() *StructDecl {
 	sp := p.peek().Span
@@ -419,8 +453,10 @@ func (p *Parser) parseStructFields() []Param {
 	return fields
 }
 
-// parseFnWithAnnotations parses a fn declaration, attaching pre-parsed annotations
-func (p *Parser) parseFnWithAnnotations(anns []Annotation) *FnDecl {
+// ── Function declarations ─────────────────────────────────────────────────────
+
+// parseFnDecl parses a fn/sub declaration and attaches pre-parsed annotations.
+func (p *Parser) parseFnDecl(anns []Annotation) *FnDecl {
 	sp := p.peek().Span
 	p.advance() // fn or sub
 	name := p.expect(TK_IDENT)
@@ -442,28 +478,39 @@ func (p *Parser) parseFnWithAnnotations(anns []Annotation) *FnDecl {
 		Body:        body,
 		Annotations: anns,
 	}
-	// E80: validate annotation names
-	for _, ann := range anns {
-		switch ann.Name {
-		case AnnTest, AnnIgnore, AnnArgs, AnnInline, AnnDeprecated,
-			AnnNoReturn, AnnPure, AnnUnsafe, AnnExport, AnnBenchmark,
-			AnnSetup, AnnTeardown, AnnExpect, AnnTimeout, AnnSkip:
-			// valid
-		default:
-			warnAt(ann.Sp,
-				fmt.Sprintf("unknown annotation @%s", ann.Name),
-				"known annotations: @test @ignore @skip @args @expect @timeout @inline @deprecated @noreturn @pure @unsafe @export @benchmark")
-		}
-	}
-	// E81: @args on non-@test function
-	if fn.HasAnnotation(AnnArgs) && !fn.HasAnnotation(AnnTest) {
-		warnAt(fn.Sp,
-			fmt.Sprintf("@args on function %q has no effect — @args only works with @test", fn.Name),
-			"add @test above this function to make it a test case")
-	}
+	// Validate annotation usage
+	p.validateFnAnnotations(fn)
 	return fn
 }
 
+// validateFnAnnotations checks for valid annotation combinations.
+func (p *Parser) validateFnAnnotations(fn *FnDecl) {
+	for _, ann := range fn.Annotations {
+		switch ann.Name {
+		case AnnTest, AnnIgnore, AnnSkip, AnnArgs, AnnExpect, AnnTimeout,
+			AnnInline, AnnDeprecated, AnnNoReturn, AnnPure, AnnUnsafe,
+			AnnExport, AnnBenchmark, AnnSetup, AnnTeardown:
+			// valid annotations
+		default:
+			warnAt(ann.Sp,
+				fmt.Sprintf("unknown annotation @%s", ann.Name),
+				"known: @test @ignore @skip @args @expect @timeout @inline @deprecated @noreturn @pure @unsafe @export @benchmark")
+		}
+	}
+	// @args or @expect without @test is a warning
+	if fn.HasAnnotation(AnnArgs) && !fn.HasAnnotation(AnnTest) {
+		warnAt(fn.Sp,
+			fmt.Sprintf("@args on %q has no effect without @test", fn.Name),
+			"add @test to make this function a test case")
+	}
+	if fn.HasAnnotation(AnnExpect) && !fn.HasAnnotation(AnnTest) {
+		warnAt(fn.Sp,
+			fmt.Sprintf("@expect on %q has no effect without @test", fn.Name),
+			"add @test to make this function a test case")
+	}
+}
+
+// parseMethod: fn (recv ref Type) MethodName(params) -> ret { }
 func (p *Parser) parseMethod() *MethodDecl {
 	sp := p.peek().Span
 	p.advance() // fn
@@ -492,6 +539,7 @@ func (p *Parser) parseMethod() *MethodDecl {
 	}
 }
 
+// parseParamList: optional types, default values, variadic
 func (p *Parser) parseParamList() ([]Param, bool) {
 	var params []Param
 	variadic := false
@@ -525,14 +573,16 @@ func (p *Parser) parseParamList() ([]Param, bool) {
 	return params, variadic
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Type parsing ──────────────────────────────────────────────────────────────
 
 func (p *Parser) parseType() *ZXType {
 	t := p.peek()
+	// *T — raw pointer (still accepted, maps to ref T)
 	if t.Kind == TK_STAR {
 		p.advance()
 		return RefOf(p.parseType())
 	}
+	// [N]T or []T
 	if t.Kind == TK_LBRACKET {
 		p.advance()
 		size := 0
@@ -587,7 +637,7 @@ func (p *Parser) parseType() *ZXType {
 		return StructType(t.Value)
 	default:
 		errAt(t.Span, fmt.Sprintf("expected a type name, got %q", t.Value),
-			"valid types: int, float, bool, str, char, void, any, ref T, [N]T, or a struct name")
+			"valid types: int float bool str char void any ref T [N]T or a struct name")
 		p.ok = false
 		return TypUnknown
 	}
@@ -611,17 +661,15 @@ func (p *Parser) parseBlock() *Block {
 // ── Statements ────────────────────────────────────────────────────────────────
 
 func (p *Parser) parseStmt() Node {
-	// Check for inline annotations on statements (e.g. @deprecated fn inside a block)
+	// Allow annotations inside blocks too (for nested fn declarations)
 	if p.at(TK_ANNOTATION) {
 		anns := p.parseAnnotations()
 		if p.atAny(TK_FN, TK_SUB) && !p.isFnMethod() {
-			return p.parseFnWithAnnotations(anns)
+			return p.parseFnDecl(anns)
 		}
-		// annotations on non-fn inside a block — just warn and continue
 		if len(anns) > 0 {
 			warnAt(anns[0].Sp,
-				fmt.Sprintf("annotation @%s inside a block is only valid on fn declarations", anns[0].Name),
-				"move this annotation to before the fn declaration")
+				fmt.Sprintf("@%s inside a block is only valid before a fn declaration", anns[0].Name), "")
 		}
 	}
 
@@ -681,7 +729,7 @@ func (p *Parser) parseStmt() Node {
 			p.parseMethod()
 			return nil
 		}
-		return p.parseFnWithAnnotations(nil)
+		return p.parseFnDecl(nil)
 	case TK_SEMI:
 		p.advance()
 		return nil
@@ -706,8 +754,8 @@ func (p *Parser) parseVarDecl(isConst bool) *VarDecl {
 		p.advance()
 		init = p.parsePipeExpr()
 	} else if isConst {
-		errAt(name.Span, "const/our declaration must have an initializer",
-			fmt.Sprintf("add = <value>, e.g.:  const %s = 42", name.Value))
+		errAt(name.Span, fmt.Sprintf("const/our %q must have an initializer", name.Value),
+			fmt.Sprintf("add = <value>: const %s = 42", name.Value))
 		p.ok = false
 	}
 	p.expectSemi()
@@ -764,17 +812,13 @@ func (p *Parser) parseUnless() *UnlessStmt {
 func (p *Parser) parseWhile() *WhileStmt {
 	sp := p.peek().Span
 	p.expect(TK_WHILE)
-	cond := p.parseExpr()
-	body := p.parseBlock()
-	return &WhileStmt{Sp: sp, Cond: cond, Body: body}
+	return &WhileStmt{Sp: sp, Cond: p.parseExpr(), Body: p.parseBlock()}
 }
 
 func (p *Parser) parseUntil() *UntilStmt {
 	sp := p.peek().Span
 	p.expect(TK_UNTIL)
-	cond := p.parseExpr()
-	body := p.parseBlock()
-	return &UntilStmt{Sp: sp, Cond: cond, Body: body}
+	return &UntilStmt{Sp: sp, Cond: p.parseExpr(), Body: p.parseBlock()}
 }
 
 func (p *Parser) parseFor() Node {
@@ -885,6 +929,7 @@ func (p *Parser) parsePrint(newline, toStderr bool) *PrintStmt {
 	sp := p.peek().Span
 	p.advance()
 	if !p.at(TK_LPAREN) {
+		// Perl-style no-parens: say "hello", x
 		var args []Node
 		for !p.at(TK_SEMI) && !p.at(TK_RBRACE) && !p.at(TK_EOF) && p.ok {
 			args = append(args, p.parseExpr())
@@ -951,7 +996,7 @@ func (p *Parser) parseExprOrAssign() Node {
 	return &ExprStmt{Sp: sp, Expr: expr}
 }
 
-// ── Pipe: expr |> fn |> fn2 ───────────────────────────────────────────────────
+// ── Pipe: expr |> fn |> fn2 → fn2(fn(expr)) ──────────────────────────────────
 
 func (p *Parser) parsePipeExpr() Node {
 	lhs := p.parseTernary()
@@ -967,6 +1012,8 @@ func (p *Parser) parsePipeExpr() Node {
 	return &PipeExpr{Sp: sp, Steps: steps}
 }
 
+// ── Ternary: cond ? then : else ───────────────────────────────────────────────
+
 func (p *Parser) parseTernary() Node {
 	cond := p.parseExpr()
 	if !p.at(TK_QUESTION) {
@@ -980,9 +1027,10 @@ func (p *Parser) parseTernary() Node {
 	return &TernaryExpr{Sp: sp, Cond: cond, Then: then, Else: els}
 }
 
-// ── Expression precedence ─────────────────────────────────────────────────────
+// ── Expression precedence hierarchy ──────────────────────────────────────────
 
 func (p *Parser) parseExpr() Node { return p.parseOr() }
+
 func (p *Parser) parseOr() Node {
 	lhs := p.parseAnd()
 	for p.at(TK_OR) && p.ok {
@@ -1153,6 +1201,7 @@ func (p *Parser) parsePostfix() Node {
 					p.expect(TK_RPAREN)
 					expr = &MethodCallExpr{Sp: sp, Recv: expr, Method: field.Value, Args: args}
 				} else {
+					// ptr->field
 					expr = &FieldExpr{Sp: sp,
 						Obj:   &AddrExpr{Sp: sp, Operand: expr, Deref: true},
 						Field: field.Value,
@@ -1207,7 +1256,7 @@ func (p *Parser) parsePrimary() Node {
 		operand := p.parseExpr()
 		p.expect(TK_RPAREN)
 		return &CastExpr{Sp: t.Span, ToType: toType, Operand: operand}
-	case TK_CMD, TK_READFILE, TK_WRITE:
+	case TK_CMD, TK_READFILE, TK_WRITEFILE:
 		return p.parseCmdOrFile()
 	case TK_INPUT, TK_STDIN:
 		return p.parseInput()
@@ -1249,21 +1298,21 @@ func (p *Parser) parsePrimary() Node {
 func (p *Parser) parseTemplateStr(tok Token) *TemplateStr {
 	sp := tok.Span
 	raw := tok.Value
-	ts := &TemplateStr{Sp: sp}
+	ts := &TemplateStr{Sp: sp, Typ: TypStr}
 	i := 0
 	for i < len(raw) {
 		if raw[i] == '{' {
 			j := strings.Index(raw[i+1:], "}")
 			if j < 0 {
 				errAt(sp, "template string: unclosed { in interpolation",
-					"add a closing } to complete the expression")
+					"add a closing } to complete the f-string expression")
 				p.ok = false
 				break
 			}
 			exprSrc := raw[i+1 : i+1+j]
-			subTok := Tokenize(exprSrc, sp.File)
-			if subTok != nil {
-				subProg := Parse(subTok, exprSrc, sp.File)
+			subToks := Tokenize(exprSrc, sp.File)
+			if subToks != nil {
+				subProg := Parse(subToks, exprSrc, sp.File)
 				if subProg != nil && len(subProg.TopStmts) > 0 {
 					if es, ok := subProg.TopStmts[0].(*ExprStmt); ok {
 						ts.Parts = append(ts.Parts, TplPart{IsExpr: true, Expr: es.Expr})
@@ -1281,7 +1330,6 @@ func (p *Parser) parseTemplateStr(tok Token) *TemplateStr {
 			i = i + j
 		}
 	}
-	ts.Typ = TypStr
 	return ts
 }
 
@@ -1301,7 +1349,7 @@ func (p *Parser) parseCmdOrFile() Node {
 		return &CmdExpr{Sp: sp, Command: arg, CaptureOutput: true}
 	case TK_READFILE:
 		return &ReadFileExpr{Sp: sp, Path: arg}
-	case TK_WRITE:
+	case TK_WRITEFILE:
 		if second == nil {
 			second = &StrLit{Sp: sp, Val: ""}
 		}
@@ -1326,7 +1374,7 @@ func (p *Parser) parseInput() Node {
 	}
 	args := []Node{}
 	if prompt != nil {
-		args = append(args, prompt)
+		args = []Node{prompt}
 	}
 	return &BuiltinExpr{Sp: sp, Name: "input", Args: args}
 }
@@ -1407,4 +1455,5 @@ func tokenToType(t Token) *ZXType {
 	}
 }
 
+// silence unused import
 var _ = strings.Join

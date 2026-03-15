@@ -12,8 +12,7 @@ const (
 	SevError Severity = iota
 	SevWarn
 	SevNote
-	SevFunny // 😄 style warnings
-	SevInfo
+	SevFunny // 😅 style warnings
 )
 
 type Span struct {
@@ -39,7 +38,7 @@ var (
 	warnCount      int
 )
 
-const maxDiags = 40
+const maxDiags = 50
 
 func resetDiags() {
 	allDiagnostics = nil
@@ -60,31 +59,28 @@ func emitDiag(d Diagnostic) {
 	if diagCount <= maxDiags {
 		printDiag(d)
 	} else if diagCount == maxDiags+1 {
-		fmt.Fprintf(os.Stderr, "%s%s  ⚡ Too many diagnostics — suppressing the rest. Fix the above first.%s\n\n",
+		fmt.Fprintf(os.Stderr, "%s%s  ⚡ Too many diagnostics — suppressing. Fix errors above first.%s\n\n",
 			colorBold, colorRed, colorReset)
 	}
 }
 
-func errAt(span Span, msg string, hint string) {
+func errAt(span Span, msg, hint string) {
 	emitDiag(Diagnostic{Sev: SevError, Span: span, Message: msg, Hint: hint})
 }
-func errCode(code string, span Span, msg string, hint string) {
+func errCode(code string, span Span, msg, hint string) {
 	emitDiag(Diagnostic{Sev: SevError, Code: code, Span: span, Message: msg, Hint: hint})
 }
-func warnAt(span Span, msg string, hint string) {
+func warnAt(span Span, msg, hint string) {
 	emitDiag(Diagnostic{Sev: SevWarn, Span: span, Message: msg, Hint: hint})
 }
-func warnCode(code string, span Span, msg string, hint string) {
+func warnCode(code string, span Span, msg, hint string) {
 	emitDiag(Diagnostic{Sev: SevWarn, Code: code, Span: span, Message: msg, Hint: hint})
 }
-func funnyWarn(span Span, msg string, hint string) {
+func funnyWarn(span Span, msg, hint string) {
 	emitDiag(Diagnostic{Sev: SevFunny, Span: span, Message: msg, Hint: hint})
 }
 func noteAt(span Span, msg string) {
 	emitDiag(Diagnostic{Sev: SevNote, Span: span, Message: msg})
-}
-func infoAt(span Span, msg string) {
-	emitDiag(Diagnostic{Sev: SevInfo, Span: span, Message: msg})
 }
 
 func printDiag(d Diagnostic) {
@@ -107,10 +103,6 @@ func printDiag(d Diagnostic) {
 		icon = "😅 "
 		sevColor = colorOrange
 		sevLabel = "style"
-	case SevInfo:
-		icon = "💡 "
-		sevColor = colorGreen
-		sevLabel = "info"
 	}
 
 	code := ""
@@ -119,7 +111,8 @@ func printDiag(d Diagnostic) {
 	}
 
 	fmt.Fprintf(w, "\n%s%s%s%s%s%s: %s%s\n",
-		colorBold, sevColor, icon, colorReset+colorBold, code, sevColor+sevLabel+colorReset,
+		colorBold, sevColor, icon, colorReset+colorBold,
+		code, sevColor+sevLabel+colorReset,
 		colorBold, d.Message+colorReset)
 
 	sp := d.Span
@@ -135,11 +128,10 @@ func printDiag(d Diagnostic) {
 
 	lines := getSourceLines(sp.File)
 	if lines == nil || sp.Line < 1 || sp.Line > len(lines) {
-		fmt.Fprintf(w, "   %s╰─%s\n", colorBlue+colorBold, colorReset)
+		fmt.Fprintf(w, "   %s╰─%s\n\n", colorBlue+colorBold, colorReset)
 		return
 	}
 
-	// context line above
 	if sp.Line > 1 {
 		fmt.Fprintf(w, "   %s│%s %s%4d%s  %s\n",
 			colorBlue+colorBold, colorReset,
@@ -147,14 +139,12 @@ func printDiag(d Diagnostic) {
 			colorDim+lines[sp.Line-2]+colorReset)
 	}
 
-	// offending line
 	lineText := lines[sp.Line-1]
 	fmt.Fprintf(w, "   %s│%s %s%4d%s  %s\n",
 		colorBlue+colorBold, colorReset,
 		colorBold+colorWhite, sp.Line, colorReset,
 		lineText)
 
-	// underline
 	underLen := sp.Len
 	if underLen <= 0 {
 		underLen = 1
@@ -162,30 +152,24 @@ func printDiag(d Diagnostic) {
 	under := buildUnderline(sp.Col-1, underLen, d.Sev)
 	fmt.Fprintf(w, "   %s│%s       %s\n", colorBlue+colorBold, colorReset, under)
 
-	// hint
 	if d.Hint != "" {
 		pad := strings.Repeat(" ", maxInt(sp.Col-1, 0))
-		hColor := colorGreen
-		hLabel := "hint"
+		hColor, hLabel := colorGreen, "hint"
 		if d.Sev == SevFunny {
-			hColor = colorOrange
-			hLabel = "suggestion"
+			hColor, hLabel = colorOrange, "suggestion"
 		} else if d.Sev == SevWarn {
-			hColor = colorYellow
-			hLabel = "suggestion"
+			hColor, hLabel = colorYellow, "suggestion"
 		}
 		fmt.Fprintf(w, "   %s│%s       %s%s%s%s %s%s\n",
 			colorBlue+colorBold, colorReset,
 			pad, hColor+colorBold, hLabel+":"+colorReset,
 			hColor, d.Hint, colorReset)
 	}
-
 	for _, n := range d.Notes {
 		fmt.Fprintf(w, "   %s│%s       %s= note:%s %s\n",
 			colorBlue+colorBold, colorReset,
 			colorPurple+colorBold, colorReset, n)
 	}
-
 	fmt.Fprintf(w, "   %s╰─%s\n", colorBlue+colorBold, colorReset)
 }
 
@@ -197,17 +181,13 @@ func buildUnderline(col0, length int, sev Severity) string {
 	var ch, color string
 	switch sev {
 	case SevError:
-		ch = "^"
-		color = colorRed + colorBold
+		ch, color = "^", colorRed+colorBold
 	case SevWarn:
-		ch = "~"
-		color = colorYellow + colorBold
+		ch, color = "~", colorYellow+colorBold
 	case SevFunny:
-		ch = "~"
-		color = colorOrange + colorBold
+		ch, color = "~", colorOrange+colorBold
 	default:
-		ch = "-"
-		color = colorCyan + colorBold
+		ch, color = "-", colorCyan+colorBold
 	}
 	return color + pad + strings.Repeat(ch, maxInt(length, 1)) + colorReset
 }

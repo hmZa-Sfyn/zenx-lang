@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Token kinds
+// ─────────────────────────────────────────────────────────────────────────────
+
 type TK int
 
 const (
@@ -14,10 +18,11 @@ const (
 	TK_BOOL
 	TK_NIL
 	TK_TEMPLATE_STR // f"..."
-	TK_ANNOTATION   // @test @ignore @args={...}
+	TK_ANNOTATION   // @name or @name={"key":val}
 
 	TK_IDENT
 
+	// Keywords
 	TK_LET
 	TK_MY
 	TK_CONST
@@ -67,14 +72,15 @@ const (
 	TK_DEFER
 	TK_ASSERT
 	TK_SPAWN
-	TK_CMD
-	TK_READFILE
-	TK_WRITE
-	TK_INPUT
+	TK_CMD       // cmd!
+	TK_READFILE  // readfile!
+	TK_WRITEFILE // writefile!
+	TK_INPUT     // input()
 	TK_STDIN
 	TK_STDOUT
 	TK_STDERR
 
+	// Types
 	TK_TYPE_INT
 	TK_TYPE_FLOAT
 	TK_TYPE_BOOL
@@ -84,6 +90,7 @@ const (
 	TK_TYPE_REF
 	TK_TYPE_ANY
 
+	// Operators
 	TK_PLUS
 	TK_MINUS
 	TK_STAR
@@ -110,13 +117,12 @@ const (
 	TK_STAR_EQ
 	TK_SLASH_EQ
 	TK_PERCENT_EQ
-	TK_ARROW
-	TK_FAT_ARROW
-	TK_PIPE_ARROW
-	TK_QUESTION
-	TK_ELVIS
-	TK_AT
-	TK_HAT
+	TK_ARROW      // ->
+	TK_FAT_ARROW  // =>
+	TK_PIPE_ARROW // |>
+	TK_QUESTION   // ?
+	TK_AT         // @  addr-of
+	TK_HAT        // ^  deref
 	TK_DOT
 	TK_DOTDOT
 	TK_ELLIPSIS
@@ -129,8 +135,7 @@ const (
 	TK_COMMA
 	TK_SEMI
 	TK_COLON
-	TK_DCOLON
-	TK_BANG
+	TK_DCOLON // ::
 
 	TK_EOF
 )
@@ -138,8 +143,7 @@ const (
 var tkNames = map[TK]string{
 	TK_INT: "int-literal", TK_FLOAT: "float-literal",
 	TK_STRING: "string-literal", TK_TEMPLATE_STR: "f-string",
-	TK_ANNOTATION: "annotation",
-	TK_BOOL:       "bool-literal", TK_NIL: "nil",
+	TK_ANNOTATION: "annotation", TK_BOOL: "bool-literal", TK_NIL: "nil",
 	TK_IDENT: "identifier",
 	TK_LET:   "let", TK_MY: "my", TK_CONST: "const", TK_OUR: "our",
 	TK_FN: "fn", TK_SUB: "sub", TK_RETURN: "return",
@@ -149,14 +153,12 @@ var tkNames = map[TK]string{
 	TK_IMPORT: "import", TK_USE: "use", TK_MOD: "mod", TK_AS: "as", TK_EXTERN: "extern",
 	TK_STRUCT: "struct", TK_TYPE: "type", TK_NEW: "new",
 	TK_BREAK: "break", TK_NEXT: "next", TK_CONTINUE: "continue", TK_LAST: "last",
-	TK_PRINT: "print", TK_PRINTLN: "println", TK_SAY: "say",
-	TK_WARN: "warn", TK_EPRINT: "eprint",
+	TK_PRINT: "print", TK_PRINTLN: "println", TK_SAY: "say", TK_WARN: "warn", TK_EPRINT: "eprint",
 	TK_EXIT: "exit", TK_DIE: "die", TK_SIZEOF: "sizeof",
 	TK_LEN: "len", TK_PUSH: "push", TK_POP: "pop", TK_MATCH: "match",
-	TK_TRY: "try", TK_CATCH: "catch", TK_FINALLY: "finally",
-	TK_THROW: "throw", TK_RAISE: "raise",
+	TK_TRY: "try", TK_CATCH: "catch", TK_FINALLY: "finally", TK_THROW: "throw", TK_RAISE: "raise",
 	TK_DEFER: "defer", TK_ASSERT: "assert", TK_SPAWN: "spawn",
-	TK_CMD: "cmd!", TK_READFILE: "readfile!", TK_WRITE: "write!",
+	TK_CMD: "cmd!", TK_READFILE: "readfile!", TK_WRITEFILE: "writefile!",
 	TK_INPUT: "input", TK_STDIN: "stdin", TK_STDOUT: "stdout", TK_STDERR: "stderr",
 	TK_TYPE_INT: "int", TK_TYPE_FLOAT: "float", TK_TYPE_BOOL: "bool",
 	TK_TYPE_STR: "str", TK_TYPE_VOID: "void", TK_TYPE_CHAR: "char",
@@ -169,12 +171,11 @@ var tkNames = map[TK]string{
 	TK_ASSIGN: "=", TK_PLUS_EQ: "+=", TK_MINUS_EQ: "-=",
 	TK_STAR_EQ: "*=", TK_SLASH_EQ: "/=", TK_PERCENT_EQ: "%=",
 	TK_ARROW: "->", TK_FAT_ARROW: "=>", TK_PIPE_ARROW: "|>",
-	TK_QUESTION: "?", TK_ELVIS: "?:",
-	TK_AT: "@", TK_HAT: "^",
+	TK_QUESTION: "?", TK_AT: "@", TK_HAT: "^",
 	TK_DOT: ".", TK_DOTDOT: "..", TK_ELLIPSIS: "...",
 	TK_LPAREN: "(", TK_RPAREN: ")", TK_LBRACE: "{", TK_RBRACE: "}",
 	TK_LBRACKET: "[", TK_RBRACKET: "]",
-	TK_COMMA: ",", TK_SEMI: ";", TK_COLON: ":", TK_DCOLON: "::", TK_BANG: "!",
+	TK_COMMA: ",", TK_SEMI: ";", TK_COLON: ":", TK_DCOLON: "::",
 	TK_EOF: "<EOF>",
 }
 
@@ -191,35 +192,35 @@ var keywords = map[string]TK{
 	"fn": TK_FN, "func": TK_FN, "sub": TK_SUB,
 	"return": TK_RETURN,
 	"if":     TK_IF, "unless": TK_UNLESS,
-	"elif": TK_ELIF, "elsif": TK_ELIF, "elseif": TK_ELIF,
-	"else":  TK_ELSE,
+	"elif": TK_ELIF, "elsif": TK_ELIF, "elseif": TK_ELIF, "else": TK_ELSE,
 	"while": TK_WHILE, "until": TK_UNTIL,
 	"for": TK_FOR, "foreach": TK_FOREACH, "in": TK_IN, "do": TK_DO,
 	"import": TK_IMPORT, "use": TK_USE, "mod": TK_MOD, "as": TK_AS, "extern": TK_EXTERN,
 	"struct": TK_STRUCT, "type": TK_TYPE, "new": TK_NEW,
-	"break": TK_BREAK, "last": TK_LAST,
-	"continue": TK_CONTINUE, "next": TK_NEXT,
-	"print": TK_PRINT, "println": TK_PRINTLN, "say": TK_SAY,
-	"warn": TK_WARN, "eprint": TK_EPRINT,
+	"break": TK_BREAK, "last": TK_LAST, "continue": TK_CONTINUE, "next": TK_NEXT,
+	"print": TK_PRINT, "println": TK_PRINTLN, "say": TK_SAY, "warn": TK_WARN, "eprint": TK_EPRINT,
 	"exit": TK_EXIT, "die": TK_DIE, "sizeof": TK_SIZEOF,
-	"len": TK_LEN, "push": TK_PUSH, "pop": TK_POP,
-	"match": TK_MATCH,
-	"try":   TK_TRY, "catch": TK_CATCH, "finally": TK_FINALLY,
-	"throw": TK_THROW, "raise": TK_RAISE,
+	"len": TK_LEN, "push": TK_PUSH, "pop": TK_POP, "match": TK_MATCH,
+	"try": TK_TRY, "catch": TK_CATCH, "finally": TK_FINALLY, "throw": TK_THROW, "raise": TK_RAISE,
 	"defer": TK_DEFER, "assert": TK_ASSERT, "spawn": TK_SPAWN,
 	"input": TK_INPUT, "stdin": TK_STDIN, "stdout": TK_STDOUT, "stderr": TK_STDERR,
 	"true": TK_BOOL, "false": TK_BOOL,
 	"nil": TK_NIL, "null": TK_NIL, "NULL": TK_NIL, "undef": TK_NIL,
+	// types
 	"int": TK_TYPE_INT, "float": TK_TYPE_FLOAT, "bool": TK_TYPE_BOOL,
 	"str": TK_TYPE_STR, "string": TK_TYPE_STR,
 	"void": TK_TYPE_VOID, "char": TK_TYPE_CHAR,
 	"ref": TK_TYPE_REF, "any": TK_TYPE_ANY,
+	// Go/Rust type aliases
 	"int8": TK_TYPE_INT, "int16": TK_TYPE_INT, "int32": TK_TYPE_INT,
 	"int64": TK_TYPE_INT, "uint": TK_TYPE_INT, "uint64": TK_TYPE_INT,
 	"float32": TK_TYPE_FLOAT, "float64": TK_TYPE_FLOAT,
-	"byte": TK_TYPE_CHAR, "rune": TK_TYPE_INT,
-	"boolean": TK_TYPE_BOOL,
+	"byte": TK_TYPE_CHAR, "rune": TK_TYPE_INT, "boolean": TK_TYPE_BOOL,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Token
+// ─────────────────────────────────────────────────────────────────────────────
 
 type Token struct {
 	Kind  TK
@@ -230,6 +231,10 @@ type Token struct {
 func (t Token) String() string {
 	return fmt.Sprintf("Token(%s %q %d:%d)", t.Kind, t.Value, t.Span.Line, t.Span.Col)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Tokenizer
+// ─────────────────────────────────────────────────────────────────────────────
 
 type Tokenizer struct {
 	src    []rune
@@ -252,6 +257,8 @@ func Tokenize(src, file string) []Token {
 	return t.tokens
 }
 
+// mergeAdjacentStrings joins consecutive TK_STRING tokens into one.
+// "foo" "bar" → "foobar"  (multi-line string concat)
 func mergeAdjacentStrings(in []Token) []Token {
 	out := make([]Token, 0, len(in))
 	for i := 0; i < len(in); i++ {
@@ -287,13 +294,12 @@ func (t *Tokenizer) run() {
 func (t *Tokenizer) nextToken() {
 	ch := t.peek(0)
 
-	// f"..." template string
+	// f"..." interpolated string
 	if ch == 'f' && t.pos+1 < len(t.src) && t.src[t.pos+1] == '"' {
-		t.advance()
-		t.lexTemplateString()
+		t.advance() // consume 'f'
+		t.lexTemplateStr()
 		return
 	}
-
 	if isDigit(ch) {
 		t.lexNumber()
 		return
@@ -320,7 +326,8 @@ func (t *Tokenizer) nextToken() {
 
 	switch ch {
 	case '@':
-		// Could be @annotation or just @ (address-of)
+		// @name or @name={...}  → annotation token
+		// bare @ (no ident after) → address-of operator
 		if !t.eof() && (isAlpha(t.peek(0)) || t.peek(0) == '_') {
 			t.lexAnnotation(sp)
 		} else {
@@ -373,20 +380,16 @@ func (t *Tokenizer) nextToken() {
 			t.push(TK_PIPE, "|", sp)
 		}
 	case '^':
-		t.push(TK_HAT, "^", sp)
+		t.push(TK_HAT, "^", sp) // deref operator
 	case '~':
 		t.push(TK_TILDE, "~", sp)
 	case '?':
-		if t.tryEat(':') {
-			t.push(TK_ELVIS, "?:", sp)
-		} else {
-			t.push(TK_QUESTION, "?", sp)
-		}
+		t.push(TK_QUESTION, "?", sp)
 	case '!':
 		if t.tryEat('=') {
 			t.push(TK_NEQ, "!=", sp)
 		} else {
-			t.push(TK_BANG, "!", sp)
+			t.push(TK_NOT, "!", sp)
 		}
 	case '=':
 		if t.tryEat('=') {
@@ -451,23 +454,22 @@ func (t *Tokenizer) nextToken() {
 	}
 }
 
-// lexAnnotation reads @name or @name={"key":"val","key2":123}
-// The full annotation including args is stored as the token Value.
-// Format of Value: "name" or "name={\"key\":\"val\"}"
+// lexAnnotation: reads @name or @name={...}
+// The entire annotation including optional ={...} is stored in Value.
 func (t *Tokenizer) lexAnnotation(sp Span) {
 	start := t.pos
 	for !t.eof() && (isAlphaNum(t.peek(0)) || t.peek(0) == '_') {
 		t.advance()
 	}
 	name := string(t.src[start:t.pos])
-
-	// check for ={"key":val,...}
 	raw := name
+
+	// optional =value or ={"key":val}
 	if !t.eof() && t.peek(0) == '=' {
-		t.advance() // consume =
+		t.advance()
+		raw += "="
 		if !t.eof() && t.peek(0) == '{' {
-			// collect the entire {...} including nested braces
-			raw += "="
+			// collect balanced {...}
 			depth := 0
 			for !t.eof() {
 				c := t.peek(0)
@@ -482,22 +484,26 @@ func (t *Tokenizer) lexAnnotation(sp Span) {
 					}
 				}
 			}
+		} else {
+			// scalar value: @expect=42  @timeout=500
+			for !t.eof() && t.peek(0) != '\n' && t.peek(0) != ' ' && t.peek(0) != '\t' {
+				raw += string(t.peek(0))
+				t.advance()
+			}
 		}
 	}
-
-	sp.Len = t.pos - start + 1
 	t.push(TK_ANNOTATION, raw, sp)
 }
 
-func (t *Tokenizer) lexTemplateString() {
+func (t *Tokenizer) lexTemplateStr() {
 	sp := t.here(1)
-	t.advance() // consume "
+	t.advance() // consume opening "
 	var sb strings.Builder
 	for !t.eof() && t.peek(0) != '"' {
 		ch := t.peek(0)
 		if ch == '\n' {
 			errAt(sp, "unterminated f-string — newline before closing quote",
-				`add a closing " before end of line`)
+				`close the f-string with " on the same line`)
 			t.ok = false
 			return
 		}
@@ -584,7 +590,7 @@ func (t *Tokenizer) lexIdent() {
 	}
 	val := string(t.src[start:t.pos])
 	sp.Len = len(val)
-	// check for special bang-suffixed identifiers: cmd! readfile! writefile!
+	// check for bang-suffixed builtins: cmd! readfile! writefile!
 	if !t.eof() && t.peek(0) == '!' {
 		switch val {
 		case "cmd", "sh", "shell", "run":
@@ -597,7 +603,7 @@ func (t *Tokenizer) lexIdent() {
 			return
 		case "writefile", "write_file":
 			t.advance()
-			t.push(TK_WRITE, val+"!", sp)
+			t.push(TK_WRITEFILE, val+"!", sp)
 			return
 		}
 	}
@@ -610,7 +616,7 @@ func (t *Tokenizer) lexIdent() {
 
 func (t *Tokenizer) lexString(quote rune) {
 	sp := t.here(1)
-	t.advance()
+	t.advance() // consume opening quote
 	var sb strings.Builder
 	for !t.eof() && t.peek(0) != quote {
 		ch := t.peek(0)
@@ -643,7 +649,7 @@ func (t *Tokenizer) lexString(quote rune) {
 			case 'a':
 				sb.WriteByte('\a')
 			default:
-				warnAt(sp, fmt.Sprintf("unknown escape sequence \\%c in string", t.peek(0)),
+				warnAt(sp, fmt.Sprintf("unknown escape \\%c in string", t.peek(0)),
 					"valid escapes: \\n \\t \\r \\\\ \\\" \\0 \\a")
 				sb.WriteByte('\\')
 				sb.WriteRune(t.peek(0))
@@ -660,7 +666,7 @@ func (t *Tokenizer) lexString(quote rune) {
 		t.ok = false
 		return
 	}
-	t.advance()
+	t.advance() // closing quote
 	t.push(TK_STRING, sb.String(), sp)
 }
 
@@ -741,7 +747,8 @@ func (t *Tokenizer) skipWS() {
 				t.advance()
 			}
 			if t.eof() {
-				errAt(sp2, "unterminated block comment /* ... */", "add */ to close the comment")
+				errAt(sp2, "unterminated block comment /* ... */",
+					"add */ to close the comment")
 				t.ok = false
 				return
 			}

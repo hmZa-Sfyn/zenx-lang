@@ -119,6 +119,10 @@ func (e *Emitter) emitProgram(prog *Program) {
 	for _, m := range prog.Methods {
 		e.ln("%s %s(%s);", cType(m.RetType), m.CName(), methodParamStr(m))
 	}
+	// forward-declare mod block functions
+	for _, mb := range prog.ModBlocks {
+		e.emitModBlockProtos(mb)
+	}
 	e.ln("")
 
 	// function bodies
@@ -143,6 +147,10 @@ func (e *Emitter) emitProgram(prog *Program) {
 		e.emitMethodFull(m)
 		e.ln("")
 	}
+	// emit mod block function bodies
+	for _, mb := range prog.ModBlocks {
+		e.emitModBlockBodies(mb)
+	}
 
 	if !hasUserMain {
 		e.ln("int main(int argc, char **argv) {")
@@ -153,6 +161,38 @@ func (e *Emitter) emitProgram(prog *Program) {
 		e.ln("return 0;")
 		e.indent--
 		e.ln("}")
+	}
+}
+
+// emitModBlockProtos forward-declares all functions inside a mod block (recursively).
+func (e *Emitter) emitModBlockProtos(mb *ModBlock) {
+	for _, s := range mb.Structs {
+		e.emitStruct(s)
+	}
+	for _, fn := range mb.Fns {
+		e.ln("%s %s(%s);", cType(fn.RetType), fn.Name, buildParamStr(fn.Params, fn.Variadic))
+	}
+	for _, td := range mb.Tests {
+		fn := td.Fn
+		e.ln("%s %s(%s);", cType(fn.RetType), fn.Name, buildParamStr(fn.Params, fn.Variadic))
+	}
+	for _, nested := range mb.Mods {
+		e.emitModBlockProtos(nested)
+	}
+}
+
+// emitModBlockBodies emits the full bodies of all mod block functions.
+func (e *Emitter) emitModBlockBodies(mb *ModBlock) {
+	for _, fn := range mb.Fns {
+		e.emitFnFull(fn)
+		e.ln("")
+	}
+	for _, td := range mb.Tests {
+		e.emitFnFull(td.Fn)
+		e.ln("")
+	}
+	for _, nested := range mb.Mods {
+		e.emitModBlockBodies(nested)
 	}
 }
 
@@ -727,7 +767,6 @@ func (e *Emitter) emitTemplateStr(ts *TemplateStr) string {
 		argStr = ", " + strings.Join(args, ", ")
 	}
 	return fmt.Sprintf("(snprintf(__zx_input_buf, sizeof(__zx_input_buf), \"%s\"%s), __zx_input_buf)", fmtStr, argStr)
-
 }
 
 // ── C type helpers ────────────────────────────────────────────────────────────

@@ -4,7 +4,6 @@ const (
 	colorReset   = "\033[0m"
 	colorBold    = "\033[1m"
 	colorDim     = "\033[2m"
-	colorItalic  = "\033[3m"
 	colorRed     = "\033[91m"
 	colorYellow  = "\033[93m"
 	colorGreen   = "\033[92m"
@@ -14,4 +13,5 @@ const (
 	colorWhite   = "\033[97m"
 	colorOrange  = "\033[38;5;208m"
 	colorPurple  = "\033[38;5;141m"
+	colorTeal    = "\033[38;5;49m"
 )

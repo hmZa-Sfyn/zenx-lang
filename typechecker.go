@@ -163,6 +163,11 @@ func TypeCheck(prog *Program, src, file string) bool {
 		}
 	}
 
+	// register functions + tests from mod blocks (recursively)
+	for _, mb := range prog.ModBlocks {
+		tc.registerModBlock(mb)
+	}
+
 	// check bodies
 	for _, stmt := range prog.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok {
@@ -177,7 +182,50 @@ func TypeCheck(prog *Program, src, file string) bool {
 			tc.checkStmt(stmt)
 		}
 	}
+
+	// check mod block function bodies
+	for _, mb := range prog.ModBlocks {
+		tc.checkModBlock(mb)
+	}
 	return tc.ok
+}
+
+// registerModBlock registers all functions/tests from a mod block and its children.
+func (tc *TypeChecker) registerModBlock(mb *ModBlock) {
+	for _, s := range mb.Structs {
+		if _, exists := tc.structs[s.Name]; !exists {
+			tc.structs[s.Name] = s
+		}
+	}
+	for _, fn := range mb.Fns {
+		if _, exists := tc.fns[fn.Name]; !exists {
+			tc.fns[fn.Name] = fn
+			tc.scope.define(fn.Name, &VarInfo{Type: fn.RetType, IsFn: true, Sp: fn.Sp})
+		}
+	}
+	for _, td := range mb.Tests {
+		fn := td.Fn
+		if _, exists := tc.fns[fn.Name]; !exists {
+			tc.fns[fn.Name] = fn
+			tc.scope.define(fn.Name, &VarInfo{Type: fn.RetType, IsFn: true, Sp: fn.Sp})
+		}
+	}
+	for _, nested := range mb.Mods {
+		tc.registerModBlock(nested)
+	}
+}
+
+// checkModBlock type-checks all function bodies inside a mod block.
+func (tc *TypeChecker) checkModBlock(mb *ModBlock) {
+	for _, fn := range mb.Fns {
+		tc.checkFn(fn)
+	}
+	for _, td := range mb.Tests {
+		tc.checkFn(td.Fn)
+	}
+	for _, nested := range mb.Mods {
+		tc.checkModBlock(nested)
+	}
 }
 
 func (tc *TypeChecker) currentFn() *FnDecl {
