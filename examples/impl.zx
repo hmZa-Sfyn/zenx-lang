@@ -26,4 +26,6 @@ my pointb = &Vec2{x:12, y:3};
 //printf("%d\n",myvec->getx());
 
 //distance from pointb
-printf("%g\n",myvec->distance(pointb));
+//printf("%g\n",myvec->distance(pointb));
+
+say myvec->distance(pointb);
