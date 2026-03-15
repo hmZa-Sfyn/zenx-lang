@@ -1,0 +1,128 @@
+// demo.zx — ZX v0.3 full feature showcase
+// Perl-style syntax, Go-style structs, optional types, C interop
+
+import "stdio.h"
+import "math.h"
+
+extern fn sqrt(x: float) -> float
+extern fn printf(fmt: str, ...) -> int
+
+// ── Go/ZX struct ─────────────────────────────────────────────────────────────
+
+type Vec2 struct {
+    x float
+    y float
+}
+
+fn (v Vec2) Len() -> float {
+    return sqrt(v.x * v.x + v.y * v.y)
+}
+
+// ── Functions with and without types ─────────────────────────────────────────
+
+fn factorial(n: int) -> int {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}
+
+// no types — all params are long long by default
+fn multiply(a, b) {
+    return a * b
+}
+
+// ── Main code ─────────────────────────────────────────────────────────────────
+
+say "=== ZX v0.3 ==="
+
+# Perl-style: my instead of let
+my x = 10
+my y = 3
+say x + y
+say x * y
+
+# const with our (Perl)
+our PI = 3.14159265
+say PI
+
+# for range
+my sum = 0
+for i in 1..101 {
+    sum += i
+}
+printf("sum 1..100 = %lld\n", sum)
+
+# while
+my n = 1
+while n < 1000 {
+    n *= 2
+}
+say n
+
+# unless (Perl: if not)
+my logged_in = 0
+unless logged_in {
+    say "please log in"
+}
+
+# until (Perl: while not)
+my countdown = 5
+until countdown == 0 {
+    printf("%lld ", countdown)
+    countdown -= 1
+}
+println ""
+
+# multiline string concat
+const HTML: str =
+    "<html>\n"
+    "  <body>\n"
+    "    <h1>Hello!</h1>\n"
+    "  </body>\n"
+    "</html>\n"
+
+printf("HTML length check: %s", HTML)
+
+# struct & method
+my v: Vec2 = new Vec2 { x: 3.0, y: 4.0 }
+printf("vec len = %g\n", v.Len())
+
+# heap alloc struct
+my v2 = &Vec2{ x: 5.0, y: 12.0 }
+printf("vec2 len = %g\n", v2->Len())
+
+# untyped call
+say multiply(6, 7)
+
+# factorials
+for i in 1..8 {
+    printf("%lld! = %lld\n", i, factorial(i))
+}
+
+# bitwise & hex & binary
+my flags = 0b1010
+flags = flags | 0x1
+flags = flags & ~0x2
+printf("flags = %lld\n", flags)
+
+# sizeof
+printf("sizeof int = %lld\n", sizeof(int))
+
+# cast
+my f: float = 9.99
+my fi: int = int(f)
+printf("cast 9.99 -> %lld\n", fi)
+
+# char
+my ch: char = 'Z'
+printf("char=%c code=%lld\n", ch, int(ch))
+
+# pointer
+my num: int = 100
+my p: *int = &num
+*p = 999
+say num
+
+# die (Perl: die = print to stderr + exit)
+# die "something went wrong"  ← uncomment to test
+
+say "=== done ==="

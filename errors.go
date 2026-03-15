@@ -16,16 +16,16 @@ const (
 
 type Span struct {
 	File string
-	Line int // 1-based
-	Col  int // 1-based
-	Len  int // underline width; 0 = single caret
+	Line int
+	Col  int
+	Len  int
 }
 
 type Diagnostic struct {
 	Sev     Severity
 	Span    Span
 	Message string
-	Hint    string  // green suggestion line
+	Hint    string
 	Notes   []string
 }
 
@@ -35,7 +35,7 @@ var (
 	diagCount      int
 )
 
-const maxDiags = 20 // stop printing after this many errors
+const maxDiags = 20
 
 func resetDiags() {
 	allDiagnostics = nil
@@ -60,18 +60,15 @@ func emitDiag(d Diagnostic) {
 func errAt(span Span, msg string, hint string) {
 	emitDiag(Diagnostic{Sev: SevError, Span: span, Message: msg, Hint: hint})
 }
-
 func warnAt(span Span, msg string, hint string) {
 	emitDiag(Diagnostic{Sev: SevWarn, Span: span, Message: msg, Hint: hint})
 }
-
 func noteAt(span Span, msg string) {
 	emitDiag(Diagnostic{Sev: SevNote, Span: span, Message: msg})
 }
 
 func printDiag(d Diagnostic) {
 	w := os.Stderr
-
 	var sevColor, sevLabel string
 	switch d.Sev {
 	case SevError:
@@ -84,51 +81,36 @@ func printDiag(d Diagnostic) {
 		sevColor = colorCyan
 		sevLabel = "note"
 	}
-
-	// ── header ───────────────────────────────────────────────────────────────
 	fmt.Fprintf(w, "%s%s%s%s: %s%s%s\n",
 		colorBold, sevColor, sevLabel, colorReset,
-		colorBold, d.Message, colorReset,
-	)
+		colorBold, d.Message, colorReset)
 
 	sp := d.Span
 	if sp.File == "" {
 		fmt.Fprintln(w)
 		return
 	}
-
-	// ── location arrow ───────────────────────────────────────────────────────
 	fmt.Fprintf(w, "  %s-->%s %s:%d:%d\n",
-		colorBlue+colorBold, colorReset,
-		sp.File, sp.Line, sp.Col,
-	)
+		colorBlue+colorBold, colorReset, sp.File, sp.Line, sp.Col)
 
-	// ── source line ──────────────────────────────────────────────────────────
 	lines := getSourceLines(sp.File)
 	if lines == nil || sp.Line < 1 || sp.Line > len(lines) {
 		fmt.Fprintln(w)
 		return
 	}
-
 	lineText := lines[sp.Line-1]
 
-	// optional context line above
 	if sp.Line > 1 {
 		fmt.Fprintf(w, "  %s%4d%s %s│%s %s\n",
 			colorDim, sp.Line-1, colorReset,
 			colorBlue+colorBold, colorReset,
-			colorDim+lines[sp.Line-2]+colorReset,
-		)
+			colorDim+lines[sp.Line-2]+colorReset)
 	}
-
-	// the offending line
 	fmt.Fprintf(w, "  %s%4d%s %s│%s %s\n",
 		colorBold, sp.Line, colorReset,
 		colorBlue+colorBold, colorReset,
-		lineText,
-	)
+		lineText)
 
-	// underline row
 	underLen := sp.Len
 	if underLen <= 0 {
 		underLen = 1
@@ -136,25 +118,19 @@ func printDiag(d Diagnostic) {
 	under := buildUnderline(sp.Col-1, underLen, d.Sev)
 	fmt.Fprintf(w, "       %s│%s %s\n", colorBlue+colorBold, colorReset, under)
 
-	// hint on its own line, aligned with underline
 	if d.Hint != "" {
 		pad := strings.Repeat(" ", maxInt(sp.Col-1, 0))
 		fmt.Fprintf(w, "       %s│%s %s%s%s %s%s\n",
 			colorBlue+colorBold, colorReset,
 			pad,
 			colorGreen+colorBold, "hint:", colorReset,
-			colorGreen+d.Hint+colorReset,
-		)
+			colorGreen+d.Hint+colorReset)
 	}
-
-	// notes
 	for _, n := range d.Notes {
 		fmt.Fprintf(w, "       %s=%s %snote:%s %s\n",
 			colorBlue+colorBold, colorReset,
-			colorWhite+colorBold, colorReset, n,
-		)
+			colorWhite+colorBold, colorReset, n)
 	}
-
 	fmt.Fprintln(w)
 }
 
@@ -166,30 +142,21 @@ func buildUnderline(col0, length int, sev Severity) string {
 	var ch, color string
 	switch sev {
 	case SevError:
-		ch = "^"
-		color = colorRed + colorBold
+		ch = "^"; color = colorRed + colorBold
 	case SevWarn:
-		ch = "~"
-		color = colorYellow + colorBold
+		ch = "~"; color = colorYellow + colorBold
 	default:
-		ch = "-"
-		color = colorCyan + colorBold
+		ch = "-"; color = colorCyan + colorBold
 	}
 	return color + pad + strings.Repeat(ch, maxInt(length, 1)) + colorReset
 }
-
-// ── source line cache ─────────────────────────────────────────────────────────
 
 var sourceCache = map[string][]string{}
 
 func registerSource(file, src string) {
 	sourceCache[file] = strings.Split(src, "\n")
 }
-
-func getSourceLines(file string) []string {
-	return sourceCache[file]
-}
-
+func getSourceLines(file string) []string { return sourceCache[file] }
 func maxInt(a, b int) int {
 	if a > b {
 		return a

@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 const banner = `
  ▒███████▒ ▒██   ██▒
@@ -19,24 +19,19 @@ const banner = `
 
 const usage = banner + `  v` + version + `
 
-ZX — a fast, Perl-flavored language that compiles to C
+ZX — fast, Perl-flavored language that compiles to C
 
 USAGE:
   zxc <file.zx>              compile & run
-  zxc build <file.zx>        compile only
+  zxc build <file.zx>        compile to binary
+  zxc build <file.zx> -o x   compile to named binary
   zxc emit  <file.zx>        print generated C
   zxc check <file.zx>        type-check only
   zxc version                print version
 
 OPTIONS:
-  -o <name>   output binary name (with build)
+  -o <name>   output binary name
   -v          verbose: show generated C before compiling
-
-EXAMPLES:
-  zxc hello.zx
-  zxc build demo.zx -o demo && ./demo
-  zxc emit  fib.zx
-  zxc check errors.zx
 `
 
 func main() {
@@ -45,17 +40,15 @@ func main() {
 		fmt.Print(usage)
 		os.Exit(0)
 	}
-
 	switch args[0] {
 	case "version", "--version":
-		fmt.Printf("zx v%s\n", version)
+		fmt.Printf("zxc v%s\n", version)
 		return
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 		return
 	}
 
-	// parse subcommand & flags
 	cmd := "run"
 	outBin := ""
 	verbose := false
@@ -63,23 +56,27 @@ func main() {
 
 	i := 0
 	if args[0] == "build" || args[0] == "emit" || args[0] == "check" {
-		cmd = args[0]; i = 1
+		cmd = args[0]
+		i = 1
 	}
 	for ; i < len(args); i++ {
 		switch args[i] {
 		case "-o":
 			i++
-			if i < len(args) { outBin = args[i] }
+			if i < len(args) {
+				outBin = args[i]
+			}
 		case "-v", "--verbose":
 			verbose = true
 		default:
-			if sourceFile == "" { sourceFile = args[i] }
+			if sourceFile == "" {
+				sourceFile = args[i]
+			}
 		}
 	}
 
 	if sourceFile == "" {
-		fmt.Fprintln(os.Stderr, "zxc: no input file specified")
-		fmt.Fprintln(os.Stderr, "     run 'zxc --help' for usage")
+		fmt.Fprintln(os.Stderr, "zxc: no input file")
 		os.Exit(1)
 	}
 
@@ -89,24 +86,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ── pipeline ───────────────────────────────────────────────────────────
 	resetDiags()
 
 	tokens := Tokenize(string(src), sourceFile)
 	if tokens == nil || hadError {
-		printErrorSummary()
+		printSummary()
 		os.Exit(1)
 	}
 
 	program := Parse(tokens, string(src), sourceFile)
 	if program == nil || hadError {
-		printErrorSummary()
+		printSummary()
 		os.Exit(1)
 	}
 
 	ok := TypeCheck(program, string(src), sourceFile)
 	if !ok || hadError {
-		printErrorSummary()
+		printSummary()
 		os.Exit(1)
 	}
 
@@ -126,15 +122,12 @@ func main() {
 		printCSource(cCode)
 	}
 
-	// ── compile via gcc ────────────────────────────────────────────────────
 	tmpC, err := os.CreateTemp("", "zx_*.c")
 	if err != nil {
 		fatalf("cannot create temp file: %v", err)
 	}
 	defer os.Remove(tmpC.Name())
-	if _, err := tmpC.WriteString(cCode); err != nil {
-		fatalf("cannot write temp C file: %v", err)
-	}
+	tmpC.WriteString(cCode)
 	tmpC.Close()
 
 	if outBin == "" {
@@ -142,27 +135,25 @@ func main() {
 		outBin = "./" + base
 	}
 
-	gccArgs := []string{"-x", "c", tmpC.Name(), "-o", outBin, "-lm", "-Wall", "-Wno-unused-variable"}
+	gccArgs := []string{"-x", "c", tmpC.Name(), "-o", outBin, "-lm", "-Wall", "-Wno-unused-variable", "-Wno-unused-but-set-variable"}
 	gccOut, err := exec.Command("gcc", gccArgs...).CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\n%s%s gcc error%s — the generated C has a problem:\n\n",
+		fmt.Fprintf(os.Stderr, "\n%s%sgcc error%s — generated C has a problem:\n\n",
 			colorBold, colorRed, colorReset)
 		fmt.Fprintf(os.Stderr, "%s%s%s\n", colorDim, string(gccOut), colorReset)
-		fmt.Fprintf(os.Stderr, "\n%srun 'zxc emit %s' to inspect the generated C code%s\n",
+		fmt.Fprintf(os.Stderr, "\n%srun 'zxc emit %s' to inspect the generated C%s\n",
 			colorYellow, sourceFile, colorReset)
 		os.Exit(1)
 	}
 
 	if cmd == "build" {
 		fmt.Printf("%s%s✓%s built → %s%s%s\n",
-			colorBold, colorGreen, colorReset,
-			colorCyan, outBin, colorReset)
+			colorBold, colorGreen, colorReset, colorCyan, outBin, colorReset)
 		return
 	}
 
-	// ── run ────────────────────────────────────────────────────────────────
 	runCmd := exec.Command(outBin)
-	runCmd.Stdin  = os.Stdin
+	runCmd.Stdin = os.Stdin
 	runCmd.Stdout = os.Stdout
 	runCmd.Stderr = os.Stderr
 	if err := runCmd.Run(); err != nil {
@@ -173,14 +164,13 @@ func main() {
 	}
 }
 
-func printErrorSummary() {
-	errs := 0
-	warns := 0
+func printSummary() {
+	errs, warns := 0, 0
 	for _, d := range allDiagnostics {
 		if d.Sev == SevError { errs++ }
 		if d.Sev == SevWarn  { warns++ }
 	}
-	parts := []string{}
+	var parts []string
 	if errs > 0 {
 		parts = append(parts, fmt.Sprintf("%s%s%d error(s)%s", colorBold, colorRed, errs, colorReset))
 	}
@@ -195,14 +185,15 @@ func printErrorSummary() {
 
 func printCSource(code string) {
 	lines := strings.Split(code, "\n")
-	fmt.Printf("%s%s── generated C ──────────────────────────%s\n", colorBold, colorCyan, colorReset)
+	fmt.Printf("%s%s── generated C ──%s\n", colorBold, colorCyan, colorReset)
 	for i, l := range lines {
 		fmt.Printf("%s%4d%s  %s\n", colorDim, i+1, colorReset, l)
 	}
-	fmt.Printf("%s%s─────────────────────────────────────────%s\n\n", colorBold, colorCyan, colorReset)
+	fmt.Printf("%s%s─────────────────%s\n\n", colorBold, colorCyan, colorReset)
 }
 
 func fatalf(f string, a ...any) {
-	fmt.Fprintf(os.Stderr, "%szxc: "+f+"%s\n", append([]any{colorRed}, append(a, colorReset)...)...)
+	fmt.Fprintf(os.Stderr, "%szxc: "+f+"%s\n",
+		append([]any{colorRed}, append(a, colorReset)...)...)
 	os.Exit(1)
 }

@@ -9,15 +9,16 @@ import "fmt"
 type TypeKind int
 
 const (
-	TyInt    TypeKind = iota
+	TyInt     TypeKind = iota
 	TyFloat
 	TyBool
 	TyStr
 	TyChar
 	TyVoid
-	TyPtr    // ptr<T>
+	TyPtr    // ptr<T>  or  *T
 	TyArray  // [N]T
 	TyStruct
+	TyAny    // untyped / inferred-at-emit time (for optional typing)
 	TyUnknown
 )
 
@@ -26,7 +27,7 @@ type ZXType struct {
 	PtrElem *ZXType
 	ArrElem *ZXType
 	ArrSize int
-	Name    string // TyStruct
+	Name    string // TyStruct name
 }
 
 var (
@@ -36,40 +37,57 @@ var (
 	TypStr     = &ZXType{Kind: TyStr}
 	TypChar    = &ZXType{Kind: TyChar}
 	TypVoid    = &ZXType{Kind: TyVoid}
+	TypAny     = &ZXType{Kind: TyAny}    // used for untyped params
 	TypUnknown = &ZXType{Kind: TyUnknown}
 )
 
-func PtrOf(elem *ZXType) *ZXType       { return &ZXType{Kind: TyPtr, PtrElem: elem} }
+func PtrOf(elem *ZXType) *ZXType          { return &ZXType{Kind: TyPtr, PtrElem: elem} }
 func ArrayOf(elem *ZXType, n int) *ZXType { return &ZXType{Kind: TyArray, ArrElem: elem, ArrSize: n} }
-func StructType(name string) *ZXType   { return &ZXType{Kind: TyStruct, Name: name} }
+func StructType(name string) *ZXType      { return &ZXType{Kind: TyStruct, Name: name} }
 
 func (t *ZXType) String() string {
-	if t == nil { return "<nil>" }
+	if t == nil {
+		return "<nil>"
+	}
 	switch t.Kind {
-	case TyInt:    return "int"
-	case TyFloat:  return "float"
-	case TyBool:   return "bool"
-	case TyStr:    return "str"
-	case TyChar:   return "char"
-	case TyVoid:   return "void"
+	case TyInt:     return "int"
+	case TyFloat:   return "float"
+	case TyBool:    return "bool"
+	case TyStr:     return "str"
+	case TyChar:    return "char"
+	case TyVoid:    return "void"
+	case TyAny:     return "any"
 	case TyPtr:
-		if t.PtrElem != nil { return fmt.Sprintf("ptr<%s>", t.PtrElem) }
+		if t.PtrElem != nil {
+			return fmt.Sprintf("*%s", t.PtrElem)
+		}
 		return "ptr"
 	case TyArray:
 		if t.ArrElem != nil {
-			if t.ArrSize > 0 { return fmt.Sprintf("[%d]%s", t.ArrSize, t.ArrElem) }
+			if t.ArrSize > 0 {
+				return fmt.Sprintf("[%d]%s", t.ArrSize, t.ArrElem)
+			}
 			return fmt.Sprintf("[]%s", t.ArrElem)
 		}
 		return "array"
-	case TyStruct: return t.Name
-	default:       return "unknown"
+	case TyStruct:  return t.Name
+	default:        return "unknown"
 	}
 }
 
 func typeEq(a, b *ZXType) bool {
-	if a == nil || b == nil { return false }
-	if a == b { return true }
-	if a.Kind != b.Kind { return false }
+	if a == nil || b == nil {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	if a.Kind == TyAny || b.Kind == TyAny {
+		return true // any is compatible with everything
+	}
+	if a.Kind != b.Kind {
+		return false
+	}
 	switch a.Kind {
 	case TyPtr:    return typeEq(a.PtrElem, b.PtrElem)
 	case TyArray:  return typeEq(a.ArrElem, b.ArrElem)
@@ -79,12 +97,24 @@ func typeEq(a, b *ZXType) bool {
 }
 
 func coercible(from, to *ZXType) bool {
-	if typeEq(from, to) { return true }
-	if from == nil || to == nil { return false }
-	if from.Kind == TyInt   && to.Kind == TyFloat { return true }
-	if from.Kind == TyInt   && to.Kind == TyChar  { return true }
-	if from.Kind == TyChar  && to.Kind == TyInt   { return true }
-	if from.Kind == TyBool  && to.Kind == TyInt   { return true }
+	if typeEq(from, to) {
+		return true
+	}
+	if from == nil || to == nil {
+		return false
+	}
+	// any is always coercible
+	if from.Kind == TyAny || to.Kind == TyAny {
+		return true
+	}
+	if from.Kind == TyUnknown || to.Kind == TyUnknown {
+		return true
+	}
+	if from.Kind == TyInt   && to.Kind == TyFloat  { return true }
+	if from.Kind == TyInt   && to.Kind == TyChar   { return true }
+	if from.Kind == TyChar  && to.Kind == TyInt    { return true }
+	if from.Kind == TyBool  && to.Kind == TyInt    { return true }
+	if from.Kind == TyInt   && to.Kind == TyBool   { return true }
 	// nil -> any pointer
 	if from.Kind == TyPtr && from.PtrElem != nil && from.PtrElem.Kind == TyVoid && to.Kind == TyPtr {
 		return true
@@ -93,7 +123,11 @@ func coercible(from, to *ZXType) bool {
 	if from.Kind == TyPtr && to.Kind == TyPtr && to.PtrElem != nil && to.PtrElem.Kind == TyVoid {
 		return true
 	}
-	// str <-> ptr<char>  (for C interop)
+	// pointer compatibility — same struct
+	if from.Kind == TyPtr && to.Kind == TyPtr {
+		return typeEq(from.PtrElem, to.PtrElem)
+	}
+	// str <-> ptr<char>
 	if from.Kind == TyStr && to.Kind == TyPtr && to.PtrElem != nil && to.PtrElem.Kind == TyChar {
 		return true
 	}
@@ -104,14 +138,17 @@ func coercible(from, to *ZXType) bool {
 }
 
 func isNumeric(t *ZXType) bool {
-	return t != nil && (t.Kind == TyInt || t.Kind == TyFloat || t.Kind == TyChar)
+	if t == nil { return false }
+	return t.Kind == TyInt || t.Kind == TyFloat || t.Kind == TyChar || t.Kind == TyAny
 }
 func isInteger(t *ZXType) bool {
-	return t != nil && (t.Kind == TyInt || t.Kind == TyChar || t.Kind == TyBool)
+	if t == nil { return false }
+	return t.Kind == TyInt || t.Kind == TyChar || t.Kind == TyBool || t.Kind == TyAny
 }
 func isTruthy(t *ZXType) bool {
-	return t != nil && (t.Kind == TyInt || t.Kind == TyBool || t.Kind == TyChar ||
-		t.Kind == TyFloat || t.Kind == TyPtr)
+	if t == nil { return false }
+	return t.Kind == TyInt || t.Kind == TyBool || t.Kind == TyChar ||
+		t.Kind == TyFloat || t.Kind == TyPtr || t.Kind == TyAny
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -123,14 +160,16 @@ type Node interface {
 	nodeTag() string
 }
 
+// ── Top-level ─────────────────────────────────────────────────────────────────
+
 type Program struct {
 	Imports  []*ImportDecl
 	Externs  []*ExternDecl
 	Structs  []*StructDecl
+	Methods  []*MethodDecl  // fn (recv *T) Name(...) -> ret { }
 	TopStmts []Node
 }
 
-// import "stdio.h"
 type ImportDecl struct {
 	Sp    Span
 	Path  string
@@ -139,7 +178,6 @@ type ImportDecl struct {
 func (n *ImportDecl) nodeSpan() Span  { return n.Sp }
 func (n *ImportDecl) nodeTag() string { return "import" }
 
-// extern fn sqrt(x: float) -> float;
 type ExternDecl struct {
 	Sp       Span
 	Name     string
@@ -150,7 +188,7 @@ type ExternDecl struct {
 func (n *ExternDecl) nodeSpan() Span  { return n.Sp }
 func (n *ExternDecl) nodeTag() string { return "extern" }
 
-// struct Foo { x: int, y: float }
+// struct / type X struct — both produce this
 type StructDecl struct {
 	Sp     Span
 	Name   string
@@ -159,7 +197,7 @@ type StructDecl struct {
 func (n *StructDecl) nodeSpan() Span  { return n.Sp }
 func (n *StructDecl) nodeTag() string { return "struct" }
 
-// fn foo(a: int) -> int { }
+// fn foo(params) -> ret { body }
 type FnDecl struct {
 	Sp       Span
 	Name     string
@@ -171,10 +209,29 @@ type FnDecl struct {
 func (n *FnDecl) nodeSpan() Span  { return n.Sp }
 func (n *FnDecl) nodeTag() string { return "fn" }
 
+// fn (recv RecvType) MethodName(params) -> ret { body }
+// emitted as:  RetType  RecvType_MethodName(RecvType* recv, params)
+type MethodDecl struct {
+	Sp         Span
+	RecvName   string   // receiver variable name, e.g. "p"
+	RecvType   string   // struct name, e.g. "Player"
+	RecvPtr    bool     // true if *Player
+	Name       string   // method name
+	Params     []Param
+	Variadic   bool
+	RetType    *ZXType
+	Body       *Block
+}
+func (n *MethodDecl) nodeSpan() Span  { return n.Sp }
+func (n *MethodDecl) nodeTag() string { return "method" }
+
+// Canonical C name for a method: RecvType_MethodName
+func (n *MethodDecl) CName() string { return n.RecvType + "_" + n.Name }
+
 type Param struct {
 	Sp   Span
 	Name string
-	Type *ZXType
+	Type *ZXType // nil or TypAny means untyped
 }
 
 // ── Statements ────────────────────────────────────────────────────────────────
@@ -189,7 +246,7 @@ func (n *Block) nodeTag() string { return "block" }
 type VarDecl struct {
 	Sp           Span
 	Name         string
-	VarType      *ZXType
+	VarType      *ZXType // nil = fully inferred
 	Init         Node
 	IsConst      bool
 	ResolvedType *ZXType
@@ -223,11 +280,31 @@ type WhileStmt struct {
 func (n *WhileStmt) nodeSpan() Span  { return n.Sp }
 func (n *WhileStmt) nodeTag() string { return "while" }
 
+// unless cond { } → while !cond equivalent but single-pass
+type UnlessStmt struct {
+	Sp   Span
+	Cond Node
+	Body *Block
+	Else *Block
+}
+func (n *UnlessStmt) nodeSpan() Span  { return n.Sp }
+func (n *UnlessStmt) nodeTag() string { return "unless" }
+
+// until cond { } → while !cond { }
+type UntilStmt struct {
+	Sp   Span
+	Cond Node
+	Body *Block
+}
+func (n *UntilStmt) nodeSpan() Span  { return n.Sp }
+func (n *UntilStmt) nodeTag() string { return "until" }
+
 type ForRangeStmt struct {
 	Sp   Span
 	Var  string
 	From Node
 	To   Node
+	Step Node // optional, nil = 1
 	Body *Block
 }
 func (n *ForRangeStmt) nodeSpan() Span  { return n.Sp }
@@ -260,6 +337,7 @@ type PrintStmt struct {
 	Sp      Span
 	Args    []Node
 	Newline bool
+	FmtStr  string // if non-empty: use raw printf format
 }
 func (n *PrintStmt) nodeSpan() Span  { return n.Sp }
 func (n *PrintStmt) nodeTag() string { return "print" }
@@ -273,11 +351,11 @@ func (n *ExitStmt) nodeTag() string { return "exit" }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
-type IntLit struct   { Sp Span; Val int64 }
+type IntLit   struct { Sp Span; Val int64 }
 type FloatLit struct { Sp Span; Val float64 }
-type BoolLit struct  { Sp Span; Val bool }
-type StrLit struct   { Sp Span; Val string }
-type NilLit struct   { Sp Span }
+type BoolLit  struct { Sp Span; Val bool }
+type StrLit   struct { Sp Span; Val string }
+type NilLit   struct { Sp Span }
 
 func (n *IntLit)   nodeSpan() Span  { return n.Sp }
 func (n *IntLit)   nodeTag() string { return "int" }
@@ -362,11 +440,13 @@ type AddrExpr struct {
 func (n *AddrExpr) nodeSpan() Span  { return n.Sp }
 func (n *AddrExpr) nodeTag() string { return "addr" }
 
+// new Foo { field: val }  or  &Foo{ field: val }  (heap-allocated pointer)
 type StructInit struct {
-	Sp     Span
-	Name   string
-	Fields []FieldInit
-	Typ    *ZXType
+	Sp      Span
+	Name    string
+	Fields  []FieldInit
+	HeapAlloc bool   // true = malloc + return pointer
+	Typ     *ZXType
 }
 type FieldInit struct {
 	Sp    Span
@@ -391,3 +471,14 @@ type SizeofExpr struct {
 }
 func (n *SizeofExpr) nodeSpan() Span  { return n.Sp }
 func (n *SizeofExpr) nodeTag() string { return "sizeof" }
+
+// p.Method(args) — method call sugar, resolved at emit to StructType_Method(p, args)
+type MethodCallExpr struct {
+	Sp     Span
+	Recv   Node
+	Method string
+	Args   []Node
+	Typ    *ZXType
+}
+func (n *MethodCallExpr) nodeSpan() Span  { return n.Sp }
+func (n *MethodCallExpr) nodeTag() string { return "methodcall" }

@@ -6,37 +6,30 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Known C stdlib functions — do NOT re-declare these as extern
-//  (they're already declared by the #include headers)
+//  Known C stdlib — skip re-declaring these even if user writes extern fn
 // ─────────────────────────────────────────────────────────────────────────────
 
 var knownCFuncs = map[string]bool{
-	// stdio.h
 	"printf": true, "fprintf": true, "sprintf": true, "snprintf": true,
-	"scanf":  true, "fscanf":  true, "sscanf":  true,
-	"fopen":  true, "fclose":  true, "fread":   true, "fwrite":  true,
-	"fgets":  true, "fputs":   true, "feof":    true, "fflush":  true,
-	"puts":   true, "getchar": true, "putchar": true, "getc":    true, "putc": true,
+	"scanf": true, "fscanf": true, "sscanf": true,
+	"fopen": true, "fclose": true, "fread": true, "fwrite": true,
+	"fgets": true, "fputs": true, "feof": true, "fflush": true,
+	"puts": true, "getchar": true, "putchar": true, "getc": true, "putc": true,
 	"perror": true,
-	// stdlib.h
-	"malloc":  true, "calloc":  true, "realloc": true, "free":    true,
-	"exit":    true, "abort":   true, "atoi":    true, "atof":    true, "atol": true,
-	"rand":    true, "srand":   true, "abs":     true, "labs":    true,
-	"strtol":  true, "strtod":  true, "qsort":   true, "bsearch": true,
-	// string.h
-	"strlen":  true, "strcpy":  true, "strncpy": true, "strcat":  true, "strncat": true,
-	"strcmp":  true, "strncmp": true, "strchr":  true, "strrchr": true, "strstr": true,
-	"memcpy":  true, "memmove": true, "memset":  true, "memcmp":  true,
-	// math.h
-	"sqrt": true, "pow":   true, "fabs": true, "floor": true, "ceil": true,
-	"sin":  true, "cos":   true, "tan":  true, "asin":  true, "acos": true, "atan": true,
-	"atan2":true, "exp":   true, "log":  true, "log2":  true, "log10":true,
-	"fmod": true, "round": true, "trunc":true,
-	// ctype.h
-	"isalpha":true, "isdigit":true, "isspace":true, "isupper":true, "islower":true,
-	"toupper":true, "tolower":true,
-	// time.h
-	"time":  true, "clock": true, "difftime": true,
+	"malloc": true, "calloc": true, "realloc": true, "free": true,
+	"exit": true, "abort": true, "atoi": true, "atof": true, "atol": true,
+	"rand": true, "srand": true, "abs": true, "labs": true,
+	"strtol": true, "strtod": true, "qsort": true, "bsearch": true,
+	"strlen": true, "strcpy": true, "strncpy": true, "strcat": true, "strncat": true,
+	"strcmp": true, "strncmp": true, "strchr": true, "strrchr": true, "strstr": true,
+	"memcpy": true, "memmove": true, "memset": true, "memcmp": true,
+	"sqrt": true, "pow": true, "fabs": true, "floor": true, "ceil": true,
+	"sin": true, "cos": true, "tan": true, "asin": true, "acos": true, "atan": true,
+	"atan2": true, "exp": true, "log": true, "log2": true, "log10": true,
+	"fmod": true, "round": true, "trunc": true,
+	"isalpha": true, "isdigit": true, "isspace": true, "isupper": true, "islower": true,
+	"toupper": true, "tolower": true,
+	"time": true, "clock": true, "difftime": true,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,7 +47,6 @@ func Emit(prog *Program) string {
 	return e.sb.String()
 }
 
-func (e *Emitter) w(s string) { e.sb.WriteString(s) }
 func (e *Emitter) ln(f string, args ...any) {
 	e.sb.WriteString(strings.Repeat("    ", e.indent))
 	if len(args) > 0 {
@@ -74,59 +66,65 @@ func (e *Emitter) emitProgram(prog *Program) {
 	e.ln("#include <stdbool.h>")
 	e.ln("")
 
-	// user imports
 	for _, imp := range prog.Imports {
 		e.ln("#include <%s>", imp.Path)
 	}
-	if len(prog.Imports) > 0 { e.ln("") }
+	if len(prog.Imports) > 0 {
+		e.ln("")
+	}
 
-	// struct declarations
+	// struct typedefs
 	for _, s := range prog.Structs {
 		e.emitStruct(s)
 	}
 
-	// extern function prototypes —— SKIP any that are known C stdlib funcs
-	// because they are already declared via the #include headers above
-	externEmitted := 0
+	// extern prototypes (skip known stdlib)
 	for _, ext := range prog.Externs {
-		if knownCFuncs[ext.Name] {
-			continue // already declared by header
+		if !knownCFuncs[ext.Name] {
+			e.emitExternProto(ext)
 		}
-		e.emitExternProto(ext)
-		externEmitted++
 	}
-	if externEmitted > 0 { e.ln("") }
+	if len(prog.Externs) > 0 {
+		e.ln("")
+	}
 
 	// forward-declare user functions
-	fwdEmitted := 0
 	for _, stmt := range prog.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok && fn.Name != "main" {
 			e.emitFnProto(fn)
-			fwdEmitted++
 		}
 	}
-	if fwdEmitted > 0 { e.ln("") }
+	// forward-declare methods
+	for _, m := range prog.Methods {
+		e.emitMethodProto(m)
+	}
+	e.ln("")
 
-	// collect top-level statements vs function declarations
+	// function bodies
 	var mainStmts []Node
-	var fnDecls   []*FnDecl
-	var hasUserMain bool
+	var fnDecls []*FnDecl
+	hasUserMain := false
 	for _, stmt := range prog.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok {
 			fnDecls = append(fnDecls, fn)
-			if fn.Name == "main" { hasUserMain = true }
+			if fn.Name == "main" {
+				hasUserMain = true
+			}
 		} else {
 			mainStmts = append(mainStmts, stmt)
 		}
 	}
-
-	// emit function bodies
 	for _, fn := range fnDecls {
 		e.emitFnFull(fn)
 		e.ln("")
 	}
+	// method bodies
+	for _, m := range prog.Methods {
+		e.emitMethodFull(m)
+		e.ln("")
+	}
 
-	// wrap top-level stmts in main() if no user-defined main
+	// wrap top-level stmts in main()
 	if !hasUserMain {
 		e.ln("int main(int argc, char **argv) {")
 		e.indent++
@@ -139,10 +137,12 @@ func (e *Emitter) emitProgram(prog *Program) {
 	}
 }
 
-// ── Types → C ─────────────────────────────────────────────────────────────────
+// ── C type mapping ────────────────────────────────────────────────────────────
 
 func cType(t *ZXType) string {
-	if t == nil { return "void" }
+	if t == nil {
+		return "long long"
+	}
 	switch t.Kind {
 	case TyInt:    return "long long"
 	case TyFloat:  return "double"
@@ -150,34 +150,44 @@ func cType(t *ZXType) string {
 	case TyStr:    return "const char*"
 	case TyChar:   return "char"
 	case TyVoid:   return "void"
+	case TyAny:    return "long long" // default untyped = long long
 	case TyPtr:
-		if t.PtrElem != nil { return cType(t.PtrElem) + "*" }
+		if t.PtrElem != nil {
+			return cType(t.PtrElem) + "*"
+		}
 		return "void*"
 	case TyArray:
-		if t.ArrElem != nil { return cType(t.ArrElem) }
+		if t.ArrElem != nil {
+			return cType(t.ArrElem)
+		}
 		return "void*"
 	case TyStruct: return t.Name
-	default:       return "void"
+	default:       return "long long"
 	}
 }
 
-// For declarations that need the array size suffix: int arr[10]
 func cTypeDecl(t *ZXType, name string) string {
 	if t != nil && t.Kind == TyArray {
 		size := ""
-		if t.ArrSize > 0 { size = fmt.Sprintf("%d", t.ArrSize) }
+		if t.ArrSize > 0 {
+			size = fmt.Sprintf("%d", t.ArrSize)
+		}
 		return fmt.Sprintf("%s %s[%s]", cType(t.ArrElem), name, size)
 	}
 	return fmt.Sprintf("%s %s", cType(t), name)
 }
 
-// ── Structs ───────────────────────────────────────────────────────────────────
+// ── Struct ────────────────────────────────────────────────────────────────────
 
 func (e *Emitter) emitStruct(s *StructDecl) {
 	e.ln("typedef struct %s {", s.Name)
 	e.indent++
 	for _, f := range s.Fields {
-		e.ln("%s;", cTypeDecl(f.Type, f.Name))
+		t := f.Type
+		if t == nil {
+			t = TypAny
+		}
+		e.ln("%s;", cTypeDecl(t, f.Name))
 	}
 	e.indent--
 	e.ln("} %s;", s.Name)
@@ -187,39 +197,21 @@ func (e *Emitter) emitStruct(s *StructDecl) {
 // ── Extern proto ──────────────────────────────────────────────────────────────
 
 func (e *Emitter) emitExternProto(ext *ExternDecl) {
-	params := buildParamStr(ext.Params, ext.Variadic)
-	e.ln("extern %s %s(%s);", cType(ext.RetType), ext.Name, params)
+	e.ln("extern %s %s(%s);", cType(ext.RetType), ext.Name, buildParamStr(ext.Params, ext.Variadic))
 }
 
-// ── Function proto ────────────────────────────────────────────────────────────
+// ── Function proto / body ─────────────────────────────────────────────────────
 
 func (e *Emitter) emitFnProto(fn *FnDecl) {
-	params := buildParamStr(fn.Params, fn.Variadic)
-	e.ln("%s %s(%s);", cType(fn.RetType), fn.Name, params)
+	e.ln("%s %s(%s);", cType(fn.RetType), fn.Name, buildParamStr(fn.Params, fn.Variadic))
 }
-
-func buildParamStr(params []Param, variadic bool) string {
-	if len(params) == 0 {
-		if variadic { return "..." }
-		return "void"
-	}
-	parts := make([]string, len(params))
-	for i, p := range params {
-		parts[i] = cTypeDecl(p.Type, p.Name)
-	}
-	if variadic { parts = append(parts, "...") }
-	return strings.Join(parts, ", ")
-}
-
-// ── Function full definition ──────────────────────────────────────────────────
 
 func (e *Emitter) emitFnFull(fn *FnDecl) {
-	var sig string
+	sig := ""
 	if fn.Name == "main" {
 		sig = "int main(int argc, char **argv)"
 	} else {
-		params := buildParamStr(fn.Params, fn.Variadic)
-		sig = fmt.Sprintf("%s %s(%s)", cType(fn.RetType), fn.Name, params)
+		sig = fmt.Sprintf("%s %s(%s)", cType(fn.RetType), fn.Name, buildParamStr(fn.Params, fn.Variadic))
 	}
 	e.ln("%s {", sig)
 	e.indent++
@@ -233,24 +225,78 @@ func (e *Emitter) emitFnFull(fn *FnDecl) {
 	e.ln("}")
 }
 
+// ── Method proto / body ───────────────────────────────────────────────────────
+
+func (e *Emitter) emitMethodProto(m *MethodDecl) {
+	e.ln("%s %s(%s);", cType(m.RetType), m.CName(), methodParamStr(m))
+}
+
+func (e *Emitter) emitMethodFull(m *MethodDecl) {
+	e.ln("%s %s(%s) {", cType(m.RetType), m.CName(), methodParamStr(m))
+	e.indent++
+	for _, s := range m.Body.Stmts {
+		e.emitStmt(s)
+	}
+	e.indent--
+	e.ln("}")
+}
+
+func methodParamStr(m *MethodDecl) string {
+	// first param: the receiver
+	recvTyp := m.RecvType
+	if m.RecvPtr {
+		recvTyp = m.RecvType + "*"
+	}
+	parts := []string{recvTyp + " " + m.RecvName}
+	for _, p := range m.Params {
+		parts = append(parts, cTypeDecl(p.Type, p.Name))
+	}
+	if m.Variadic {
+		parts = append(parts, "...")
+	}
+	return strings.Join(parts, ", ")
+}
+
+func buildParamStr(params []Param, variadic bool) string {
+	if len(params) == 0 {
+		if variadic {
+			return "..."
+		}
+		return "void"
+	}
+	parts := make([]string, len(params))
+	for i, p := range params {
+		parts[i] = cTypeDecl(p.Type, p.Name)
+	}
+	if variadic {
+		parts = append(parts, "...")
+	}
+	return strings.Join(parts, ", ")
+}
+
 // ── Statements ────────────────────────────────────────────────────────────────
 
 func (e *Emitter) emitStmt(n Node) {
-	if n == nil { return }
+	if n == nil {
+		return
+	}
 	switch s := n.(type) {
 	case *VarDecl:      e.emitVarDecl(s)
 	case *ReturnStmt:   e.emitReturn(s)
 	case *IfStmt:       e.emitIf(s)
+	case *UnlessStmt:   e.emitUnless(s)
 	case *WhileStmt:    e.emitWhile(s)
+	case *UntilStmt:    // until cond { } → while (!cond) { }
+		e.ln("while (!(%s)) {", e.emitExpr(s.Cond))
+		e.indent++
+		for _, st := range s.Body.Stmts { e.emitStmt(st) }
+		e.indent--
+		e.ln("}")
 	case *ForRangeStmt: e.emitForRange(s)
-	case *AssignStmt:   e.emitAssign(s)
-	case *ExprStmt:
-		expr := e.emitExpr(s.Expr)
-		e.ln("%s;", expr)
+	case *AssignStmt:   e.ln("%s %s %s;", e.emitExpr(s.LHS), s.Op, e.emitExpr(s.Value))
+	case *ExprStmt:     e.ln("%s;", e.emitExpr(s.Expr))
 	case *PrintStmt:    e.emitPrint(s)
-	case *ExitStmt:
-		code := e.emitExpr(s.Code)
-		e.ln("exit((int)(%s));", code)
+	case *ExitStmt:     e.ln("exit((int)(%s));", e.emitExpr(s.Code))
 	case *BreakStmt:    e.ln("break;")
 	case *ContinueStmt: e.ln("continue;")
 	case *FnDecl:       e.emitFnFull(s)
@@ -266,19 +312,14 @@ func (e *Emitter) emitStmt(n Node) {
 func (e *Emitter) emitVarDecl(v *VarDecl) {
 	typ := v.ResolvedType
 	if typ == nil { typ = v.VarType }
-	if typ == nil { typ = TypInt }
+	if typ == nil { typ = TypAny }
 
 	prefix := ""
-	if v.IsConst { prefix = "const " }
-
+	if v.IsConst {
+		prefix = "const "
+	}
 	if v.Init != nil {
-		init := e.emitExpr(v.Init)
-		if typ.Kind == TyArray {
-			// arrays: int arr[10] = {1, 2, 3}
-			e.ln("%s%s = %s;", prefix, cTypeDecl(typ, v.Name), init)
-		} else {
-			e.ln("%s%s = %s;", prefix, cTypeDecl(typ, v.Name), init)
-		}
+		e.ln("%s%s = %s;", prefix, cTypeDecl(typ, v.Name), e.emitExpr(v.Init))
 	} else {
 		e.ln("%s%s;", prefix, cTypeDecl(typ, v.Name))
 	}
@@ -312,6 +353,20 @@ func (e *Emitter) emitIf(s *IfStmt) {
 	e.ln("}")
 }
 
+func (e *Emitter) emitUnless(s *UnlessStmt) {
+	e.ln("if (!(%s)) {", e.emitExpr(s.Cond))
+	e.indent++
+	for _, st := range s.Body.Stmts { e.emitStmt(st) }
+	e.indent--
+	if s.Else != nil {
+		e.ln("} else {")
+		e.indent++
+		for _, st := range s.Else.Stmts { e.emitStmt(st) }
+		e.indent--
+	}
+	e.ln("}")
+}
+
 func (e *Emitter) emitWhile(s *WhileStmt) {
 	e.ln("while (%s) {", e.emitExpr(s.Cond))
 	e.indent++
@@ -330,11 +385,20 @@ func (e *Emitter) emitForRange(s *ForRangeStmt) {
 	e.ln("}")
 }
 
-func (e *Emitter) emitAssign(s *AssignStmt) {
-	e.ln("%s %s %s;", e.emitExpr(s.LHS), s.Op, e.emitExpr(s.Value))
-}
-
 func (e *Emitter) emitPrint(s *PrintStmt) {
+	if s.FmtStr == "stderr" {
+		// die message → fprintf(stderr, ...)
+		if len(s.Args) == 0 {
+			if s.Newline { e.ln(`fprintf(stderr, "\n");`) }
+			return
+		}
+		arg := e.emitExpr(s.Args[0])
+		typ := exprType(s.Args[0])
+		fmt_ := fmtFor(typ)
+		if s.Newline { fmt_ += "\\n" }
+		e.ln(`fprintf(stderr, "%s", %s);`, fmt_, arg)
+		return
+	}
 	if len(s.Args) == 0 {
 		if s.Newline { e.ln(`printf("\n");`) }
 		return
@@ -342,13 +406,10 @@ func (e *Emitter) emitPrint(s *PrintStmt) {
 	var fmts []string
 	var args []string
 	for _, a := range s.Args {
-		typ := exprType(a)
-		fmts = append(fmts, fmtFor(typ))
+		fmts = append(fmts, fmtFor(exprType(a)))
 		args = append(args, e.emitExpr(a))
 	}
-	sep := " "
-	if s.Newline { sep = "" }
-	fmtStr := strings.Join(fmts, sep)
+	fmtStr := strings.Join(fmts, " ")
 	if s.Newline { fmtStr += "\\n" }
 	e.ln(`printf("%s", %s);`, fmtStr, strings.Join(args, ", "))
 }
@@ -358,27 +419,18 @@ func (e *Emitter) emitPrint(s *PrintStmt) {
 func (e *Emitter) emitExpr(n Node) string {
 	if n == nil { return "0" }
 	switch ex := n.(type) {
-	case *IntLit:
-		return fmt.Sprintf("%dLL", ex.Val)
+	case *IntLit:   return fmt.Sprintf("%dLL", ex.Val)
 	case *FloatLit:
 		s := fmt.Sprintf("%g", ex.Val)
-		if !strings.Contains(s, ".") && !strings.Contains(s, "e") {
-			s += ".0"
-		}
+		if !strings.Contains(s, ".") && !strings.Contains(s, "e") { s += ".0" }
 		return s
 	case *BoolLit:
-		if ex.Val { return "1" }
-		return "0"
-	case *StrLit:
-		return cEscapeString(ex.Val)
-	case *NilLit:
-		return "NULL"
-	case *Ident:
-		return ex.Name
+		if ex.Val { return "1" }; return "0"
+	case *StrLit:   return cEscapeString(ex.Val)
+	case *NilLit:   return "NULL"
+	case *Ident:    return ex.Name
 	case *BinExpr:
-		l := e.emitExpr(ex.LHS)
-		r := e.emitExpr(ex.RHS)
-		return fmt.Sprintf("(%s %s %s)", l, ex.Op, r)
+		return fmt.Sprintf("(%s %s %s)", e.emitExpr(ex.LHS), ex.Op, e.emitExpr(ex.RHS))
 	case *UnaryExpr:
 		return fmt.Sprintf("(%s%s)", ex.Op, e.emitExpr(ex.Operand))
 	case *CallExpr:
@@ -386,11 +438,29 @@ func (e *Emitter) emitExpr(n Node) string {
 		var argStrs []string
 		for _, a := range ex.Args { argStrs = append(argStrs, e.emitExpr(a)) }
 		return fmt.Sprintf("%s(%s)", fn, strings.Join(argStrs, ", "))
+	case *MethodCallExpr:
+		// p.Method(args)  →  RecvType_Method(p, args)
+		recvStr := e.emitExpr(ex.Recv)
+		recvType := exprType(ex.Recv)
+		structName := ""
+		if recvType != nil {
+			if recvType.Kind == TyStruct { structName = recvType.Name }
+			if recvType.Kind == TyPtr && recvType.PtrElem != nil && recvType.PtrElem.Kind == TyStruct {
+				structName = recvType.PtrElem.Name
+			}
+		}
+		var argStrs []string
+		argStrs = append(argStrs, recvStr)
+		for _, a := range ex.Args { argStrs = append(argStrs, e.emitExpr(a)) }
+		if structName != "" {
+			return fmt.Sprintf("%s_%s(%s)", structName, ex.Method, strings.Join(argStrs, ", "))
+		}
+		// fallback: emit as regular call
+		return fmt.Sprintf("%s(%s)", ex.Method, strings.Join(argStrs, ", "))
 	case *IndexExpr:
 		return fmt.Sprintf("%s[%s]", e.emitExpr(ex.Obj), e.emitExpr(ex.Idx))
 	case *FieldExpr:
 		obj := e.emitExpr(ex.Obj)
-		// pointer-to-struct: use ->
 		objType := exprType(ex.Obj)
 		if objType != nil && objType.Kind == TyPtr {
 			return fmt.Sprintf("%s->%s", obj, ex.Field)
@@ -399,11 +469,18 @@ func (e *Emitter) emitExpr(n Node) string {
 	case *CastExpr:
 		return fmt.Sprintf("((%s)(%s))", cType(ex.ToType), e.emitExpr(ex.Operand))
 	case *AddrExpr:
-		if ex.Deref {
-			return fmt.Sprintf("(*%s)", e.emitExpr(ex.Operand))
-		}
+		if ex.Deref { return fmt.Sprintf("(*%s)", e.emitExpr(ex.Operand)) }
 		return fmt.Sprintf("(&%s)", e.emitExpr(ex.Operand))
 	case *StructInit:
+		if ex.HeapAlloc {
+			// malloc + compound literal copy
+			var parts []string
+			for _, fi := range ex.Fields {
+				parts = append(parts, fmt.Sprintf(".%s = %s", fi.Name, e.emitExpr(fi.Value)))
+			}
+			return fmt.Sprintf("((%s*)memcpy(malloc(sizeof(%s)), &(%s){%s}, sizeof(%s)))",
+				ex.Name, ex.Name, ex.Name, strings.Join(parts, ", "), ex.Name)
+		}
 		var parts []string
 		for _, fi := range ex.Fields {
 			parts = append(parts, fmt.Sprintf(".%s = %s", fi.Name, e.emitExpr(fi.Value)))
@@ -420,7 +497,7 @@ func (e *Emitter) emitExpr(n Node) string {
 	}
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 func fmtFor(t *ZXType) string {
 	if t == nil { return "%s" }
@@ -437,25 +514,25 @@ func fmtFor(t *ZXType) string {
 
 func exprType(n Node) *ZXType {
 	switch e := n.(type) {
-	case *IntLit:    return TypInt
-	case *FloatLit:  return TypFloat
-	case *BoolLit:   return TypBool
-	case *StrLit:    return TypStr
-	case *Ident:     return e.Typ
-	case *BinExpr:   return e.Typ
-	case *UnaryExpr: return e.Typ
-	case *CallExpr:  return e.Typ
-	case *CastExpr:  return e.Typ
-	case *AddrExpr:  return e.Typ
-	case *FieldExpr: return e.Typ
-	case *IndexExpr: return e.Typ
-	case *ArrayLit:  return e.Typ
-	case *SizeofExpr:return TypInt
-	default:         return TypUnknown
+	case *IntLit:         return TypInt
+	case *FloatLit:       return TypFloat
+	case *BoolLit:        return TypBool
+	case *StrLit:         return TypStr
+	case *Ident:          return e.Typ
+	case *BinExpr:        return e.Typ
+	case *UnaryExpr:      return e.Typ
+	case *CallExpr:       return e.Typ
+	case *MethodCallExpr: return e.Typ
+	case *CastExpr:       return e.Typ
+	case *AddrExpr:       return e.Typ
+	case *FieldExpr:      return e.Typ
+	case *IndexExpr:      return e.Typ
+	case *ArrayLit:       return e.Typ
+	case *SizeofExpr:     return TypInt
+	default:              return TypAny
 	}
 }
 
-// cEscapeString turns a Go string into a C string literal (with quotes)
 func cEscapeString(s string) string {
 	var sb strings.Builder
 	sb.WriteByte('"')
@@ -467,8 +544,7 @@ func cEscapeString(s string) string {
 		case '\t': sb.WriteString(`\t`)
 		case '\r': sb.WriteString(`\r`)
 		case 0:    sb.WriteString(`\0`)
-		default:
-			sb.WriteRune(r)
+		default:   sb.WriteRune(r)
 		}
 	}
 	sb.WriteByte('"')

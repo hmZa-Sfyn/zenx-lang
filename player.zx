@@ -1,0 +1,154 @@
+// player.zx — Go-style structs, methods, optional types, Perl keywords
+// Shows: type X struct, fn (recv *T) Method, &Struct{}, say, my, unless, until
+
+import "stdio.h"
+extern fn printf(fmt: str, ...) -> int
+
+// ── Go-style struct declaration ──────────────────────────────────────────────
+
+type Player struct {
+    name      str
+    level     int
+    health    float
+    maxHealth float
+    isAlive   bool
+}
+
+type Monster struct {
+    name    str
+    damage  int
+    health  int
+}
+
+// ── Constructor (returns pointer, like Go's New* idiom) ──────────────────────
+
+fn NewPlayer(name: str) -> *Player {
+    return &Player{
+        name:      name,
+        level:     1,
+        health:    100.0,
+        maxHealth: 100.0,
+        isAlive:   1
+    }
+}
+
+fn NewMonster(name: str, damage: int, health: int) -> *Monster {
+    return &Monster{
+        name:   name,
+        damage: damage,
+        health: health
+    }
+}
+
+// ── Methods ───────────────────────────────────────────────────────────────────
+
+fn (p *Player) TakeDamage(amount: float) {
+    p->health = p->health - amount
+    if p->health <= 0.0 {
+        p->health = 0.0
+        p->isAlive = 0
+    }
+}
+
+fn (p *Player) Heal(amount: float) {
+    unless p->isAlive == 0 {
+        p->health = p->health + amount
+        if p->health > p->maxHealth {
+            p->health = p->maxHealth
+        }
+    }
+}
+
+fn (p *Player) LevelUp() {
+    p->level += 1
+    p->maxHealth = p->maxHealth + 20.0
+    p->health = p->maxHealth
+    printf("  *** %s leveled up to %lld! ***\n", p->name, p->level)
+}
+
+fn (p *Player) Status() {
+    let alive: str = "alive"
+    if p->isAlive == 0 { alive = "dead"; }
+    printf("[%s] Lv%lld  HP: %g/%g  (%s)\n",
+        p->name, p->level, p->health, p->maxHealth, alive)
+}
+
+fn (m *Monster) TakeDamage(amount: int) {
+    m->health -= amount
+}
+
+fn (m *Monster) IsAlive() -> bool {
+    return m->health > 0
+}
+
+// ── Optional types — Perl style ──────────────────────────────────────────────
+
+// No types on params — they default to long long (int)
+fn add(a, b, c) {
+    return a + b + c
+}
+
+fn greet(name) {
+    say "Hello, " name "!"   # Perl-style say without parens
+}
+
+// ── Main game loop ────────────────────────────────────────────────────────────
+
+say "=== ZX RPG Demo ==="
+
+my hero = NewPlayer("Hamza")
+my boss = NewMonster("Dragon", 15, 80)
+
+say "-- Initial state --"
+hero->Status()
+printf("[%s] HP: %lld  Damage: %lld\n", boss->name, boss->health, boss->damage)
+
+say "\n-- Battle! --"
+
+let round: int = 1
+until boss->IsAlive() == 0 {
+    printf("\n[Round %lld]\n", round)
+
+    // Player attacks
+    boss->TakeDamage(25)
+    printf("  %s attacks %s for 25 damage! (%s has %lld HP left)\n",
+        hero->name, boss->name, boss->name, boss->health)
+
+    // Boss attacks if still alive
+    if boss->IsAlive() {
+        hero->TakeDamage(float(boss->damage))
+        printf("  %s attacks %s for %lld damage!\n",
+            boss->name, hero->name, boss->damage)
+    }
+
+    hero->Status()
+    round += 1
+
+    if round > 10 { break; }
+}
+
+say "\n-- Battle Over --"
+if boss->IsAlive() == 0 {
+    say "You defeated the Dragon!"
+    hero->LevelUp()
+} else {
+    say "The Dragon survived..."
+}
+hero->Status()
+
+say "\n-- Optional types demo --"
+println add(10, 20, 30)
+greet("World")
+
+say "\n-- Perl-style keywords --"
+my x = 42
+our MAX_SCORE = 100
+say x
+say MAX_SCORE
+
+for i in 0..5 {
+    next if i == 2    # this won't parse yet, just showing the intent
+    println i
+}
+
+say "done!"
