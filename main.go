@@ -111,9 +111,9 @@ func printUsage() {
   @x         address-of    (replaces &x)
   ^x         dereference   (replaces *x)
   p->field   field via ref (preferred)
-  p.field    also works    (gets a friendly 😄 warning)
+  p.field    also works    
 
-%s`,
+%s%s`,
 		colorCyan, colorReset,
 		colorBold+colorYellow, version, colorReset,
 		colorBold+colorCyan, colorReset,
