@@ -118,6 +118,9 @@ flags = flags & ~0x2;      // clear bit 1
 printf("flags = %lld\n", flags);
 
 // sizeof
+
+printf("sizeof long    = %lld bytes\n", sizeof(long));
+printf("sizeof short    = %lld bytes\n", sizeof(short));
 printf("sizeof int    = %lld bytes\n", sizeof(int));
 printf("sizeof float  = %lld bytes\n", sizeof(float));
 printf("sizeof char   = %lld bytes\n", sizeof(char));
