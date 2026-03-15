@@ -33,8 +33,12 @@ func (s *Scope) define(name string, vi *VarInfo) {
 }
 
 func (s *Scope) lookup(name string) *VarInfo {
-	if vi, ok := s.vars[name]; ok { return vi }
-	if s.parent != nil { return s.parent.lookup(name) }
+	if vi, ok := s.vars[name]; ok {
+		return vi
+	}
+	if s.parent != nil {
+		return s.parent.lookup(name)
+	}
 	return nil
 }
 
@@ -43,8 +47,12 @@ func (s *Scope) lookupLocal(name string) *VarInfo {
 }
 
 func (s *Scope) inLoop() bool {
-	if s == nil { return false }
-	if s.kind == "loop" { return true }
+	if s == nil {
+		return false
+	}
+	if s.kind == "loop" {
+		return true
+	}
 	return s.parent.inLoop()
 }
 
@@ -142,7 +150,9 @@ func TypeCheck(prog *Program, src, file string) bool {
 }
 
 func (tc *TypeChecker) currentFn() *FnDecl {
-	if len(tc.fnStack) == 0 { return nil }
+	if len(tc.fnStack) == 0 {
+		return nil
+	}
 	return tc.fnStack[len(tc.fnStack)-1]
 }
 
@@ -178,36 +188,54 @@ func (tc *TypeChecker) checkFn(fn *FnDecl) {
 }
 
 func (tc *TypeChecker) checkBlock(b *Block) {
-	if b == nil { return }
+	if b == nil {
+		return
+	}
 	saved := tc.scope
 	tc.scope = newScope(saved, "block")
-	for _, s := range b.Stmts { tc.checkStmt(s) }
+	for _, s := range b.Stmts {
+		tc.checkStmt(s)
+	}
 	tc.scope = saved
 }
 
 func (tc *TypeChecker) checkBlockInLoop(b *Block) {
-	if b == nil { return }
+	if b == nil {
+		return
+	}
 	saved := tc.scope
 	tc.scope = newScope(saved, "loop")
-	for _, s := range b.Stmts { tc.checkStmt(s) }
+	for _, s := range b.Stmts {
+		tc.checkStmt(s)
+	}
 	tc.scope = saved
 }
 
 func (tc *TypeChecker) checkStmt(n Node) {
-	if n == nil { return }
+	if n == nil {
+		return
+	}
 	switch s := n.(type) {
-	case *VarDecl:      tc.checkVarDecl(s)
-	case *ReturnStmt:   tc.checkReturn(s)
-	case *IfStmt:       tc.checkIf(s)
-	case *WhileStmt:    tc.checkWhile(s)
-	case *ForRangeStmt: tc.checkForRange(s)
-	case *AssignStmt:   tc.checkAssign(s)
+	case *VarDecl:
+		tc.checkVarDecl(s)
+	case *ReturnStmt:
+		tc.checkReturn(s)
+	case *IfStmt:
+		tc.checkIf(s)
+	case *WhileStmt:
+		tc.checkWhile(s)
+	case *ForRangeStmt:
+		tc.checkForRange(s)
+	case *AssignStmt:
+		tc.checkAssign(s)
 	case *ExprStmt:
 		t := tc.inferExpr(s.Expr)
 		// E05: discarding non-void call is fine; warn on discarding values
 		_ = t
 	case *PrintStmt:
-		for _, a := range s.Args { tc.inferExpr(a) }
+		for _, a := range s.Args {
+			tc.inferExpr(a)
+		}
 	case *ExitStmt:
 		t := tc.inferExpr(s.Code)
 		if !isInteger(t) {
@@ -361,7 +389,9 @@ func (tc *TypeChecker) checkIf(s *IfStmt) {
 		}
 		tc.checkBlock(el.Body)
 	}
-	if s.Else != nil { tc.checkBlock(s.Else) }
+	if s.Else != nil {
+		tc.checkBlock(s.Else)
+	}
 }
 
 func (tc *TypeChecker) checkWhile(s *WhileStmt) {
@@ -378,7 +408,7 @@ func (tc *TypeChecker) checkWhile(s *WhileStmt) {
 
 func (tc *TypeChecker) checkForRange(s *ForRangeStmt) {
 	fromT := tc.inferExpr(s.From)
-	toT   := tc.inferExpr(s.To)
+	toT := tc.inferExpr(s.To)
 	if !isInteger(fromT) && fromT.Kind != TyUnknown {
 		// E20: non-integer range start
 		errAt(s.From.nodeSpan(),
@@ -396,7 +426,9 @@ func (tc *TypeChecker) checkForRange(s *ForRangeStmt) {
 	saved := tc.scope
 	tc.scope = newScope(saved, "loop")
 	tc.scope.define(s.Var, &VarInfo{Type: TypInt, Sp: s.Sp})
-	for _, st := range s.Body.Stmts { tc.checkStmt(st) }
+	for _, st := range s.Body.Stmts {
+		tc.checkStmt(st)
+	}
 	tc.scope = saved
 }
 
@@ -460,15 +492,23 @@ func (tc *TypeChecker) checkAssign(s *AssignStmt) {
 // ── Expression type inference ─────────────────────────────────────────────────
 
 func (tc *TypeChecker) inferExpr(n Node) *ZXType {
-	if n == nil { return TypVoid }
+	if n == nil {
+		return TypVoid
+	}
 	switch e := n.(type) {
-	case *IntLit:   return TypInt
-	case *FloatLit: return TypFloat
-	case *BoolLit:  return TypBool
-	case *StrLit:   return TypStr
-	case *NilLit:   return PtrOf(TypVoid)
+	case *IntLit:
+		return TypInt
+	case *FloatLit:
+		return TypFloat
+	case *BoolLit:
+		return TypBool
+	case *StrLit:
+		return TypStr
+	case *NilLit:
+		return PtrOf(TypVoid)
 	case *SizeofExpr:
-		e.Typ = TypInt; return TypInt
+		e.Typ = TypInt
+		return TypInt
 
 	case *Ident:
 		vi := tc.scope.lookup(e.Name)
@@ -490,11 +530,16 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 		e.Typ = vi.Type
 		return vi.Type
 
-	case *BinExpr:  return tc.inferBin(e)
-	case *UnaryExpr: return tc.inferUnary(e)
-	case *CallExpr: return tc.inferCall(e)
-	case *IndexExpr: return tc.inferIndex(e)
-	case *FieldExpr: return tc.inferField(e)
+	case *BinExpr:
+		return tc.inferBin(e)
+	case *UnaryExpr:
+		return tc.inferUnary(e)
+	case *CallExpr:
+		return tc.inferCall(e)
+	case *IndexExpr:
+		return tc.inferIndex(e)
+	case *FieldExpr:
+		return tc.inferField(e)
 	case *CastExpr:
 		from := tc.inferExpr(e.Operand)
 		// E28: invalid cast
@@ -519,16 +564,22 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 				e.Typ = inner
 				return inner
 			}
-			if inner.PtrElem == nil { e.Typ = TypVoid; return TypVoid }
+			if inner.PtrElem == nil {
+				e.Typ = TypVoid
+				return TypVoid
+			}
 			e.Typ = inner.PtrElem
 			return inner.PtrElem
 		}
 		e.Typ = PtrOf(inner)
 		return e.Typ
 
-	case *StructInit: return tc.inferStructInit(e)
-	case *ArrayLit:   return tc.inferArrayLit(e)
-	default:          return TypUnknown
+	case *StructInit:
+		return tc.inferStructInit(e)
+	case *ArrayLit:
+		return tc.inferArrayLit(e)
+	default:
+		return TypUnknown
 	}
 }
 
@@ -547,7 +598,8 @@ func (tc *TypeChecker) inferBin(e *BinExpr) *ZXType {
 				tc.ok = false
 			}
 		}
-		e.Typ = TypBool; return TypBool
+		e.Typ = TypBool
+		return TypBool
 
 	case "<", ">", "<=", ">=":
 		if lhs.Kind != TyUnknown && rhs.Kind != TyUnknown {
@@ -559,10 +611,12 @@ func (tc *TypeChecker) inferBin(e *BinExpr) *ZXType {
 				tc.ok = false
 			}
 		}
-		e.Typ = TypBool; return TypBool
+		e.Typ = TypBool
+		return TypBool
 
 	case "&&", "||":
-		e.Typ = TypBool; return TypBool
+		e.Typ = TypBool
+		return TypBool
 
 	case "+":
 		// E32: string + string not supported
@@ -571,7 +625,8 @@ func (tc *TypeChecker) inferBin(e *BinExpr) *ZXType {
 				"E32: '+' cannot be used for string concatenation in ZX",
 				"use printf/sprintf for string formatting, or import string.h for strcat")
 			tc.ok = false
-			e.Typ = TypStr; return TypStr
+			e.Typ = TypStr
+			return TypStr
 		}
 		fallthrough
 	case "-", "*", "/", "%":
@@ -613,9 +668,11 @@ func (tc *TypeChecker) inferBin(e *BinExpr) *ZXType {
 			}
 		}
 		if lhs.Kind == TyFloat || rhs.Kind == TyFloat {
-			e.Typ = TypFloat; return TypFloat
+			e.Typ = TypFloat
+			return TypFloat
 		}
-		e.Typ = lhs; return lhs
+		e.Typ = lhs
+		return lhs
 
 	case "|", "&", "^", "<<", ">>":
 		if lhs.Kind != TyUnknown && !isInteger(lhs) {
@@ -625,10 +682,12 @@ func (tc *TypeChecker) inferBin(e *BinExpr) *ZXType {
 				"bitwise ops only work on int and char")
 			tc.ok = false
 		}
-		e.Typ = TypInt; return TypInt
+		e.Typ = TypInt
+		return TypInt
 
 	default:
-		e.Typ = lhs; return lhs
+		e.Typ = lhs
+		return lhs
 	}
 }
 
@@ -643,7 +702,8 @@ func (tc *TypeChecker) inferUnary(e *UnaryExpr) *ZXType {
 				"use ! only with bool or int expressions")
 			tc.ok = false
 		}
-		e.Typ = TypBool; return TypBool
+		e.Typ = TypBool
+		return TypBool
 	case "-":
 		if inner.Kind != TyUnknown && !isNumeric(inner) {
 			// E38: negate non-numeric
@@ -652,7 +712,8 @@ func (tc *TypeChecker) inferUnary(e *UnaryExpr) *ZXType {
 				"unary minus requires a numeric operand (int or float)")
 			tc.ok = false
 		}
-		e.Typ = inner; return inner
+		e.Typ = inner
+		return inner
 	case "~":
 		if inner.Kind != TyUnknown && !isInteger(inner) {
 			// E39: bitwise not on non-integer
@@ -661,15 +722,19 @@ func (tc *TypeChecker) inferUnary(e *UnaryExpr) *ZXType {
 				"bitwise NOT requires an integer operand")
 			tc.ok = false
 		}
-		e.Typ = TypInt; return TypInt
+		e.Typ = TypInt
+		return TypInt
 	}
-	e.Typ = inner; return inner
+	e.Typ = inner
+	return inner
 }
 
 func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 	// resolve callee name
 	var fnName string
-	if id, ok := e.Func.(*Ident); ok { fnName = id.Name }
+	if id, ok := e.Func.(*Ident); ok {
+		fnName = id.Name
+	}
 
 	// check externs
 	if ext, ok := tc.externs[fnName]; ok {
@@ -693,7 +758,9 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 				"check the extern declaration and adjust the call")
 			tc.ok = false
 		}
-		if id, ok := e.Func.(*Ident); ok { id.Typ = ext.RetType }
+		if id, ok := e.Func.(*Ident); ok {
+			id.Typ = ext.RetType
+		}
 		e.Typ = ext.RetType
 		return ext.RetType
 	}
@@ -720,7 +787,9 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 				}
 			}
 		}
-		if id, ok := e.Func.(*Ident); ok { id.Typ = fn.RetType }
+		if id, ok := e.Func.(*Ident); ok {
+			id.Typ = fn.RetType
+		}
 		e.Typ = fn.RetType
 		return fn.RetType
 	}
@@ -753,7 +822,9 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 	}
 
 	// unknown C function from import — infer args, return int
-	for _, a := range e.Args { tc.inferExpr(a) }
+	for _, a := range e.Args {
+		tc.inferExpr(a)
+	}
 	e.Typ = TypInt
 	return TypInt
 }
@@ -861,7 +932,10 @@ func (tc *TypeChecker) inferStructInit(e *StructInit) *ZXType {
 	for _, fi := range e.Fields {
 		found := false
 		for _, sf := range sd.Fields {
-			if sf.Name == fi.Name { found = true; break }
+			if sf.Name == fi.Name {
+				found = true
+				break
+			}
 		}
 		if !found {
 			// E52: unknown field in struct init
@@ -920,7 +994,9 @@ func (tc *TypeChecker) inferArrayLit(e *ArrayLit) *ZXType {
 
 // checkTypeExists verifies struct type names exist
 func (tc *TypeChecker) checkTypeExists(t *ZXType, sp Span) {
-	if t == nil { return }
+	if t == nil {
+		return
+	}
 	switch t.Kind {
 	case TyStruct:
 		if _, ok := tc.structs[t.Name]; !ok {
@@ -937,16 +1013,32 @@ func (tc *TypeChecker) checkTypeExists(t *ZXType, sp Span) {
 }
 
 func canCast(from, to *ZXType) bool {
-	if from == nil || to == nil { return true }
-	if from.Kind == TyUnknown || to.Kind == TyUnknown { return true }
+	if from == nil || to == nil {
+		return true
+	}
+	if from.Kind == TyUnknown || to.Kind == TyUnknown {
+		return true
+	}
 	// numeric <-> numeric always ok
-	if isNumeric(from) && isNumeric(to) { return true }
-	if from.Kind == TyBool && isNumeric(to) { return true }
-	if isNumeric(from) && to.Kind == TyBool { return true }
+	if isNumeric(from) && isNumeric(to) {
+		return true
+	}
+	if from.Kind == TyBool && isNumeric(to) {
+		return true
+	}
+	if isNumeric(from) && to.Kind == TyBool {
+		return true
+	}
 	// pointer casts
-	if from.Kind == TyPtr && to.Kind == TyPtr { return true }
-	if from.Kind == TyPtr && isInteger(to) { return true }
-	if isInteger(from) && to.Kind == TyPtr { return true }
+	if from.Kind == TyPtr && to.Kind == TyPtr {
+		return true
+	}
+	if from.Kind == TyPtr && isInteger(to) {
+		return true
+	}
+	if isInteger(from) && to.Kind == TyPtr {
+		return true
+	}
 	return false
 }
 
@@ -956,11 +1048,17 @@ func (tc *TypeChecker) suggestName(name string) string {
 	bestDist := 3 // only suggest if distance <= 2
 	// collect all known names
 	var candidates []string
-	for n := range tc.fns     { candidates = append(candidates, n) }
-	for n := range tc.externs { candidates = append(candidates, n) }
+	for n := range tc.fns {
+		candidates = append(candidates, n)
+	}
+	for n := range tc.externs {
+		candidates = append(candidates, n)
+	}
 	s := tc.scope
 	for s != nil {
-		for n := range s.vars { candidates = append(candidates, n) }
+		for n := range s.vars {
+			candidates = append(candidates, n)
+		}
 		s = s.parent
 	}
 	for _, c := range candidates {
@@ -975,11 +1073,17 @@ func (tc *TypeChecker) suggestName(name string) string {
 
 func editDistance(a, b string) int {
 	la, lb := len(a), len(b)
-	if la == 0 { return lb }
-	if lb == 0 { return la }
+	if la == 0 {
+		return lb
+	}
+	if lb == 0 {
+		return la
+	}
 	prev := make([]int, lb+1)
 	curr := make([]int, lb+1)
-	for j := 0; j <= lb; j++ { prev[j] = j }
+	for j := 0; j <= lb; j++ {
+		prev[j] = j
+	}
 	for i := 1; i <= la; i++ {
 		curr[0] = i
 		for j := 1; j <= lb; j++ {
@@ -995,12 +1099,22 @@ func editDistance(a, b string) int {
 }
 
 func minOf3(a, b, c int) int {
-	if a < b { if a < c { return a }; return c }
-	if b < c { return b }; return c
+	if a < b {
+		if a < c {
+			return a
+		}
+		return c
+	}
+	if b < c {
+		return b
+	}
+	return c
 }
 
 func listFields(params []Param) string {
 	parts := make([]string, len(params))
-	for i, p := range params { parts[i] = p.Name + ": " + p.Type.String() }
+	for i, p := range params {
+		parts[i] = p.Name + ": " + p.Type.String()
+	}
 	return strings.Join(parts, ", ")
 }

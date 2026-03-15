@@ -1,0 +1,9 @@
+//fn abc(x: int) -> str {
+//    return x*x;
+//}
+
+//fn abcx(xx: int, xx: str) -> int {
+//   return (xx);
+//}
+
+//println(abcx(2));
