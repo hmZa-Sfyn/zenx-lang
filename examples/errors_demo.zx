@@ -1,0 +1,24 @@
+// errors_demo.zx — showcase ZX error messages
+// Run: zxc check examples/errors_demo.zx
+
+// E11: type mismatch
+let score: int = "oops"
+
+// E27: undefined variable (with typo suggestion)
+let y = scroe + 1
+
+// E32: string + concatenation not allowed
+let s = "hello" + " world"
+
+// E34: division by zero
+let bad = 42 / 0
+
+// E07: break outside loop
+break
+
+// E22: assign to const
+const PI = 3.14
+PI = 2.71
+
+// E13: const without init
+const MISSING_VAL: float

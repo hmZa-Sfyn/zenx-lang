@@ -1,13 +1,13 @@
-// demo.zx — ZX v0.3 full feature showcase
-// Perl-style syntax, Go-style structs, optional types, C interop
+// demo.zx — ZX v0.4 full showcase
+// Run: ./zxc examples/demo.zx
 
-import "stdio.h"
-import "math.h"
+use std::math
+use std::str
+use std::sys
 
-extern fn sqrt(x: float) -> float
 extern fn printf(fmt: str, ...) -> int
 
-// ── Go/ZX struct ─────────────────────────────────────────────────────────────
+// ── Go-style struct ───────────────────────────────────────────────────────────
 
 type Vec2 struct {
     x float
@@ -18,111 +18,114 @@ fn (v Vec2) Len() -> float {
     return sqrt(v.x * v.x + v.y * v.y)
 }
 
-// ── Functions with and without types ─────────────────────────────────────────
-
-fn factorial(n: int) -> int {
-    if n <= 1 { return 1 }
-    return n * factorial(n - 1)
+fn (v ref Vec2) Scale(factor: float) {
+    v->x = v->x * factor
+    v->y = v->y * factor
 }
 
-// no types — all params are long long by default
-fn multiply(a, b) {
-    return a * b
+// ── Optional types ────────────────────────────────────────────────────────────
+
+fn add(a, b) {        // no types — long long by default
+    return a + b
 }
 
-// ── Main code ─────────────────────────────────────────────────────────────────
+fn greet(name) {
+    say "Hello, " name "!"
+}
 
-say "=== ZX v0.3 ==="
+// ── Main ──────────────────────────────────────────────────────────────────────
 
-# Perl-style: my instead of let
+say "=== ZX v0.4 ==="
+
+# Perl-style: my / our
 my x = 10
-my y = 3
-say x + y
-say x * y
-
-# const with our (Perl)
-our PI = 3.14159265
-say PI
+my y = 3.14
+our MAX = 100
 
 # for range
-my sum = 0
-for i in 1..101 {
-    sum += i
+my total = 0
+for i in 1..11 {
+    total += i
 }
-printf("sum 1..100 = %lld\n", sum)
+printf("sum 1..10 = %lld\n", total)
 
-# while
+# while / until
 my n = 1
-while n < 1000 {
+until n >= 128 {
     n *= 2
 }
 say n
 
-# unless (Perl: if not)
-my logged_in = 0
-unless logged_in {
+# unless
+my logged = 0
+unless logged {
     say "please log in"
 }
 
-# until (Perl: while not)
-my countdown = 5
-until countdown == 0 {
-    printf("%lld ", countdown)
-    countdown -= 1
-}
-println ""
+# multiline adjacent string concat
+const HTTP_OK: str =
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Type: text/html\r\n"
+    "Connection: close\r\n"
+    "\r\n"
 
-# multiline string concat
-const HTML: str =
-    "<html>\n"
-    "  <body>\n"
-    "    <h1>Hello!</h1>\n"
-    "  </body>\n"
-    "</html>\n"
+printf("Response header length: %lld chars\n", len(HTTP_OK))
 
-printf("HTML length check: %s", HTML)
+# struct
+my v1: Vec2 = new Vec2 { x: 3.0, y: 4.0 }
+printf("v1 len = %g\n", v1.Len())
 
-# struct & method
-my v: Vec2 = new Vec2 { x: 3.0, y: 4.0 }
-printf("vec len = %g\n", v.Len())
+# heap-allocated struct — @ prefix (friendly address-of)
+my v2 = @Vec2{ x: 5.0, y: 12.0 }
+v2->Scale(2.0)
+printf("v2 scaled len = %g\n", v2->Len())
 
-# heap alloc struct
-my v2 = &Vec2{ x: 5.0, y: 12.0 }
-printf("vec2 len = %g\n", v2->Len())
+# Pipe operator |>
+fn double(x) { return x * 2 }
+fn inc(x) { return x + 1 }
 
-# untyped call
-say multiply(6, 7)
+my result = 5 |> double |> inc
+printf("5 |> double |> inc = %lld\n", result)
 
-# factorials
-for i in 1..8 {
-    printf("%lld! = %lld\n", i, factorial(i))
-}
+# Builtins — no import needed
+printf("abs(-42.5) = %g\n", abs(-42.5))
+printf("max(3, 7) = %lld\n", max(3, 7))
+printf("min(3, 7) = %lld\n", min(3, 7))
+printf("len('hello') = %lld\n", len("hello"))
+printf("to_int(9.9) = %lld\n", to_int(9.9))
+printf("to_float(7) = %g\n", to_float(7))
 
-# bitwise & hex & binary
+# std::math
+printf("sqrt(2) = %g\n", sqrt(2.0))
+printf("pow(2, 10) = %g\n", pow(2.0, 10.0))
+printf("sin(0) = %g\n", sin(0.0))
+
+# std::str
+printf("str_len('world') = %lld\n", str_len("world"))
+printf("str_cmp('a','a') = %lld\n", str_cmp("a", "a"))
+printf("str_upper('a') = %c\n", str_upper(97))
+
+# add (untyped)
+say add(10, 20)
+greet("ZX")
+
+# Bitwise & hex & binary
 my flags = 0b1010
 flags = flags | 0x1
 flags = flags & ~0x2
 printf("flags = %lld\n", flags)
 
 # sizeof
-printf("sizeof int = %lld\n", sizeof(int))
+printf("sizeof int   = %lld\n", sizeof(int))
+printf("sizeof float = %lld\n", sizeof(float))
 
-# cast
-my f: float = 9.99
-my fi: int = int(f)
-printf("cast 9.99 -> %lld\n", fi)
+# Pointer with @ and ^
+my num: int = 42
+my p: ref int = @num
+^p = 999
+say num     # prints 999
 
-# char
-my ch: char = 'Z'
-printf("char=%c code=%lld\n", ch, int(ch))
-
-# pointer
-my num: int = 100
-my p: *int = &num
-*p = 999
-say num
-
-# die (Perl: die = print to stderr + exit)
-# die "something went wrong"  ← uncomment to test
+# die (Perl style — prints to stderr and exits)
+# die "something went wrong"   ← uncomment to test
 
 say "=== done ==="
