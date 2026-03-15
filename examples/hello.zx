@@ -1,2 +1,0 @@
-// hello.zx — simplest ZX program
-println("Hello, World!");
