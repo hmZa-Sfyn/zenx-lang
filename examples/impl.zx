@@ -1,14 +1,14 @@
-type abc struct {
+type Vec2 struct {
     x int;
     y int;
 };
 
-fn (thing *abc) getx() -> int {
-    return thing->x; 
+fn (this *Vec2) getx() -> int {
+    return this->x; 
 };
 
-my this_thing = &abc{x:234,y:2344};
+my myvec = &Vec2{x:234,y:2344};
 
 extern fn printf(fmt: str, ...) -> int;
 
-printf("%d\n",this_thing->getx());
+printf("%d\n",myvec->getx());
