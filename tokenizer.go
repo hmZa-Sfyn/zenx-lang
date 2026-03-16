@@ -210,7 +210,7 @@ var keywords = map[string]TK{
 	"int": TK_TYPE_INT, "float": TK_TYPE_FLOAT, "bool": TK_TYPE_BOOL,
 	"str": TK_TYPE_STR, "string": TK_TYPE_STR,
 	"void": TK_TYPE_VOID, "char": TK_TYPE_CHAR,
-	"ref": TK_TYPE_REF, "any": TK_TYPE_ANY,
+	"ref": TK_TYPE_REF, "ptr": TK_TYPE_REF, "any": TK_TYPE_ANY,
 	// Go/Rust type aliases
 	"int8": TK_TYPE_INT, "int16": TK_TYPE_INT, "int32": TK_TYPE_INT,
 	"int64": TK_TYPE_INT, "uint": TK_TYPE_INT, "uint64": TK_TYPE_INT,

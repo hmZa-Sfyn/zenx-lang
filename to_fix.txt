@@ -151,3 +151,17 @@ fn aaa() -> any {
    sleep(1);
    return 123;
 }"
+
+---
+
+Issues to fix:
+
+ptr<void> in extern params fails — ptr<T> not parsed in param types (only in return types)
+Function names that clash with C type keywords (double, float, etc.) cause gcc errors — need to rename them in output or error at parse time
+@ignore test fprintf generates broken C: fprintf(stderr, ZX_SKIP " "abc"\n") — string literal format wrong
+-> any return type should infer the actual type from the return statement
+Local file imports: use "./"::abc
+Now I'm examining the workspace files to see the current implementation and understand how to address each issue.
+
+I see - ptr<void> uses the word ptr but we don't have TK_TYPE_PTR in the new tokenizer. The keywords map has ptr → TK_TYPE_REF. Let me check.
+ptr is not in the keywords map at all — that's bug #1. Now let me read the emitter's test skip code and the any return handling:
