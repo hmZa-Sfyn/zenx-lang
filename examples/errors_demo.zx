@@ -2,23 +2,23 @@
 // Run: zxc check examples/errors_demo.zx
 
 // E11: type mismatch
-let score: int = "oops"
+let score: int = "oops";
 
 // E27: undefined variable (with typo suggestion)
-let y = scroe + 1
+let y = scroe + 1;
 
 // E32: string + concatenation not allowed
-let s = "hello" + " world"
+let s = "hello" + " world";
 
 // E34: division by zero
-let bad = 42 / 0
+let bad = 42 / 0;
 
 // E07: break outside loop
-break
+break;
 
 // E22: assign to const
-const PI = 3.14
-PI = 2.71
+const PI = 3.14;
+PI = 2.71;
 
 // E13: const without init
-const MISSING_VAL: float
+const MISSING_VAL: float = 23.3;
