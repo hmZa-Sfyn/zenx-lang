@@ -5,5 +5,5 @@ extern fn printf(fmt: str, ...) -> int;
 fn doublef(x) -> any { return x * 2 };
 fn squaref(x) -> any { return x * x };
 
-my val = 3 |> doublef |> squaref; // square(double(3))
+my val = 3 |> doublef |> squaref; // squaref(doublef(3))
 printf("\n3 |> doublef |> squaref = %lld\n", val);
