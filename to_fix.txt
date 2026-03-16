@@ -1,7 +1,7 @@
 
 ---
 
-also make a thing to import files from current dir or so like: use "./"::abc # this means "./zbc.zx"!
+Also make a thing to import files from current dir or so like: use "./"::abc # this means "./zbc.zx"!
 
 --
 
