@@ -147,9 +147,9 @@ func EmitTestRunner(prog *Program, tests []*TestDecl) string {
 
 	// test color macros
 	e.ln("/* ── ZX test runner ─────────────────────────────────────────── */")
-	e.ln("#define ZX_PASS  \"\\033[1m\\033[92m✓ PASS\\033[0m\"")
-	e.ln("#define ZX_FAIL  \"\\033[1m\\033[91m✗ FAIL\\033[0m\"")
-	e.ln("#define ZX_SKIP  \"\\033[1m\\033[93m⊘ SKIP\\033[0m\"")
+	e.ln("#define ZX_PASS  \"\\033[1m\\033[92m PASS\\033[0m\"")
+	e.ln("#define ZX_FAIL  \"\\033[1m\\033[91m FAIL\\033[0m\"")
+	e.ln("#define ZX_SKIP  \"\\033[1m\\033[93m SKIP\\033[0m\"")
 	e.ln("#define ZX_INFO  \"\\033[96m\"")
 	e.ln("#define ZX_RESET \"\\033[0m\"")
 	e.ln("")
@@ -159,7 +159,7 @@ func EmitTestRunner(prog *Program, tests []*TestDecl) string {
 	e.indent++
 	e.ln("int __pass = 0, __fail = 0, __skip = 0;")
 	e.ln("(void)argc; (void)argv;")
-	e.ln("fprintf(stderr, \"\\n\\033[1m\\033[96m🧪 ZX Test Runner\\033[0m\\n\");")
+	e.ln("fprintf(stderr, \"\\n\\033[1m\\033[96m ZX Test Runner\\033[0m\\n\");")
 	e.ln("fprintf(stderr, \"────────────────────────────────────\\n\");")
 
 	for _, td := range tests {
@@ -349,7 +349,7 @@ func RunTests(prog *Program, sourceFile string, verbose bool) {
 		return
 	}
 
-	fmt.Printf("\n%s%s🧪 Found %d test(s) in %s%s\n",
+	fmt.Printf("\n%s%s Found %d test(s) in %s%s\n",
 		colorBold, colorCyan, len(tests), sourceFile, colorReset)
 
 	cCode := EmitTestRunner(prog, tests)
