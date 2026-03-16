@@ -146,6 +146,12 @@ func TypeCheck(prog *Program, src, file string) bool {
 				errCode("E03", fn.Sp, fmt.Sprintf("function %q defined more than once", fn.Name), "rename one")
 				tc.ok = false
 			}
+			// W10: function name is a C keyword — the emitter will rename it to __zx_<name>
+			if isCReserved(fn.Name) {
+				warnCode("W10", fn.Sp,
+					fmt.Sprintf("function name %q is a C keyword — it will be compiled as __zx_%s", fn.Name, fn.Name),
+					fmt.Sprintf("rename the function to avoid confusion, e.g. fn to_%s(...) or fn my_%s(...)", fn.Name, fn.Name))
+			}
 			tc.fns[fn.Name] = fn
 			tc.scope.define(fn.Name, &VarInfo{Type: fn.RetType, IsFn: true, Sp: fn.Sp})
 		}
@@ -1308,4 +1314,22 @@ func listParamTypes(params []Param) string {
 		parts[i] = p.Name + ": " + t
 	}
 	return strings.Join(parts, ", ")
+}
+
+// isCReserved returns true if name is a C keyword or type that would
+// break generated C code if used as a ZX function or variable name.
+func isCReserved(name string) bool {
+	switch name {
+	case "double", "float", "int", "long", "short", "char", "void",
+		"struct", "enum", "union", "typedef", "auto", "register",
+		"static", "extern", "const", "volatile", "signed", "unsigned",
+		"inline", "return", "if", "else", "for", "while", "do",
+		"switch", "case", "break", "continue", "goto", "default",
+		"sizeof", "NULL", "true", "false",
+		// common C stdlib names that would collide badly
+		"printf", "scanf", "malloc", "free", "exit", "abort",
+		"strlen", "strcmp", "strcpy", "memcpy", "memset":
+		return true
+	}
+	return false
 }
