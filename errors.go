@@ -88,11 +88,11 @@ func printDiag(d Diagnostic) {
 	var icon, sevColor, sevLabel string
 	switch d.Sev {
 	case SevError:
-		icon = "✖ "
+		icon = " "
 		sevColor = colorRed
 		sevLabel = "error"
 	case SevWarn:
-		icon = "⚠ "
+		icon = " "
 		sevColor = colorYellow
 		sevLabel = "warning"
 	case SevNote:

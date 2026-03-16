@@ -311,12 +311,12 @@ func main() {
 
 	gccOut, err := exec.Command("gcc", gccArgs...).CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\n%s%s✖ gcc compilation error%s — the generated C has a problem:\n\n",
+		fmt.Fprintf(os.Stderr, "\n%s%s gcc compilation error%s — the generated C has a problem:\n\n",
 			colorBold, colorRed, colorReset)
 		for _, line := range strings.Split(strings.TrimSpace(string(gccOut)), "\n") {
 			fmt.Fprintf(os.Stderr, "  %s%s%s\n", colorDim, line, colorReset)
 		}
-		fmt.Fprintf(os.Stderr, "\n%s💡 run 'zxc emit %s' to inspect the generated C%s\n\n",
+		fmt.Fprintf(os.Stderr, "\n%s run 'zxc emit %s' to inspect the generated C%s\n\n",
 			colorYellow, sourceFile, colorReset)
 		os.Exit(1)
 	}
@@ -412,7 +412,7 @@ func printSummary(sourceFile string) {
 			colorBold, colorRed, colorReset, strings.Join(parts, " and "))
 	}
 	if errs > 0 && sourceFile != "" && sourceFile != "<one-liner>" {
-		fmt.Fprintf(os.Stderr, "  %s💡 fix errors and re-run: zxc %s%s\n\n",
+		fmt.Fprintf(os.Stderr, "  %s fix errors and re-run: zxc %s%s\n\n",
 			colorDim, sourceFile, colorReset)
 	}
 }

@@ -341,7 +341,7 @@ func RunTests(prog *Program, sourceFile string, verbose bool) {
 	tests := CollectTests(prog)
 
 	if len(tests) == 0 {
-		fmt.Printf("\n%s%s⚠%s  No @test functions found in %s\n",
+		fmt.Printf("\n%s%s%s  No @test functions found in %s\n",
 			colorBold, colorYellow, colorReset, sourceFile)
 		fmt.Printf("  Add @test before a fn to make it a test:\n\n")
 		fmt.Printf("    %s@test%s\n    fn my_test() {\n        // your test code here\n    }\n\n",
@@ -377,10 +377,10 @@ func RunTests(prog *Program, sourceFile string, verbose bool) {
 	}
 	gccOut, err := exec.Command("gcc", gccArgs...).CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\n%s%s✖ Test compile error:%s\n%s%s%s\n",
+		fmt.Fprintf(os.Stderr, "\n%s%s Test compile error:%s\n%s%s%s\n",
 			colorBold, colorRed, colorReset,
 			colorDim, string(gccOut), colorReset)
-		fmt.Fprintf(os.Stderr, "\n%s💡 run 'zxc emit %s' to inspect the generated C%s\n\n",
+		fmt.Fprintf(os.Stderr, "\n%s run 'zxc emit %s' to inspect the generated C%s\n\n",
 			colorYellow, sourceFile, colorReset)
 		os.Exit(1)
 	}
