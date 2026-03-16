@@ -6,7 +6,7 @@ fn test_addition() {
 
 @test
 @args={"n":5}
-@expect=11
+@expect=10
 fn abc(n: int) -> any {
    return (n*2);
 }

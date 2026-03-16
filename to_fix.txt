@@ -105,3 +105,49 @@ fn abc() -> any {
 also add more comparig operators in if and match, to utomaticjly match strings or numbers!
 
 also add some basic builtins like toint(), tostr(), ..., len() // to fnd lenght of string or list, and many more types like list and more!
+
+---
+
+when i use @ignore in a test, it shows this stupid error: "(myenv)  hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main  ./zxc test /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/tests.zx
+
+🧪 Found 3 test(s) in /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/tests.zx
+
+✖ Test compile error:
+/tmp/zx_test_3915722938.c: In function ‘main’:
+/tmp/zx_test_3915722938.c:71:32: error: expected ‘)’ before ‘abc’
+   71 |     fprintf(stderr, ZX_SKIP " "abc"\n");
+      |            ~                   ^~~
+      |                                )
+
+
+💡 run 'zxc emit /home/hmza/workspaces/hamza/zx-lang/zenx-lang/examples/tests.zx' to inspect the generated C
+
+(myenv)  ✘ hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  
+
+
+
+"
+
+in this code: "@test
+fn test_addition() {
+   assert 1 + 1 == 2, "math is broken";
+}
+
+
+@test
+@args={"n":5}
+@expect=11
+@ignore
+fn abc(n: int) -> any {
+   return (n*2);
+}
+
+extern fn sleep(...) -> int 
+
+@test
+@benchmark
+@expect=123
+fn aaa() -> any {
+   sleep(1);
+   return 123;
+}"
