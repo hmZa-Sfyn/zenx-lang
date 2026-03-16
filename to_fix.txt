@@ -18,3 +18,11 @@ Issues to fix:
 - ptr<void> in extern params fails — ptr<T> not parsed in param types (only in return types)
 - `-> any` return type should infer the actual type from the return statement
 - Local file imports: use "./"::abc
+
+---
+
+- also add core features like: typeof(), and more! atleast 30 builtin functions like typeof() and some others!
+
+- also add more macros like: cmd!(), i want total 50 macros please!
+
+- extend errors, add more errors and error checks and potential error testing, and make a small .md file documenting all error types and small desc!
