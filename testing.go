@@ -188,7 +188,7 @@ func emitTestCall(e *Emitter, td *TestDecl) {
 	}
 
 	if td.Ignored {
-		e.ln("fprintf(stderr, ZX_SKIP \" %s%s%s\\n\");", `"`, displayName, `"`)
+		e.ln("fprintf(stderr, ZX_SKIP \" %%s\\n\", %q);", displayName)
 		e.ln("__skip++;")
 		return
 	}

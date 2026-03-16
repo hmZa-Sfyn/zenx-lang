@@ -2,8 +2,9 @@
 extern fn printf(fmt: str, ...) -> int;
 
 
-fn doublef(x) -> any { return x * 2 };
-fn squaref(x) -> any { return x * x };
+fn double(x) -> any { return x * 2 };
+fn square(x) -> any { return x * x };
 
-my val = 3 |> doublef |> squaref; // squaref(doublef(3))
-printf("\n3 |> doublef |> squaref = %lld\n", val);
+my val = 3 |> double |> square; // square(double(3))
+printf("\n3 |> double |> square = %lld\n", val);
+say type(val);
