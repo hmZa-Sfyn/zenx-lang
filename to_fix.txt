@@ -26,3 +26,11 @@ Issues to fix:
 - also add more macros like: cmd!(), i want total 50 macros please!
 
 - extend errors, add more errors and error checks and potential error testing, and make a small .md file documenting all error types and small desc!
+
+- extend import statements, `use` statements, like:
+```pl
+
+use "./"::something (logger_ng) // this means, to import `mod logger_ng {` from ./something.zx.
+
+
+```
