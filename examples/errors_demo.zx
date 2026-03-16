@@ -1,8 +1,6 @@
 // errors_demo.zx — showcase ZX error messages
 // Run: zxc check examples/errors_demo.zx
 
-use std::str
-
 // E11: type mismatch
 let score: int = "oops";
 
@@ -10,7 +8,7 @@ let score: int = "oops";
 let y = scroe + 1;
 
 // E32: string + concatenation not allowed
-let s = str_cat("hello" + " world");
+let s = "hello" + " world";
 
 // E34: division by zero
 let bad = 42 / 0;
@@ -23,4 +21,4 @@ const PI = 3.14;
 PI = 2.71;
 
 // E13: const without init
-const MISSING_VAL: float = 23.3;
+const MISSING_VAL: float = 23.23;
