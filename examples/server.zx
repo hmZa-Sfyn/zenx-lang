@@ -10,14 +10,14 @@ import "netinet/in.h"
 import "arpa/inet.h"
 
 extern fn socket(domain: int, type_: int, protocol: int) -> int
-extern fn bind(sockfd: int, addr: ptr<void>, addrlen: int) -> int
+extern fn bind(sockfd: int, addr: *void, addrlen: int) -> int
 extern fn listen(sockfd: int, backlog: int) -> int
-extern fn accept(sockfd: int, addr: ptr<void>, addrlen: ptr<int>) -> int
-extern fn send(sockfd: int, buf: ptr<void>, len_: int, flags: int) -> int
+extern fn accept(sockfd: int, addr: *void, addrlen: *int) -> int
+extern fn send(sockfd: int, buf: *void, len_: int, flags: int) -> int
 extern fn close(fd: int) -> int
 extern fn htons(hostshort: int) -> int
 extern fn htonl(hostlong: int) -> int
-extern fn memset(s: ptr<void>, c: int, n: int) -> ptr<void>
+extern fn memset(s: *void, c: int, n: int) -> *void
 extern fn printf(fmt: str, ...) -> int
 extern fn strlen(s: str) -> int
 extern fn perror(s: str) -> void
@@ -32,10 +32,10 @@ const RESPONSE: str =
     "\r\n"
     "<!DOCTYPE html>\n"
     "<html lang=\"en\">\n"
-    "<head>\n"
+    "<head\n"
     "  <meta charset=\"utf-8\">\n"
     "  <title>ZX Tiny Server</title>\n"
-    "</head>\n"
+    "</head\n"
     "<body>\n"
     "  <h1>Hello from ZX language! 🚀</h1>\n"
     "  <p>This is a tiny web server written in ZX (compiles to C).</p>\n"
@@ -59,7 +59,7 @@ if server_fd < 0 {
 }
 
 // Set SO_REUSEADDR so we can restart quickly
-extern fn setsockopt(sockfd: int, level: int, optname: int, optval: ptr<void>, optlen: int) -> int;
+extern fn setsockopt(sockfd: int, level: int, optname: int, optval: *void, optlen: int) -> int;
 let opt: int = 1;
 setsockopt(server_fd, 1, 2, &opt, sizeof(int));
 
@@ -67,9 +67,9 @@ setsockopt(server_fd, 1, 2, &opt, sizeof(int));
 // For demo purposes use printf to show the address
 printf("Binding to 0.0.0.0:%lld\n", PORT);
 
-println("(run: zxc emit examples/server.zx  to see the generated C)")
-println("Note: full socket bind/listen requires inline C for struct layout.")
-println("This demo shows the string concat + extern interop features.")
+println("(run: zxc emit examples/server.zx  to see the generated C)");
+println("Note: full socket bind/listen requires inline C for struct layout.");
+println("This demo shows the string concat + extern interop features.");
 
 close(server_fd);
 println("Server closed.");
