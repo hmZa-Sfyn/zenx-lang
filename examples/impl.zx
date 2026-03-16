@@ -2,8 +2,8 @@ extern fn sqrt(...) -> int
 extern fn printf(fmt: str, ...) -> int;
 
 type Vec2 struct {
-    x int;
-    y int;
+    x float;
+    y float;
 }
 
 fn (this *Vec2) distance(other: *Vec2) -> float {
@@ -12,12 +12,28 @@ fn (this *Vec2) distance(other: *Vec2) -> float {
     return sqrt(dx * dx + dy * dy);
 }
 
+fn (this *Vec2) move(dimension: int, magnitude: float) -> int {
+    // dimension 0 == x
+    if dimension == 0 {
+        this->x += int(magnitude);
+    }
+    // 1 == y
+    elif dimension == 1 {
+        this->y += int(magnitude);
+    }
+    // else - err
+    else {
+        return -1;
+    }
+    return 0;
+}
+
 my myvec = &Vec2{x:2, y:44};
 my pointb = &Vec2{x:12, y:3};
 
-//printf("%d\n",myvec->getx());
+say myvec->distance(pointb);
 
-//distance from pointb
-//printf("%g\n",myvec->distance(pointb));
+myvec->move(0,2.555);
 
 say myvec->distance(pointb);
+
