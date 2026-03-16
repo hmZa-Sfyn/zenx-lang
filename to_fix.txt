@@ -34,3 +34,5 @@ use "./"::something (logger_ng) // this means, to import `mod logger_ng {` from 
 
 
 ```
+
+- also create some examples on how to use modules, like `mod abc { mod def { fn abc() -> any { say "hi"; return 0;}}}`

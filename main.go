@@ -84,36 +84,7 @@ func printUsage() {
   zxc -c "say cmd!(\"uname -a\")"
   zxc -c "say readfile!(\"/etc/hostname\")"
   zxc -c "let s = input(\"name: \"); say \"hello, \" s \"\!\""
-
-%sSTD MODULES%s
-  use std::str    string ops: str_len, str_cmp, str_cat, str_find, str_dup ...
-  use std::io     file I/O: open, close, read, write, printf, scanf ...
-  use std::math   math: sqrt, pow, sin, cos, log, floor, ceil ...
-  use std::sys    system: run, run_ok, sleep, getenv, setenv ...
-  use std::fs     easy files: read, write, append, exists, remove ...
-  use std::cmd    shell: capture, run, exitcode, popen ...
-  use std::mem    memory: alloc, zalloc, free, copy, set ...
-  use std::conv   conversions: to_int, to_float, int_to_str ...
-  use std::time   time: now, clock, diff
-  use std::net    sockets: tcp_server, tcp_accept, tcp_send ...
-
-%sBUILTINS%s (always available)
-  len(s)  abs(x)  min(a,b)  max(a,b)  clamp(v,lo,hi)
-  to_int(x)  to_float(x)  to_bool(x)  to_char(x)
-  is_nil(x)  not_nil(x)  is_zero(x)
-  alloc(n)  free(p)  str_eq(a,b)  str_ne(a,b)
-  system(cmd)  getenv(k)  sizeof(T)  input("prompt")
-  cmd!("cmd")  readfile!("path")  writefile!("path",s)
-  f"hello {name}!"  (template strings)
-
-%sPOINTER SYNTAX:%s
-  ref T      pointer type  (replaces *T)
-  @x         address-of    (replaces &x)
-  ^x         dereference   (replaces *x)
-  p->field   field via ref (preferred)
-  p.field    also works    
-
-%s%s`,
+`,
 		colorCyan, colorReset,
 		colorBold+colorYellow, version, colorReset,
 		colorBold+colorCyan, colorReset,
@@ -121,11 +92,7 @@ func printUsage() {
 		colorBold, colorReset,
 		colorBold+colorGreen, colorReset,
 		colorBold+colorGreen, colorReset,
-		colorBold, colorReset,
 		colorBold+colorGreen, colorReset,
-		colorBold+colorGreen, colorReset,
-		colorBold+colorGreen, colorReset,
-		colorBold+colorYellow, colorReset,
 	)
 }
 
