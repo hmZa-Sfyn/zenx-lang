@@ -15,10 +15,10 @@ fn (this *Vec2) distance(other: *Vec2) -> float {
 fn (this *Vec2) move(dimension: str, magnitude: float) -> int {
     
     if dimension == "x" {
-        this->x += int(magnitude);
+        this->x += (magnitude);
     }
     elif dimension == "y" {
-        this->y += int(magnitude);
+        this->y += (magnitude);
     }
     else {
         return -1;
@@ -32,6 +32,7 @@ my pointb = &Vec2{x:12, y:3};
 say myvec->distance(pointb);
 
 myvec->move("x",2.555);
+myvec->move("y",-34.555);
 
 say myvec->distance(pointb);
 
