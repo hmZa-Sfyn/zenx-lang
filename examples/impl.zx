@@ -6,14 +6,6 @@ type Vec2 struct {
     y int;
 }
 
-fn (this *Vec2) getx() -> int {
-    return this->x; 
-}
-
-fn (this *Vec2) gety() -> int {
-    return this->y; 
-}
-
 fn (this *Vec2) distance(other: *Vec2) -> float {
     let dx = this->x - other->x;
     let dy = this->y - other->y;

@@ -87,3 +87,21 @@ my val = 3 |> double |> square;
 printf("\n3 |> double |> square = %lld\n", val);
 (myenv)  hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  
 # but if i just change the function names, it all works fine;  XD!
+
+---
+
+also make a thing to import files from current dir or so like: use "./"::abc # this means "./zbc.zx"!
+
+--
+
+also when user choses type any as return value of a function then make the return value of that function , the type of the return stmt like:
+
+fn abc() -> any {
+   return 23.5444; // then return vlue must be float!
+}
+* also show a warning if any problems with type any of that function! dont justr assign every any var or fn with long long, try to learn the type of the var's value and then assign it a type in c code!
+---
+
+also add more comparig operators in if and match, to utomaticjly match strings or numbers!
+
+also add some basic builtins like toint(), tostr(), ..., len() // to fnd lenght of string or list, and many more types like list and more!
