@@ -17,7 +17,8 @@ Issues to fix:
 
 - ptr<void> in extern params fails — ptr<T> not parsed in param types (only in return types)
 - `-> any` return type should infer the actual type from the return statement
-- Local file imports: use "./"::abc
+- Local file imports: import _/abc // `./abc.zx`
+and: import _/logger (logger) // ths means to import `mod logger { ... }` from `./logger.zx`
 
 ---
 
@@ -30,8 +31,8 @@ Issues to fix:
 - extend import statements, `use` statements, like:
 ```pl
 
-use "./"::something (logger_ng) // this means, to import `mod logger_ng {` from ./something.zx.
-
+import _/mod1/logger (logger_ng) // this means "./mod1/logger.zx", to import `mod logger_ng {` from ./something.zx.
+import __/__/__/mod2/abc // this means to import all from: '../../../mod2/abc.zx'!
 
 ```
 
@@ -96,3 +97,7 @@ whoami()->isroot() ifTrue: do {
 
 
 ```
+
+- add 10 more error messages for macros , cover everything in errors, it must not be incomplete!
+
+- 

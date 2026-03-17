@@ -1,19 +1,17 @@
-
-
 @test
-@args={"n":5}
-@expect=10
-@ignore
-fn abc(n: int) -> any {
-   return (n*2);
+fn test_addition() {
+    assert 1 + 1 == 2, "math is broken";
 }
 
-extern fn sleep(...) -> int 
+@test
+@args={"n": 5}
+@expect=10
+fn test_double(n: int) -> int {
+    return n * 2;
+}
 
 @test
-@benchmark
-@expect=123
-fn aaa() -> any {
-   sleep(1);
-   return 123;
+@ignore
+fn test_ignored() {
+    // this test is skipped
 }
