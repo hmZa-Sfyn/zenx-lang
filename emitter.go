@@ -1067,8 +1067,9 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 		}
 		return fmt.Sprintf("(fprintf(stderr, \"TODO: %%s\\n\", %s), abort(), 0)", msg)
 	case "env":
-		// env!("VAR") — shorthand for getenv
+		// env!(\"VAR\") — shorthand for getenv, returns const char*
 		if len(argStrs) > 0 {
+			b.Typ = TypStr
 			return fmt.Sprintf("getenv(%s)", argStrs[0])
 		}
 	case "assert":
