@@ -982,17 +982,24 @@ func cEscapeString(s string) string {
 func macroFnName(name string) string { return "__zx_macro_" + name }
 
 // macroParamStr builds the C parameter list for a macro declaration.
+// Block-style params (doStmt, block, body, callback, etc.) become
+// function pointers: void (*doStmt)(void)
 func macroParamStr(mc *MacroDecl) string {
 	if len(mc.Params) == 0 {
 		return "void"
 	}
 	parts := make([]string, len(mc.Params))
 	for i, p := range mc.Params {
-		t := p.Type
-		if t == nil {
-			t = TypAny
+		if isBlockParam(p.Name, p.Type) {
+			// emit as a function pointer: void (*name)(void)
+			parts[i] = fmt.Sprintf("void (*%s)(void)", p.Name)
+		} else {
+			t := p.Type
+			if t == nil {
+				t = TypAny
+			}
+			parts[i] = cTypeDecl(t, p.Name)
 		}
-		parts[i] = cTypeDecl(t, p.Name)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -1121,76 +1128,44 @@ func (e *Emitter) emitTypeof(t *TypeofExpr) string {
 //  scoped blocks where each macro is called and its result flows forward.
 
 func (e *Emitter) emitMacroChainStmt(chain *MacroCallChain) {
-	// Emit the receiver into a temp variable
+	// Each do { } block is lifted to a static void helper fn __zx_blk_N().
+	// The macro receives: (input_value, __zx_blk_N)
+	// We emit the block helpers first, then the calls.
 	recvType := exprType(chain.Recv)
 	if recvType == nil {
 		recvType = TypAny
 	}
 	tmp := e.tmp()
-	e.ln("%s %s = %s;", cType(recvType), tmp, e.emitExpr(chain.Recv))
-	// For each step, lift the block into a nested scope and call the macro
+	// Collect block helper names so we can emit them before the call sequence
+	type blkInfo struct {
+		name string
+		step MacroChainStep
+	}
+	var blks []blkInfo
 	for _, step := range chain.Steps {
 		blkName := e.tmp()
-		// emit the do-block as a named static function
-		e.ln("/* macro chain step: %s */", step.Macro)
-		e.ln("{")
+		blks = append(blks, blkInfo{name: blkName, step: step})
+	}
+
+	// Emit all block helpers as static void functions
+	for _, b := range blks {
+		e.ln("static void %s(void) {", b.name)
 		e.indent++
-		// call the macro with current value; if macro is user-defined, call it
-		// otherwise, run the block directly based on the truthiness of the value
-		switch step.Macro {
-		case "ifTrue", "if_true":
-			e.ln("if (%s) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		case "ifFalse", "if_false":
-			e.ln("if (!(%s)) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		case "then", "always":
-			// always run
-			e.emitBlockStmts(step.Body)
-		case "ifNil", "if_nil":
-			e.ln("if ((void*)(%s) == NULL) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		case "ifNotNil", "if_not_nil":
-			e.ln("if ((void*)(%s) != NULL) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		case "ifZero", "if_zero":
-			e.ln("if (%s == 0) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		case "ifNonZero", "if_non_zero", "ifOk":
-			e.ln("if (%s != 0) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		default:
-			// user-defined macro — call __zx_macro_name(tmp, block_fn)
-			// Lift block to a static helper
-			e.ln("/* call user macro %s */", step.Macro)
-			e.ln("{")
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.ln("%s(%s);", macroFnName(step.Macro), tmp)
-			e.indent--
-			e.ln("}")
-		}
+		e.emitBlockStmts(b.step.Body)
 		e.indent--
 		e.ln("}")
-		_ = blkName
+	}
+
+	// Emit the call sequence
+	e.ln("%s %s = (%s)(%s);", cType(recvType), tmp, cType(recvType), e.emitExpr(chain.Recv))
+	for _, b := range blks {
+		e.ln("/* macro chain step: %s */", b.step.Macro)
+		// All chain macros (user-defined or built-in like ifTrue/ifFalse/then)
+		// are called as: __zx_macro_name(value, block_helper)
+		// The macro decides whether to run the block based on its logic.
+		e.ln("%s = (%s)(%s(%s, %s));",
+			tmp, cType(recvType),
+			macroFnName(b.step.Macro), tmp, b.name)
 	}
 }
 

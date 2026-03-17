@@ -31,19 +31,19 @@ macro fn greet_name |name: str| -> str {
 //  Form B — chain syntax: |input, doStmt| -> |output|
 // ─────────────────────────────────────────────────────────────────────────────
 
-macro fn ifTrue |input, doStmt| -> |output| {
+macro fn ifTrue |input: bool, doStmt| -> |output| {
     output = input;
     if input { doStmt(); }
     return output;
 }
 
-macro fn ifFalse |input, doStmt| -> |output| {
+macro fn ifFalse |input: bool, doStmt| -> |output| {
     output = input;
     if !input { doStmt(); }
     return output;
 }
 
-macro fn then |input, doStmt| -> |output| {
+macro fn then |input: bool, doStmt| -> |output| {
     output = input;
     doStmt();
     return output;

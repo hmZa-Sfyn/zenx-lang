@@ -180,7 +180,9 @@ func (tc *TypeChecker) checkMacro(mc *MacroDecl) {
 	tc.scope = newScope(saved, "fn")
 	tc.macroStack = append(tc.macroStack, mc)
 
-	// define all input params as local variables
+	// define all input params as local variables.
+	// Params named "doStmt", "block", "body", "action", etc. are callable blocks —
+	// they are registered with IsFn=true so doStmt() compiles without E45 errors.
 	seen := map[string]bool{}
 	for _, p := range mc.Params {
 		if seen[p.Name] {
@@ -189,8 +191,26 @@ func (tc *TypeChecker) checkMacro(mc *MacroDecl) {
 			tc.ok = false
 		}
 		seen[p.Name] = true
-		t := p.Type; if t == nil { t = TypAny }
-		tc.scope.define(p.Name, &VarInfo{Type: t, Sp: p.Sp})
+		t := p.Type
+		if t == nil {
+			t = TypAny
+		}
+		// All macro params that look like block/callback params are callable.
+		// This covers: doStmt, block, body, action, callback, fn, proc, handler, etc.
+		isCallable := isBlockParam(p.Name, t)
+		tc.scope.define(p.Name, &VarInfo{Type: t, IsFn: isCallable, Sp: p.Sp})
+		// Also register callable params directly in tc.fns as zero-param fns,
+		// so inferCall finds them in the fast path and skips the E44/E45 check.
+		if isCallable {
+			syntheticFn := &FnDecl{
+				Sp:      p.Sp,
+				Name:    p.Name,
+				Params:  []Param{},
+				RetType: TypAny,
+				Body:    &Block{},
+			}
+			tc.fns[p.Name] = syntheticFn
+		}
 	}
 
 	// define output variables as any (they are assigned in the body)
@@ -203,6 +223,17 @@ func (tc *TypeChecker) checkMacro(mc *MacroDecl) {
 
 	// check the body
 	tc.checkBlock(mc.Body)
+
+	// clean up synthetic fn entries we added for callable block params
+	for _, p := range mc.Params {
+		t := p.Type
+		if t == nil {
+			t = TypAny
+		}
+		if isBlockParam(p.Name, t) {
+			delete(tc.fns, p.Name)
+		}
+	}
 
 	tc.macroStack = tc.macroStack[:len(tc.macroStack)-1]
 	tc.scope = saved
@@ -609,12 +640,14 @@ func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 		tc.ok = false; e.Typ = TypUnknown; return TypUnknown
 	}
 	// EM08: wrong number of arguments
+	// Exception: if 0 args are given, the macro may be used as a pipe step
+	// (e.g. 3 |> times2!) — the pipe provides the argument.
 	expected := len(mc.Params)
 	got := len(e.Args)
-	if expected != got {
+	if expected != got && !(got == 0 && expected <= 1) {
 		errCode("EM08", e.Sp,
 			fmt.Sprintf("macro %q expects %d argument(s), got %d", e.Name, expected, got),
-			fmt.Sprintf("macro signature: macro fn %s |%s|", e.Name, listParamTypes(mc.Params)))
+			fmt.Sprintf("signature: macro fn %s |%s|", e.Name, listParamTypes(mc.Params)))
 		tc.ok = false
 	}
 	// type-check each argument
@@ -1029,4 +1062,39 @@ func listParamTypes(params []Param) string {
 	parts := make([]string, len(params))
 	for i, p := range params { t := "any"; if p.Type != nil { t = p.Type.String() }; parts[i] = p.Name + ": " + t }
 	return strings.Join(parts, ", ")
+}
+
+// isBlockParam returns true if a macro param represents a callable block.
+// Params named doStmt, block, body, action, fn, callback, handler, etc.
+// are treated as callable so doStmt() works inside macro bodies.
+func isBlockParam(name string, t *ZXType) bool {
+	lower := strings.ToLower(name)
+	// explicit block-sounding names
+	switch lower {
+	case "dostmt", "block", "body", "action", "fn", "callback",
+		"handler", "stmt", "run", "exec", "proc", "closure", "do",
+		"then", "ontrue", "onfalse", "iftrue", "iffalse":
+		return true
+	}
+	// suffix/prefix patterns
+	if strings.HasSuffix(lower, "stmt") || strings.HasSuffix(lower, "block") ||
+		strings.HasSuffix(lower, "fn") || strings.HasSuffix(lower, "func") ||
+		strings.HasPrefix(lower, "do") || strings.HasPrefix(lower, "on") {
+		return true
+	}
+	return false
+}
+
+// isCReservedFnTC checks for C reserved names (typechecker version)
+func isCReservedFnTC(name string) bool {
+	switch name {
+	case "double", "float", "int", "char", "long", "short",
+		"unsigned", "signed", "void", "struct", "union", "enum",
+		"static", "extern", "const", "inline", "register", "auto",
+		"volatile", "typedef", "return", "if", "else", "while",
+		"for", "do", "switch", "case", "break", "continue",
+		"goto", "default", "sizeof", "bool", "string":
+		return true
+	}
+	return false
 }
