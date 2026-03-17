@@ -1,0 +1,19 @@
+my x = 1900;
+my y = (1900 / 2);
+
+extern fn printf(fmt: str, ...) -> int;
+
+fn ok() -> int {
+    printf("ok()");
+    return 0;
+}
+
+fn nah() -> int {
+    printf("nah()");
+    return 0;
+}
+
+match x {
+    y => { ok(); }
+    _ => { nah(); }
+}

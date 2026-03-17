@@ -419,7 +419,7 @@ func (e *Emitter) emitMatch(s *MatchStmt) {
 	for _, arm := range s.Arms {
 		if arm.IsWild {
 			if !first {
-				e.sb.WriteString(" else ")
+				e.sb.WriteString("}  else ")
 			} else {
 				e.sb.WriteString(strings.Repeat("    ", e.indent))
 			}
@@ -448,9 +448,9 @@ func (e *Emitter) emitMatch(s *MatchStmt) {
 		}
 		first = false
 	}
-	if !first {
+	/*if !first {
 		e.ln("}")
-	}
+	}*/
 	e.indent--
 	e.ln("}")
 }

@@ -100,4 +100,4 @@ whoami()->isroot() ifTrue: do {
 
 - add 10 more error messages for macros , cover everything in errors, it must not be incomplete!
 
-- 
+- Move all __zx_tmpX functions to global scope
