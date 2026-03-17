@@ -115,12 +115,6 @@ printf("flags = %lld\n", flags);
 printf("sizeof int = %lld\n", sizeof(int));
 printf("sizeof float = %lld\n", sizeof(float));
 
-// Pointer with & and ^
-my num: int = 42;
-my p: &int = &num;
-^p = 999;
-say num;
-
 // die (Perl style — prints to stderr and exits)
 // die "something went wrong" ← uncomment to test
 

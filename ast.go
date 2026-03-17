@@ -15,9 +15,9 @@ const (
 	TyStr
 	TyChar
 	TyVoid
-	TyRef   // ref T  — friendly pointer
-	TyArray // [N]T
-	TySlice // []T
+	TyRef
+	TyArray
+	TySlice
 	TyStruct
 	TyAny
 	TyUnknown
@@ -25,9 +25,9 @@ const (
 
 type ZXType struct {
 	Kind    TypeKind
-	Elem    *ZXType // Ref / Array / Slice element
-	ArrSize int     // Array fixed size
-	Name    string  // Struct name
+	Elem    *ZXType
+	ArrSize int
+	Name    string
 }
 
 var (
@@ -41,19 +41,11 @@ var (
 	TypUnknown = &ZXType{Kind: TyUnknown}
 )
 
-func RefOf(elem *ZXType) *ZXType {
-	return &ZXType{Kind: TyRef, Elem: elem}
-}
-func ArrayOf(elem *ZXType, n int) *ZXType {
-	return &ZXType{Kind: TyArray, Elem: elem, ArrSize: n}
-}
-func SliceOf(elem *ZXType) *ZXType {
-	return &ZXType{Kind: TySlice, Elem: elem}
-}
-func StructType(name string) *ZXType {
-	return &ZXType{Kind: TyStruct, Name: name}
-}
-func PtrOf(elem *ZXType) *ZXType { return RefOf(elem) } // backward compat
+func RefOf(elem *ZXType) *ZXType          { return &ZXType{Kind: TyRef, Elem: elem} }
+func ArrayOf(elem *ZXType, n int) *ZXType { return &ZXType{Kind: TyArray, Elem: elem, ArrSize: n} }
+func SliceOf(elem *ZXType) *ZXType        { return &ZXType{Kind: TySlice, Elem: elem} }
+func StructType(name string) *ZXType      { return &ZXType{Kind: TyStruct, Name: name} }
+func PtrOf(elem *ZXType) *ZXType          { return RefOf(elem) }
 
 func (t *ZXType) String() string {
 	if t == nil {
@@ -150,12 +142,6 @@ func coercible(from, to *ZXType) bool {
 	if from.Kind == TyInt && to.Kind == TyBool {
 		return true
 	}
-	if from.Kind == TyRef && from.Elem != nil && from.Elem.Kind == TyVoid && to.Kind == TyRef {
-		return true
-	}
-	if from.Kind == TyRef && to.Kind == TyRef && to.Elem != nil && to.Elem.Kind == TyVoid {
-		return true
-	}
 	if from.Kind == TyRef && to.Kind == TyRef {
 		return true
 	}
@@ -189,17 +175,15 @@ func isTruthy(t *ZXType) bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Annotations  (@test @ignore @args={"n":42} @expect=10 ...)
+//  Annotations  (@test @ignore @args={"n":42} ...)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Annotation represents a single @name or @name={"key":val} decoration.
 type Annotation struct {
 	Sp   Span
-	Name string            // "test", "ignore", "args", …
-	Args map[string]string // key→value parsed from JSON or simple scalar
+	Name string
+	Args map[string]string
 }
 
-// Known annotation name constants
 const (
 	AnnTest       = "test"
 	AnnIgnore     = "ignore"
@@ -219,38 +203,68 @@ const (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  TestDecl — a @test-annotated function with all its metadata
+//  TestDecl
 // ─────────────────────────────────────────────────────────────────────────────
 
 type TestDecl struct {
 	Fn       *FnDecl
-	Ignored  bool              // @ignore or @skip
-	Args     map[string]string // @args={"n":42}
-	Expected string            // @expect=42  (raw string value)
-	Timeout  int               // @timeout=1000 (ms), 0 = unlimited
-	ModPath  string            // "mymod::tests" if inside mod blocks
+	Ignored  bool
+	Args     map[string]string
+	Expected string
+	Timeout  int
+	ModPath  string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  ModBlock — mod name { fn ... @test fn ... mod nested { ... } }
+//  ModBlock
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ModBlock struct {
 	Sp      Span
 	Name    string
-	Path    string      // full dotted path, e.g. "outer::inner"
-	Mods    []*ModBlock // nested mod blocks
+	Path    string
+	Mods    []*ModBlock
 	Structs []*StructDecl
 	Methods []*MethodDecl
-	Fns     []*FnDecl   // non-test functions
-	Tests   []*TestDecl // @test functions
+	Fns     []*FnDecl
+	Tests   []*TestDecl
 }
 
 func (n *ModBlock) nodeSpan() Span  { return n.Sp }
 func (n *ModBlock) nodeTag() string { return "mod" }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  AST node interface
+//  MacroDecl — macro fn name |params| -> |out| { body }
+// ─────────────────────────────────────────────────────────────────────────────
+
+type MacroDecl struct {
+	Sp      Span
+	Name    string
+	Inputs  []string // input variable names between | |
+	Outputs []string // output variable names between | |
+	Body    *Block
+}
+
+func (n *MacroDecl) nodeSpan() Span  { return n.Sp }
+func (n *MacroDecl) nodeTag() string { return "macro" }
+
+// MacroCallChain — expr ifTrue: do { } ifFalse: do { } then: do { }
+type MacroCallChain struct {
+	Sp    Span
+	Recv  Node // the receiver value
+	Calls []MacroChainStep
+	Typ   *ZXType
+}
+type MacroChainStep struct {
+	Macro string // e.g. "ifTrue"
+	Body  *Block // the do { } block
+}
+
+func (n *MacroCallChain) nodeSpan() Span  { return n.Sp }
+func (n *MacroCallChain) nodeTag() string { return "macrochainl" }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  AST nodes
 // ─────────────────────────────────────────────────────────────────────────────
 
 type Node interface {
@@ -258,40 +272,39 @@ type Node interface {
 	nodeTag() string
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Program (root)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Program ───────────────────────────────────────────────────────────────────
 
 type Program struct {
-	Module    string // optional  "mod myapp;"
+	Module    string
 	Imports   []*ImportDecl
 	Externs   []*ExternDecl
 	Structs   []*StructDecl
 	Methods   []*MethodDecl
 	ModBlocks []*ModBlock
+	Macros    []*MacroDecl
 	TopStmts  []Node
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Declarations
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ImportDecl — unified import/use statement.
+// ── Import (unified) ──────────────────────────────────────────────────────────
 //
 // Supported forms:
-//
-//	use std::str                // stdlib module
-//	use std::math as m          // with alias
-//	import "stdio.h"            // raw C header
-//	use "mylib.h"               // also raw C header
-//	use "mylib.h" as lib        // C header with alias
+//   use std::str                 stdlib module
+//   use "stdio.h"                C header
+//   import "stdio.h"             C header
+//   use "./"::abc                local file ./abc.zx
+//   import _/mod1/logger         local path ./mod1/logger.zx
+//   import __/__/__/mod2/abc     ../../../mod2/abc.zx
+
 type ImportDecl struct {
-	Sp     Span
-	Path   string // C header path, e.g. "stdio.h"  (when IsStd=false)
-	Module string // stdlib module, e.g. "std::str"  (when IsStd=true)
-	Alias  string // optional alias
-	IsStd  bool   // true → std:: module
-	IsUser bool   // true → user module (non-std, non-C)
+	Sp        Span
+	Path      string // C header path or resolved local file path
+	Module    string // stdlib module name
+	Alias     string
+	IsStd     bool
+	IsUser    bool
+	IsLocal   bool   // local file import: use "./"::abc
+	LocalFile string // resolved path like ./mod1/logger.zx
+	ImportAll bool   // import all from the file
 }
 
 func (n *ImportDecl) nodeSpan() Span  { return n.Sp }
@@ -318,7 +331,6 @@ type StructDecl struct {
 func (n *StructDecl) nodeSpan() Span  { return n.Sp }
 func (n *StructDecl) nodeTag() string { return "struct" }
 
-// FnDecl — function declaration (may carry annotations)
 type FnDecl struct {
 	Sp          Span
 	Name        string
@@ -327,7 +339,7 @@ type FnDecl struct {
 	RetType     *ZXType
 	Body        *Block
 	Annotations []Annotation
-	ModPath     string // non-empty when declared inside a mod block
+	ModPath     string
 }
 
 func (n *FnDecl) nodeSpan() Span  { return n.Sp }
@@ -341,7 +353,6 @@ func (n *FnDecl) HasAnnotation(name string) bool {
 	}
 	return false
 }
-
 func (n *FnDecl) GetAnnotation(name string) *Annotation {
 	for i := range n.Annotations {
 		if n.Annotations[i].Name == name {
@@ -355,7 +366,7 @@ type MethodDecl struct {
 	Sp          Span
 	RecvName    string
 	RecvType    string
-	RecvRef     bool // receiver is ref T
+	RecvRef     bool
 	Name        string
 	Params      []Param
 	Variadic    bool
@@ -371,13 +382,11 @@ func (n *MethodDecl) CName() string   { return n.RecvType + "_" + n.Name }
 type Param struct {
 	Sp      Span
 	Name    string
-	Type    *ZXType // nil / TypAny = untyped
-	Default Node    // optional default value
+	Type    *ZXType
+	Default Node
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Statements
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Statements ────────────────────────────────────────────────────────────────
 
 type Block struct {
 	Sp    Span
@@ -560,9 +569,7 @@ type SpawnStmt struct {
 func (n *SpawnStmt) nodeSpan() Span  { return n.Sp }
 func (n *SpawnStmt) nodeTag() string { return "spawn" }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Expressions
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Expressions ───────────────────────────────────────────────────────────────
 
 type IntLit struct {
 	Sp  Span
@@ -647,7 +654,7 @@ type FieldExpr struct {
 	Sp      Span
 	Obj     Node
 	Field   string
-	UsedDot bool // dot on a ref type → funny warning
+	UsedDot bool
 	Typ     *ZXType
 }
 
@@ -667,7 +674,7 @@ func (n *CastExpr) nodeTag() string { return "cast" }
 type AddrExpr struct {
 	Sp      Span
 	Operand Node
-	Deref   bool // true = ^x (deref), false = @x (addr-of)
+	Deref   bool
 	Typ     *ZXType
 }
 
@@ -678,7 +685,7 @@ type StructInit struct {
 	Sp        Span
 	Name      string
 	Fields    []FieldInit
-	HeapAlloc bool // &Struct{} or @Struct{}
+	HeapAlloc bool
 	Typ       *ZXType
 }
 
@@ -730,7 +737,6 @@ type BuiltinExpr struct {
 func (n *BuiltinExpr) nodeSpan() Span  { return n.Sp }
 func (n *BuiltinExpr) nodeTag() string { return "builtin" }
 
-// PipeExpr — value |> fn1 |> fn2  emits as fn2(fn1(value))
 type PipeExpr struct {
 	Sp    Span
 	Steps []Node
@@ -740,7 +746,6 @@ type PipeExpr struct {
 func (n *PipeExpr) nodeSpan() Span  { return n.Sp }
 func (n *PipeExpr) nodeTag() string { return "pipe" }
 
-// TemplateStr — f"hello {name}!" interpolated string
 type TemplateStr struct {
 	Sp    Span
 	Parts []TplPart
@@ -756,7 +761,6 @@ type TplPart struct {
 func (n *TemplateStr) nodeSpan() Span  { return n.Sp }
 func (n *TemplateStr) nodeTag() string { return "tplstr" }
 
-// CmdExpr — cmd!("ls") captures shell output as str
 type CmdExpr struct {
 	Sp            Span
 	Command       Node
@@ -767,7 +771,6 @@ type CmdExpr struct {
 func (n *CmdExpr) nodeSpan() Span  { return n.Sp }
 func (n *CmdExpr) nodeTag() string { return "cmd" }
 
-// ReadFileExpr — readfile!("path") reads file as str
 type ReadFileExpr struct {
 	Sp   Span
 	Path Node
@@ -777,7 +780,6 @@ type ReadFileExpr struct {
 func (n *ReadFileExpr) nodeSpan() Span  { return n.Sp }
 func (n *ReadFileExpr) nodeTag() string { return "readfile" }
 
-// TernaryExpr — cond ? then : else
 type TernaryExpr struct {
 	Sp   Span
 	Cond Node
@@ -788,3 +790,36 @@ type TernaryExpr struct {
 
 func (n *TernaryExpr) nodeSpan() Span  { return n.Sp }
 func (n *TernaryExpr) nodeTag() string { return "ternary" }
+
+// TypeofExpr — typeof(x) returns the type name as a str at compile time
+type TypeofExpr struct {
+	Sp  Span
+	Arg Node
+	Typ *ZXType
+}
+
+func (n *TypeofExpr) nodeSpan() Span  { return n.Sp }
+func (n *TypeofExpr) nodeTag() string { return "typeof" }
+
+// BangMacroExpr — name!(args...)
+// Handles all user-invoked bang-macros like dbg!, env!, panic!, assert!, etc.
+type BangMacroExpr struct {
+	Sp   Span
+	Name string // macro name without "!"
+	Args []Node
+	Typ  *ZXType
+}
+
+func (n *BangMacroExpr) nodeSpan() Span  { return n.Sp }
+func (n *BangMacroExpr) nodeTag() string { return "bangmacro" }
+
+// WriteFileExpr — writefile!("path", content)
+type WriteFileExpr struct {
+	Sp      Span
+	Path    Node
+	Content Node
+	Typ     *ZXType
+}
+
+func (n *WriteFileExpr) nodeSpan() Span  { return n.Sp }
+func (n *WriteFileExpr) nodeTag() string { return "writefile" }
