@@ -97,6 +97,78 @@ whoami()->isroot() ifTrue: do {
 
 
 ```
+error: "(myenv)  ✘ hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  ./zxc ./examples/macros.zx
+
+ gcc compilation error — the generated C has a problem:
+
+  /tmp/zx_3198758970.c: In function ‘main’:
+  /tmp/zx_3198758970.c:112:17: error: invalid storage class for function ‘__zx_tmp2’
+    112 |     static void __zx_tmp2(void) {
+        |                 ^~~~~~~~~
+  /tmp/zx_3198758970.c:115:17: error: invalid storage class for function ‘__zx_tmp3’
+    115 |     static void __zx_tmp3(void) {
+        |                 ^~~~~~~~~
+  /tmp/zx_3198758970.c:118:17: error: invalid storage class for function ‘__zx_tmp4’
+    118 |     static void __zx_tmp4(void) {
+        |                 ^~~~~~~~~
+  /tmp/zx_3198758970.c:129:17: error: invalid storage class for function ‘__zx_tmp6’
+    129 |     static void __zx_tmp6(void) {
+        |                 ^~~~~~~~~
+  /tmp/zx_3198758970.c:132:17: error: invalid storage class for function ‘__zx_tmp7’
+    132 |     static void __zx_tmp7(void) {
+        |                 ^~~~~~~~~
+" while c code is: "
+... snip ...
+int main(int argc, char **argv) {
+    fprintf(stdout, "%s\n", "=== ZX Macros ===");
+    fprintf(stdout, "%s\n", "--- Form A ---");
+    long long d = __zx_macro_times2(7LL);
+    printf("times2!(7) = %lld\n", d);
+    long long sq = __zx_macro_squared(9LL);
+    printf("squared!(9) = %lld\n", sq);
+    long long cl = __zx_macro_clamp_val(15LL, 0LL, 10LL);
+    printf("clamp_val!(15, 0, 10) = %lld\n", cl);
+    __zx_macro_greet_name("World");
+    fprintf(stdout, "%s\n", "--- Built-in bang macros ---");
+    long long x = 42LL;
+    (fprintf(stderr, "[dbg] %s = %lld\n", "x", (x)));
+    fprintf(stdout, "%s\n", "--- Chain syntax ---");
+    long long is_root = ((long long)((getuid() == 0LL)));
+    static void __zx_tmp2(void) {
+        fprintf(stdout, "%s\n", "You are root!");
+    }
+    static void __zx_tmp3(void) {
+        fprintf(stdout, "%s\n", "You are NOT root.");
+    }
+    static void __zx_tmp4(void) {
+        fprintf(stdout, "%s\n", "Check complete.");
+    }
+    long long __zx_tmp1 = (long long)(is_root);
+    /* macro chain step: ifTrue */
+    __zx_tmp1 = (long long)(__zx_macro_ifTrue(__zx_tmp1, __zx_tmp2));
+    /* macro chain step: ifFalse */
+    __zx_tmp1 = (long long)(__zx_macro_ifFalse(__zx_tmp1, __zx_tmp3));
+    /* macro chain step: then */
+    __zx_tmp1 = (long long)(__zx_macro_then(__zx_tmp1, __zx_tmp4));
+    long long num = 8LL;
+    static void __zx_tmp6(void) {
+        printf("num=%lld is truthy\n", num);
+    }
+    static void __zx_tmp7(void) {
+        fprintf(stdout, "%s\n", "done with num");
+    }
+    long long __zx_tmp5 = (long long)(num);
+    /* macro chain step: ifTrue */
+    __zx_tmp5 = (long long)(__zx_macro_ifTrue(__zx_tmp5, __zx_tmp6));
+    /* macro chain step: then */
+    __zx_tmp5 = (long long)(__zx_macro_then(__zx_tmp5, __zx_tmp7));
+    fprintf(stdout, "%s\n", "--- Pipes ---");
+    long long piped = __zx_macro_squared(__zx_macro_times2(3LL));
+    printf("3 |> times2! |> squared! = %lld\n", piped);
+    fprintf(stdout, "%s\n", "=== done ===");
+    return 0;
+}" -> error, is just that all __zx_tmpX functions are defined in main function, why? idk!!
+
 
 - add 10 more error messages for macros , cover everything in errors, it must not be incomplete!
 
