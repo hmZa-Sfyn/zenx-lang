@@ -4,12 +4,12 @@ my y = (1900 / 2);
 extern fn printf(fmt: str, ...) -> int;
 
 fn ok() -> int {
-    printf("ok()");
+    say "ok()";
     return 0;
 }
 
 fn nah() -> int {
-    printf("nah()");
+    say "nah()";
     return 0;
 }
 
