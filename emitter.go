@@ -1045,11 +1045,12 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 	}
 	switch b.Name {
 	case "dbg":
-		// dbg!(expr) — print value + type label to stderr, return the value
+		// dbg!(expr) — print to stderr then return the value unchanged
 		if len(b.Args) == 1 {
 			t := exprType(b.Args[0])
-			return fmt.Sprintf("(fprintf(stderr, \"[dbg] %s = %s\\n\", %s), %s)",
-				arg0, fmtFor(t), arg0, arg0)
+			// emit as a GCC statement-expression so it works as both stmt and expr
+			return fmt.Sprintf("(fprintf(stderr, \\\"[dbg] %%s = %s\\\\n\\\", \\\"%s\\\", %s), %s)",
+				fmtFor(t), arg0, arg0, arg0)
 		}
 	case "panic":
 		// panic!("msg") — print to stderr and abort
