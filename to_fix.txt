@@ -36,3 +36,63 @@ use "./"::something (logger_ng) // this means, to import `mod logger_ng {` from 
 ```
 
 - also create some examples on how to use modules, like `mod abc { mod def { fn abc() -> any { say "hi"; return 0;}}}`
+
+---
+
+NEW FEATURES:
+
+- add a new macrofunction:
+```perl
+
+macro fn ifTrue |input,doStmt| -> |output| {
+   if typeof(input) == typeof(True) {   
+      if input == True {
+         output = doStmt();
+      }
+   } elif typeof(input) == typeof(1) {
+      if input == 1 {
+         output = doStmt();
+      }
+   } else {
+      die "please provide a boolean/numberic value!";
+      //skip, we only accept, bolean or number as true or false!
+   }
+
+   return output;
+}
+
+
+macro fn ifFalse |input,doStmt| -> |output| {
+   if typeof(input) == typeof(True) {   
+      if input == False {
+         output = doStmt();
+      }
+   } elif typeof(input) == typeof(1) {
+      if input != 1 {
+         output = doStmt();
+      }
+   } else {
+      die "please provide a boolean/numberic value!";
+      //skip, we only accept, bolean or number as true or false!
+   }
+
+   return output;
+}
+
+
+macro fn then |doStmt| -> |output| {
+   output = doStmt();
+
+   return output;
+}
+
+whoami()->isroot() ifTrue: do {
+   say "I am root";
+} ifFalse: do {
+   say "I am not root";
+} then: do {
+   say "done!";
+}
+
+
+```
