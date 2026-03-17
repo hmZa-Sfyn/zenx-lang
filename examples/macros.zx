@@ -82,13 +82,13 @@ let is_root = int(getuid() == 0);
 
 is_root
     ifTrue: do {
-        say "You are root!"
+        say "You are root!";
     }
     ifFalse: do {
-        say "You are NOT root."
+        say "You are NOT root.";
     }
     then: do {
-        say "Check complete."
+        say "Check complete.";
     }
 
 let num = 8;
@@ -98,7 +98,7 @@ num
         printf("num=%lld is truthy\n", num);
     }
     then: do {
-        say "done with num"
+        say "done with num";
     }
 
 // Pipes with macros
@@ -106,4 +106,4 @@ say "--- Pipes ---";
 let piped = 3 |> times2! |> squared!;
 printf("3 |> times2! |> squared! = %lld\n", piped);
 
-say "=== done ==="
+say "=== done ===";

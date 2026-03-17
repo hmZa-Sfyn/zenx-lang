@@ -9,11 +9,12 @@ import (
 )
 
 type Parser struct {
-	tokens  []Token
-	pos     int
-	file    string
-	ok      bool
-	srcDir  string // directory of the source file, for local imports
+	tokens     []Token
+	pos        int
+	file       string
+	ok         bool
+	srcDir     string // directory of the source file, for local imports
+	macroScope map[string]bool // names of current macro params — shadow keywords
 }
 
 func Parse(tokens []Token, src, file string) *Program {
@@ -90,6 +91,12 @@ func (p *Parser) eatSemi() {
 	if p.at(TK_SEMI) {
 		p.advance()
 	}
+}
+
+// isInMacroScope returns true if name is a macro param name that should
+// shadow any keyword with the same name (e.g. param named "input" shadows TK_INPUT)
+func (p *Parser) isInMacroScope(name string) bool {
+	return p.macroScope != nil && p.macroScope[name]
 }
 
 func (p *Parser) isTypeStart() bool {
@@ -578,7 +585,23 @@ func (p *Parser) parseMacroDecl() *MacroDecl {
 		}
 	}
 
+	// Populate macroScope so params shadow keywords in the body
+	savedScope := p.macroScope
+	p.macroScope = make(map[string]bool)
+	for _, param := range params {
+		p.macroScope[param.Name] = true
+	}
+	for _, inp := range inputs {
+		p.macroScope[inp] = true
+	}
+	for _, out := range outputs {
+		p.macroScope[out] = true
+	}
+
 	body := p.parseBlock()
+
+	// Restore previous macro scope
+	p.macroScope = savedScope
 
 	// E_M02: macro body must not be empty
 	if body == nil || len(body.Stmts) == 0 {
@@ -1425,6 +1448,12 @@ func (p *Parser) parsePostfix() Node {
 
 func (p *Parser) parsePrimary() Node {
 	t := p.peek()
+	// If we are inside a macro body and this token (even if normally a keyword)
+	// matches a macro param name, treat it as a plain identifier.
+	if p.isInMacroScope(t.Value) {
+		p.advance()
+		return &Ident{Sp: t.Span, Name: t.Value}
+	}
 	switch t.Kind {
 	case TK_INT:
 		p.advance()
@@ -1471,6 +1500,11 @@ func (p *Parser) parsePrimary() Node {
 	case TK_BANG_MACRO:
 		return p.parseBangMacroCall()
 	case TK_INPUT, TK_STDIN:
+		// If this keyword is actually a macro param name, treat as identifier
+		if p.isInMacroScope(t.Value) {
+			p.advance()
+			return &Ident{Sp: t.Span, Name: t.Value}
+		}
 		return p.parseInput()
 	case TK_LEN:
 		p.advance()
