@@ -1,0 +1,152 @@
+// macros.zx — ZX macro system showcase
+// Run: ./zxc examples/macros.zx
+
+extern fn printf(fmt: str, ...) -> int;
+extern fn getuid() -> int;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Form A — typed params (like a regular function, just declared with macro)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Simple math macro — called as: double!(5) or double_val!(x)
+macro fn double_val |n: int| -> int {
+    return n * 2;
+}
+
+macro fn square_val |n: int| -> int {
+    return n * n;
+}
+
+macro fn clamp_val |v: int, lo: int, hi: int| -> int {
+    if v < lo { return lo; }
+    if v > hi { return hi; }
+    return v;
+}
+
+// String macro
+macro fn greet |name: str| -> str {
+    printf("Hello, %s!\n", name);
+    return name;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Form B — pipe-style with |input, doStmt| -> |output|
+//  These are designed for the chain call syntax:
+//     expr macroName: do { }
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ifTrue: runs the block if input is truthy
+macro fn ifTrue |input, doStmt| -> |output| {
+    output = input;
+    if input {
+        doStmt();
+    }
+    return output;
+}
+
+// ifFalse: runs the block if input is falsy
+macro fn ifFalse |input, doStmt| -> |output| {
+    output = input;
+    if !input {
+        doStmt();
+    }
+    return output;
+}
+
+// then: always runs the block (no condition)
+macro fn then |input, doStmt| -> |output| {
+    output = input;
+    doStmt();
+    return output;
+}
+
+// unless: runs block only if input is zero/false
+macro fn unless_zero |input, doStmt| -> |output| {
+    output = input;
+    unless input {
+        doStmt();
+    }
+    return output;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Main program
+// ─────────────────────────────────────────────────────────────────────────────
+
+say "=== ZX Macros ===";
+say "";
+
+// ── Form A: call like regular functions with ! ────────────────────────────────
+say "--- Form A: typed macros ---";
+
+let d = double_val!(7);
+printf("double_val!(7) = %lld\n", d);
+
+let sq = square_val!(9);
+printf("square_val!(9) = %lld\n", sq);
+
+let cl = clamp_val!(15, 0, 10);
+printf("clamp_val!(15, 0, 10) = %lld\n", cl);
+
+greet!("World");
+
+// ── Built-in bang macros ──────────────────────────────────────────────────────
+say "";
+say "--- Built-in bang macros ---";
+
+// dbg! — print debug info to stderr, returns the value
+let x = 42;
+dbg!(x);
+
+// log! — log to stderr with newline
+log!(x);
+
+// env! — read environment variable
+let home = env!("HOME");
+printf("HOME = %s\n", home);
+
+// panic! / todo! / unreachable! — for error states
+// (commented out since they abort):
+// panic!("something went wrong");
+// todo!("implement this");
+
+// ── Chain syntax: expr macroName: do { } ──────────────────────────────────────
+say "";
+say "--- Chain syntax ---";
+
+// is_root = (getuid() == 0)
+let is_root = int(getuid() == 0);
+
+// chain: check if root, print accordingly, then always print "done"
+is_root
+    ifTrue: do {
+        say "You are root!";
+    }
+    ifFalse: do {
+        say "You are NOT root.";
+    }
+    then: do {
+        say "Check complete.";
+    }
+
+// chain with a value
+let num = 8;
+num
+    ifTrue: do {
+        printf("num=%lld is truthy\n", num);
+    }
+    then: do {
+        say "done with num";
+    }
+
+// ── Macros in pipes ───────────────────────────────────────────────────────────
+say "";
+say "--- Macros in pipes ---";
+
+// pipe: 3 |> double_val! |> square_val!  = square(double(3)) = 36
+// Note: macro names in pipes use the ! form via the macro function name
+let piped = 3 |> double_val! |> square_val!;
+printf("3 |> double_val! |> square_val! = %lld\n", piped);
+
+say "";
+say "=== done ===";

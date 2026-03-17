@@ -234,34 +234,60 @@ func (n *ModBlock) nodeSpan() Span  { return n.Sp }
 func (n *ModBlock) nodeTag() string { return "mod" }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  MacroDecl — macro fn name |params| -> |out| { body }
+//  MacroDecl — macro fn name |param: type, ...| -> |out: type| { body }
+//
+//  Macros are syntactic sugar for regular functions.
+//  They compile to ordinary C functions — the only difference is they
+//  can be called with the chain syntax:
+//     value ifTrue: do { } ifFalse: do { } then: do { }
+//  and the bang syntax:
+//     dbg!(expr)
 // ─────────────────────────────────────────────────────────────────────────────
 
 type MacroDecl struct {
 	Sp      Span
 	Name    string
-	Inputs  []string // input variable names between | |
-	Outputs []string // output variable names between | |
+	Params  []Param   // typed input params  (between | |)
+	RetType *ZXType   // return type (from -> |out: T|, or void)
 	Body    *Block
+	// legacy untyped form — kept for the original |input,doStmt| syntax
+	Inputs  []string
+	Outputs []string
 }
 
 func (n *MacroDecl) nodeSpan() Span  { return n.Sp }
 func (n *MacroDecl) nodeTag() string { return "macro" }
 
-// MacroCallChain — expr ifTrue: do { } ifFalse: do { } then: do { }
+// MacroCallExpr — name!(arg1, arg2, ...)
+// The bang-call syntax desugars to a regular function call at emit time.
+type MacroCallExpr struct {
+	Sp   Span
+	Name string
+	Args []Node
+	Typ  *ZXType
+}
+
+func (n *MacroCallExpr) nodeSpan() Span  { return n.Sp }
+func (n *MacroCallExpr) nodeTag() string { return "macrocall" }
+
+// MacroCallChain — value macroName: do { } macroName2: do { }
+// Each step calls a macro with the current value as first argument
+// and the block as a closure-style second argument.
 type MacroCallChain struct {
 	Sp    Span
-	Recv  Node // the receiver value
-	Calls []MacroChainStep
+	Recv  Node
+	Steps []MacroChainStep
 	Typ   *ZXType
 }
 type MacroChainStep struct {
-	Macro string // e.g. "ifTrue"
-	Body  *Block // the do { } block
+	Sp    Span
+	Macro string
+	Args  []Node  // extra args before the block (usually none)
+	Body  *Block  // the do { } block
 }
 
 func (n *MacroCallChain) nodeSpan() Span  { return n.Sp }
-func (n *MacroCallChain) nodeTag() string { return "macrochainl" }
+func (n *MacroCallChain) nodeTag() string { return "macrochain" }
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  AST nodes
@@ -521,8 +547,8 @@ func (n *AssignStmt) nodeTag() string { return "assign" }
 type BreakStmt struct{ Sp Span }
 type ContinueStmt struct{ Sp Span }
 
-func (n *BreakStmt) nodeSpan() Span     { return n.Sp }
-func (n *BreakStmt) nodeTag() string    { return "break" }
+func (n *BreakStmt) nodeSpan() Span  { return n.Sp }
+func (n *BreakStmt) nodeTag() string { return "break" }
 func (n *ContinueStmt) nodeSpan() Span  { return n.Sp }
 func (n *ContinueStmt) nodeTag() string { return "continue" }
 
@@ -571,34 +597,22 @@ func (n *SpawnStmt) nodeTag() string { return "spawn" }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
-type IntLit struct {
-	Sp  Span
-	Val int64
-}
-type FloatLit struct {
-	Sp  Span
-	Val float64
-}
-type BoolLit struct {
-	Sp  Span
-	Val bool
-}
-type StrLit struct {
-	Sp  Span
-	Val string
-}
+type IntLit struct{ Sp Span; Val int64 }
+type FloatLit struct{ Sp Span; Val float64 }
+type BoolLit struct{ Sp Span; Val bool }
+type StrLit struct{ Sp Span; Val string }
 type NilLit struct{ Sp Span }
 
-func (n *IntLit) nodeSpan() Span    { return n.Sp }
-func (n *IntLit) nodeTag() string   { return "int" }
+func (n *IntLit) nodeSpan() Span  { return n.Sp }
+func (n *IntLit) nodeTag() string { return "int" }
 func (n *FloatLit) nodeSpan() Span  { return n.Sp }
 func (n *FloatLit) nodeTag() string { return "float" }
-func (n *BoolLit) nodeSpan() Span   { return n.Sp }
-func (n *BoolLit) nodeTag() string  { return "bool" }
-func (n *StrLit) nodeSpan() Span    { return n.Sp }
-func (n *StrLit) nodeTag() string   { return "str" }
-func (n *NilLit) nodeSpan() Span    { return n.Sp }
-func (n *NilLit) nodeTag() string   { return "nil" }
+func (n *BoolLit) nodeSpan() Span  { return n.Sp }
+func (n *BoolLit) nodeTag() string { return "bool" }
+func (n *StrLit) nodeSpan() Span  { return n.Sp }
+func (n *StrLit) nodeTag() string { return "str" }
+func (n *NilLit) nodeSpan() Span  { return n.Sp }
+func (n *NilLit) nodeTag() string { return "nil" }
 
 type Ident struct {
 	Sp   Span
@@ -805,7 +819,7 @@ func (n *TypeofExpr) nodeTag() string { return "typeof" }
 // Handles all user-invoked bang-macros like dbg!, env!, panic!, assert!, etc.
 type BangMacroExpr struct {
 	Sp   Span
-	Name string // macro name without "!"
+	Name string  // macro name without "!"
 	Args []Node
 	Typ  *ZXType
 }
@@ -823,3 +837,4 @@ type WriteFileExpr struct {
 
 func (n *WriteFileExpr) nodeSpan() Span  { return n.Sp }
 func (n *WriteFileExpr) nodeTag() string { return "writefile" }
+

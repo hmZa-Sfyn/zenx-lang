@@ -18,120 +18,39 @@ const (
 
 	TK_IDENT
 
-	TK_LET
-	TK_MY
-	TK_CONST
-	TK_OUR
-	TK_FN
-	TK_SUB
-	TK_MACRO
+	TK_LET; TK_MY; TK_CONST; TK_OUR
+	TK_FN; TK_SUB; TK_MACRO
 	TK_RETURN
-	TK_IF
-	TK_UNLESS
-	TK_ELIF
-	TK_ELSE
-	TK_WHILE
-	TK_UNTIL
-	TK_FOR
-	TK_FOREACH
-	TK_IN
-	TK_DO
-	TK_IMPORT
-	TK_USE
-	TK_MOD
-	TK_AS
-	TK_EXTERN
-	TK_STRUCT
-	TK_TYPE
-	TK_NEW
-	TK_BREAK
-	TK_NEXT
-	TK_CONTINUE
-	TK_LAST
-	TK_PRINT
-	TK_PRINTLN
-	TK_SAY
-	TK_WARN
-	TK_EPRINT
-	TK_EXIT
-	TK_DIE
-	TK_SIZEOF
-	TK_TYPEOF
-	TK_LEN
-	TK_PUSH
-	TK_POP
+	TK_IF; TK_UNLESS; TK_ELIF; TK_ELSE
+	TK_WHILE; TK_UNTIL
+	TK_FOR; TK_FOREACH; TK_IN; TK_DO
+	TK_IMPORT; TK_USE; TK_MOD; TK_AS; TK_EXTERN
+	TK_STRUCT; TK_TYPE; TK_NEW
+	TK_BREAK; TK_NEXT; TK_CONTINUE; TK_LAST
+	TK_PRINT; TK_PRINTLN; TK_SAY; TK_WARN; TK_EPRINT
+	TK_EXIT; TK_DIE; TK_SIZEOF; TK_TYPEOF
+	TK_LEN; TK_PUSH; TK_POP
 	TK_MATCH
-	TK_TRY
-	TK_CATCH
-	TK_FINALLY
-	TK_THROW
-	TK_RAISE
+	TK_TRY; TK_CATCH; TK_FINALLY; TK_THROW; TK_RAISE
 	TK_DEFER
 	TK_ASSERT
 	TK_SPAWN
-	TK_CMD
-	TK_READFILE
-	TK_WRITEFILE
-	TK_BANG_MACRO
-	TK_INPUT
-	TK_STDIN
-	TK_STDOUT
-	TK_STDERR
+	TK_CMD; TK_READFILE; TK_WRITEFILE; TK_BANG_MACRO
+	TK_INPUT; TK_STDIN; TK_STDOUT; TK_STDERR
 
-	TK_TYPE_INT
-	TK_TYPE_FLOAT
-	TK_TYPE_BOOL
-	TK_TYPE_STR
-	TK_TYPE_VOID
-	TK_TYPE_CHAR
-	TK_TYPE_REF
-	TK_TYPE_ANY
+	TK_TYPE_INT; TK_TYPE_FLOAT; TK_TYPE_BOOL; TK_TYPE_STR
+	TK_TYPE_VOID; TK_TYPE_CHAR; TK_TYPE_REF; TK_TYPE_ANY
 
-	TK_PLUS
-	TK_MINUS
-	TK_STAR
-	TK_SLASH
-	TK_PERCENT
-	TK_AMP
-	TK_PIPE
-	TK_CARET
-	TK_TILDE
-	TK_LSHIFT
-	TK_RSHIFT
-	TK_EQ
-	TK_NEQ
-	TK_LT
-	TK_GT
-	TK_LTE
-	TK_GTE
-	TK_AND
-	TK_OR
-	TK_NOT
-	TK_ASSIGN
-	TK_PLUS_EQ
-	TK_MINUS_EQ
-	TK_STAR_EQ
-	TK_SLASH_EQ
-	TK_PERCENT_EQ
-	TK_ARROW
-	TK_FAT_ARROW
-	TK_PIPE_ARROW
-	TK_QUESTION
-	TK_AT
-	TK_HAT
-	TK_DOT
-	TK_DOTDOT
-	TK_ELLIPSIS
-	TK_LPAREN
-	TK_RPAREN
-	TK_LBRACE
-	TK_RBRACE
-	TK_LBRACKET
-	TK_RBRACKET
-	TK_COMMA
-	TK_SEMI
-	TK_COLON
-	TK_DCOLON
+	TK_PLUS; TK_MINUS; TK_STAR; TK_SLASH; TK_PERCENT
+	TK_AMP; TK_PIPE; TK_CARET; TK_TILDE; TK_LSHIFT; TK_RSHIFT
+	TK_EQ; TK_NEQ; TK_LT; TK_GT; TK_LTE; TK_GTE
+	TK_AND; TK_OR; TK_NOT
+	TK_ASSIGN; TK_PLUS_EQ; TK_MINUS_EQ; TK_STAR_EQ; TK_SLASH_EQ; TK_PERCENT_EQ
+	TK_ARROW; TK_FAT_ARROW; TK_PIPE_ARROW; TK_QUESTION
+	TK_AT; TK_HAT
+	TK_DOT; TK_DOTDOT; TK_ELLIPSIS
+	TK_LPAREN; TK_RPAREN; TK_LBRACE; TK_RBRACE; TK_LBRACKET; TK_RBRACKET
+	TK_COMMA; TK_SEMI; TK_COLON; TK_DCOLON
 	TK_PIPE_MACRO // |  in macro param lists
 
 	TK_EOF
@@ -142,7 +61,7 @@ var tkNames = map[TK]string{
 	TK_STRING: "string-literal", TK_TEMPLATE_STR: "f-string",
 	TK_ANNOTATION: "annotation", TK_BOOL: "bool-literal", TK_NIL: "nil",
 	TK_IDENT: "identifier",
-	TK_LET:   "let", TK_MY: "my", TK_CONST: "const", TK_OUR: "our",
+	TK_LET: "let", TK_MY: "my", TK_CONST: "const", TK_OUR: "our",
 	TK_FN: "fn", TK_SUB: "sub", TK_MACRO: "macro", TK_RETURN: "return",
 	TK_IF: "if", TK_UNLESS: "unless", TK_ELIF: "elif", TK_ELSE: "else",
 	TK_WHILE: "while", TK_UNTIL: "until",
@@ -174,7 +93,7 @@ var tkNames = map[TK]string{
 	TK_LBRACKET: "[", TK_RBRACKET: "]",
 	TK_COMMA: ",", TK_SEMI: ";", TK_COLON: ":", TK_DCOLON: "::",
 	TK_PIPE_MACRO: "|param|",
-	TK_EOF:        "<EOF>",
+	TK_EOF: "<EOF>",
 }
 
 func (t TK) String() string {
@@ -189,7 +108,7 @@ var keywords = map[string]TK{
 	"const": TK_CONST, "our": TK_OUR,
 	"fn": TK_FN, "func": TK_FN, "sub": TK_SUB, "macro": TK_MACRO,
 	"return": TK_RETURN,
-	"if":     TK_IF, "unless": TK_UNLESS,
+	"if": TK_IF, "unless": TK_UNLESS,
 	"elif": TK_ELIF, "elsif": TK_ELIF, "elseif": TK_ELIF, "else": TK_ELSE,
 	"while": TK_WHILE, "until": TK_UNTIL,
 	"for": TK_FOR, "foreach": TK_FOREACH, "in": TK_IN, "do": TK_DO,
@@ -573,24 +492,16 @@ func (t *Tokenizer) lexIdent() {
 		switch val {
 		// Shell / command
 		case "cmd", "sh", "shell", "run", "exec":
-			t.advance()
-			t.push(TK_CMD, val+"!", sp)
-			return
+			t.advance(); t.push(TK_CMD, val+"!", sp); return
 		// File read
 		case "readfile", "slurp", "read_file", "file_read":
-			t.advance()
-			t.push(TK_READFILE, val+"!", sp)
-			return
+			t.advance(); t.push(TK_READFILE, val+"!", sp); return
 		// File write
 		case "writefile", "write_file", "file_write":
-			t.advance()
-			t.push(TK_WRITEFILE, val+"!", sp)
-			return
+			t.advance(); t.push(TK_WRITEFILE, val+"!", sp); return
 		// Generic bang-ident — emit as TK_BANG_MACRO so parser can handle it
 		default:
-			t.advance()
-			t.push(TK_BANG_MACRO, val+"!", sp)
-			return
+			t.advance(); t.push(TK_BANG_MACRO, val+"!", sp); return
 		}
 	}
 	if kw, ok := keywords[val]; ok {

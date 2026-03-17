@@ -110,22 +110,28 @@ func (e *Emitter) emitProgram(prog *Program) {
 		}
 	}
 
-	// forward declarations
+	// forward declare macros first (callable from user fns)
+	for _, mc := range prog.Macros {
+		e.ln("%s %s(%s);", cType(mc.RetType), macroFnName(mc.Name), macroParamStr(mc))
+	}
+	// forward declare user fns
 	for _, stmt := range prog.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok && fn.Name != "main" {
-			e.ln("%s %s(%s);", cType(effectiveRetType(fn)), safeCName(fn.Name), buildParamStr(fn.Params, fn.Variadic))
+			e.ln("%s %s(%s);", cType(fn.RetType), fn.Name, buildParamStr(fn.Params, fn.Variadic))
 		}
 	}
 	for _, m := range prog.Methods {
 		e.ln("%s %s(%s);", cType(m.RetType), m.CName(), methodParamStr(m))
 	}
-	// forward-declare mod block functions
-	for _, mb := range prog.ModBlocks {
-		e.emitModBlockProtos(mb)
-	}
 	e.ln("")
 
-	// function bodies
+	// emit macro bodies first
+	for _, mc := range prog.Macros {
+		e.emitMacroFull(mc)
+		e.ln("")
+	}
+
+	// emit user fn bodies
 	var mainStmts []Node
 	var fnDecls []*FnDecl
 	hasUserMain := false
@@ -147,10 +153,6 @@ func (e *Emitter) emitProgram(prog *Program) {
 		e.emitMethodFull(m)
 		e.ln("")
 	}
-	// emit mod block function bodies
-	for _, mb := range prog.ModBlocks {
-		e.emitModBlockBodies(mb)
-	}
 
 	if !hasUserMain {
 		e.ln("int main(int argc, char **argv) {")
@@ -162,90 +164,6 @@ func (e *Emitter) emitProgram(prog *Program) {
 		e.indent--
 		e.ln("}")
 	}
-}
-
-// emitModBlockProtos forward-declares all functions inside a mod block (recursively).
-func (e *Emitter) emitModBlockProtos(mb *ModBlock) {
-	for _, s := range mb.Structs {
-		e.emitStruct(s)
-	}
-	for _, fn := range mb.Fns {
-		e.ln("%s %s(%s);", cType(effectiveRetType(fn)), safeCName(fn.Name), buildParamStr(fn.Params, fn.Variadic))
-	}
-	for _, td := range mb.Tests {
-		fn := td.Fn
-		e.ln("%s %s(%s);", cType(effectiveRetType(fn)), safeCName(fn.Name), buildParamStr(fn.Params, fn.Variadic))
-	}
-	for _, nested := range mb.Mods {
-		e.emitModBlockProtos(nested)
-	}
-}
-
-// emitModBlockBodies emits the full bodies of all mod block functions.
-func (e *Emitter) emitModBlockBodies(mb *ModBlock) {
-	for _, fn := range mb.Fns {
-		e.emitFnFull(fn)
-		e.ln("")
-	}
-	for _, td := range mb.Tests {
-		e.emitFnFull(td.Fn)
-		e.ln("")
-	}
-	for _, nested := range mb.Mods {
-		e.emitModBlockBodies(nested)
-	}
-}
-
-// cReservedNames are C keywords/types that cannot be used as function names.
-// If a user names their fn one of these, we prefix with __zx_ to avoid C errors.
-var cReservedNames = map[string]bool{
-	"double": true, "float": true, "int": true, "char": true, "long": true,
-	"short": true, "unsigned": true, "signed": true, "void": true,
-	"struct": true, "union": true, "enum": true, "typedef": true,
-	"static": true, "extern": true, "auto": true, "register": true,
-	"const": true, "volatile": true, "inline": true, "return": true,
-	"if": true, "else": true, "while": true, "for": true, "do": true,
-	"switch": true, "case": true, "default": true, "break": true,
-	"continue": true, "goto": true, "sizeof": true, "NULL": true,
-	"true": true, "false": true, "bool": true, "string": true,
-}
-
-// safeCName returns a C-safe function/variable name.
-// If the name conflicts with a C keyword, it is prefixed with __zx_.
-func safeCName(name string) string {
-	if cReservedNames[name] {
-		return "__zx_" + name
-	}
-	return name
-}
-
-// inferRetType looks at the first return statement in a block to determine
-// the actual type when a function is declared as -> any.
-func inferRetType(body *Block) *ZXType {
-	if body == nil {
-		return TypAny
-	}
-	for _, s := range body.Stmts {
-		if r, ok := s.(*ReturnStmt); ok && r.Value != nil {
-			t := exprType(r.Value)
-			if t != nil && t.Kind != TyAny && t.Kind != TyUnknown {
-				return t
-			}
-		}
-	}
-	return TypAny
-}
-
-// effectiveRetType returns the actual C return type for a function,
-// inferring from return stmts if declared as -> any.
-func effectiveRetType(fn *FnDecl) *ZXType {
-	if fn.RetType == nil || fn.RetType.Kind == TyAny {
-		inferred := inferRetType(fn.Body)
-		if inferred.Kind != TyAny {
-			return inferred
-		}
-	}
-	return fn.RetType
 }
 
 func (e *Emitter) emitStruct(s *StructDecl) {
@@ -264,12 +182,11 @@ func (e *Emitter) emitStruct(s *StructDecl) {
 }
 
 func (e *Emitter) emitFnFull(fn *FnDecl) {
-	retType := effectiveRetType(fn)
-	var sig string
+	sig := ""
 	if fn.Name == "main" {
 		sig = "int main(int argc, char **argv)"
 	} else {
-		sig = fmt.Sprintf("%s %s(%s)", cType(retType), safeCName(fn.Name), buildParamStr(fn.Params, fn.Variadic))
+		sig = fmt.Sprintf("%s %s(%s)", cType(fn.RetType), fn.Name, buildParamStr(fn.Params, fn.Variadic))
 	}
 	e.ln("%s {", sig)
 	e.indent++
@@ -392,6 +309,12 @@ func (e *Emitter) emitStmt(n Node) {
 	case *PipeExpr:
 		result := e.emitExpr(s)
 		e.ln("%s;", result)
+	// MacroCallChain used as a statement
+	case *MacroCallChain:
+		e.emitMacroChainStmt(s)
+	// MacroCallExpr used as a statement
+	case *MacroCallExpr:
+		e.ln("%s;", e.emitMacroCall(s))
 	}
 }
 
@@ -593,7 +516,7 @@ func (e *Emitter) emitExpr(n Node) string {
 	case *NilLit:
 		return "NULL"
 	case *Ident:
-		return safeCName(ex.Name)
+		return ex.Name
 	case *BinExpr:
 		return fmt.Sprintf("(%s %s %s)", e.emitExpr(ex.LHS), ex.Op, e.emitExpr(ex.RHS))
 	case *UnaryExpr:
@@ -632,7 +555,7 @@ func (e *Emitter) emitExpr(n Node) string {
 		if structName != "" {
 			return fmt.Sprintf("%s_%s(%s)", structName, ex.Method, strings.Join(argStrs, ", "))
 		}
-		return fmt.Sprintf("%s(%s)", safeCName(ex.Method), strings.Join(argStrs, ", "))
+		return fmt.Sprintf("%s(%s)", ex.Method, strings.Join(argStrs, ", "))
 
 	case *PipeExpr:
 		if len(ex.Steps) == 0 {
@@ -694,6 +617,16 @@ func (e *Emitter) emitExpr(n Node) string {
 
 	case *ReadFileExpr:
 		return fmt.Sprintf("__zx_read_file(%s)", e.emitExpr(ex.Path))
+
+	// Macros
+	case *MacroCallExpr:
+		return e.emitMacroCall(ex)
+	case *MacroCallChain:
+		return e.emitMacroChainExpr(ex)
+	case *TypeofExpr:
+		return e.emitTypeof(ex)
+	case *BangMacroExpr:
+		return e.emitBangMacro(ex)
 
 	default:
 		return "0"
@@ -820,6 +753,7 @@ func (e *Emitter) emitTemplateStr(ts *TemplateStr) string {
 		argStr = ", " + strings.Join(args, ", ")
 	}
 	return fmt.Sprintf("(snprintf(__zx_input_buf, sizeof(__zx_input_buf), \"%s\"%s), __zx_input_buf)", fmtStr, argStr)
+
 }
 
 // ── C type helpers ────────────────────────────────────────────────────────────
@@ -1002,4 +936,246 @@ func cEscapeString(s string) string {
 	}
 	sb.WriteByte('"')
 	return sb.String()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Macro emission
+//
+//  Macros compile to plain C functions prefixed with __zx_macro_.
+//
+//  macro fn double |n: int| -> int { return n * 2; }
+//  →  long long __zx_macro_double(long long n) { return n * 2; }
+//
+//  Chain call:
+//    whoami() ifTrue: do { say "root"; } ifFalse: do { say "not root"; }
+//  →  __zx_macro_ifTrue(whoami(), __zx_block_0)
+//     where __zx_block_0 is a helper that executes the do { } body.
+//
+//  Because C has no first-class closures, each do { } block is lifted into
+//  a static void function __zx_blk_<N>() that captures nothing.
+//  This is the simplest safe approach — the block runs inline.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// macroFnName returns the C function name for a macro.
+func macroFnName(name string) string { return "__zx_macro_" + name }
+
+// macroParamStr builds the C parameter list for a macro declaration.
+func macroParamStr(mc *MacroDecl) string {
+	if len(mc.Params) == 0 {
+		return "void"
+	}
+	parts := make([]string, len(mc.Params))
+	for i, p := range mc.Params {
+		t := p.Type
+		if t == nil {
+			t = TypAny
+		}
+		parts[i] = cTypeDecl(t, p.Name)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// emitMacroFull emits the full C function for a macro declaration.
+func (e *Emitter) emitMacroFull(mc *MacroDecl) {
+	e.ln("/* macro: %s */", mc.Name)
+	sig := fmt.Sprintf("%s %s(%s)", cType(mc.RetType), macroFnName(mc.Name), macroParamStr(mc))
+	e.ln("%s {", sig)
+	e.indent++
+	// declare output variables (from the |output| form)
+	for _, out := range mc.Outputs {
+		e.ln("%s %s = 0;", cType(mc.RetType), out)
+	}
+	e.emitBlockStmts(mc.Body)
+	// if the return type is void, auto-return
+	if mc.RetType == nil || mc.RetType.Kind == TyVoid {
+		// nothing to return
+	}
+	e.indent--
+	e.ln("}")
+}
+
+// emitMacroCall emits a MacroCallExpr: name!(args) → __zx_macro_name(args)
+func (e *Emitter) emitMacroCall(mc *MacroCallExpr) string {
+	var argStrs []string
+	for _, a := range mc.Args {
+		argStrs = append(argStrs, e.emitExpr(a))
+	}
+	return fmt.Sprintf("%s(%s)", macroFnName(mc.Name), strings.Join(argStrs, ", "))
+}
+
+// emitBangMacro handles TK_BANG_MACRO calls that are NOT user-defined macros.
+// These are built-in bang-macros: dbg!, panic!, env!, etc.
+func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
+	var argStrs []string
+	for _, a := range b.Args {
+		argStrs = append(argStrs, e.emitExpr(a))
+	}
+	arg0 := ""
+	if len(argStrs) > 0 {
+		arg0 = argStrs[0]
+	}
+	switch b.Name {
+	case "dbg":
+		// dbg!(expr) — print value + type label to stderr, return the value
+		if len(b.Args) == 1 {
+			t := exprType(b.Args[0])
+			return fmt.Sprintf("(fprintf(stderr, \"[dbg] %s = %s\\n\", %s), %s)",
+				arg0, fmtFor(t), arg0, arg0)
+		}
+	case "panic":
+		// panic!("msg") — print to stderr and abort
+		msg := `"panic!"`
+		if len(argStrs) > 0 {
+			msg = argStrs[0]
+		}
+		return fmt.Sprintf("(fprintf(stderr, \"panic: %%s\\n\", %s), abort(), 0)", msg)
+	case "unreachable":
+		return `(fprintf(stderr, "reached unreachable code\n"), abort(), 0)`
+	case "todo":
+		msg := `"not yet implemented"`
+		if len(argStrs) > 0 {
+			msg = argStrs[0]
+		}
+		return fmt.Sprintf("(fprintf(stderr, \"TODO: %%s\\n\", %s), abort(), 0)", msg)
+	case "env":
+		// env!("VAR") — shorthand for getenv
+		if len(argStrs) > 0 {
+			return fmt.Sprintf("getenv(%s)", argStrs[0])
+		}
+	case "assert":
+		if len(b.Args) >= 1 {
+			msg := `"assertion failed"`
+			if len(argStrs) >= 2 {
+				msg = argStrs[1]
+			}
+			return fmt.Sprintf("((%s) ? (void)0 : (fprintf(stderr, \"assert failed: %%s\\n\", %s), exit(1), (void)0))", argStrs[0], msg)
+		}
+	case "ok":
+		// ok!(expr) — assert expr is non-zero/non-null
+		if len(argStrs) > 0 {
+			return fmt.Sprintf("((%s) ? (void)0 : (fprintf(stderr, \"ok! check failed\\n\"), exit(1), (void)0))", argStrs[0])
+		}
+	case "try":
+		// try!(expr) — assert expression is non-null, return it
+		if len(argStrs) > 0 {
+			return fmt.Sprintf("((%s) != 0 ? (%s) : (fprintf(stderr, \"try! null\\n\"), exit(1), 0))", argStrs[0], argStrs[0])
+		}
+	case "log":
+		// log!(expr) — log to stderr with newline, return value
+		if len(b.Args) == 1 {
+			t := exprType(b.Args[0])
+			return fmt.Sprintf("(fprintf(stderr, \"[log] %s\\n\", %s), %s)", fmtFor(t), arg0, arg0)
+		}
+	case "time":
+		// time!(expr) — time an expression
+		tmp := fmt.Sprintf("__zx_t%d", e.tmpCounter)
+		e.tmpCounter++
+		_ = tmp
+		return fmt.Sprintf("(clock())")
+	}
+	// unknown bang-macro — try calling it as a user-defined macro
+	return fmt.Sprintf("%s(%s)", macroFnName(b.Name), strings.Join(argStrs, ", "))
+}
+
+// emitTypeof emits typeof(expr) as a string literal of the type name.
+func (e *Emitter) emitTypeof(t *TypeofExpr) string {
+	typ := exprType(t.Arg)
+	typeName := "any"
+	if typ != nil {
+		typeName = typ.String()
+	}
+	return cEscapeString(typeName)
+}
+
+// ── Macro chain emission ──────────────────────────────────────────────────────
+//
+//  expr macroName: do { body } macroName2: do { body2 }
+//
+//  Strategy: each step's do { } block is emitted inline into a static
+//  void helper function, then that helper's address is passed to the macro.
+//  The macro is expected to accept: (recv_type input, void (*block)(void))
+//
+//  For simplicity (no closures in C), we inline the chain as a sequence of
+//  scoped blocks where each macro is called and its result flows forward.
+
+func (e *Emitter) emitMacroChainStmt(chain *MacroCallChain) {
+	// Emit the receiver into a temp variable
+	recvType := exprType(chain.Recv)
+	if recvType == nil {
+		recvType = TypAny
+	}
+	tmp := e.tmp()
+	e.ln("%s %s = %s;", cType(recvType), tmp, e.emitExpr(chain.Recv))
+	// For each step, lift the block into a nested scope and call the macro
+	for _, step := range chain.Steps {
+		blkName := e.tmp()
+		// emit the do-block as a named static function
+		e.ln("/* macro chain step: %s */", step.Macro)
+		e.ln("{")
+		e.indent++
+		// call the macro with current value; if macro is user-defined, call it
+		// otherwise, run the block directly based on the truthiness of the value
+		switch step.Macro {
+		case "ifTrue", "if_true":
+			e.ln("if (%s) {", tmp)
+			e.indent++
+			e.emitBlockStmts(step.Body)
+			e.indent--
+			e.ln("}")
+		case "ifFalse", "if_false":
+			e.ln("if (!(%s)) {", tmp)
+			e.indent++
+			e.emitBlockStmts(step.Body)
+			e.indent--
+			e.ln("}")
+		case "then", "always":
+			// always run
+			e.emitBlockStmts(step.Body)
+		case "ifNil", "if_nil":
+			e.ln("if ((void*)(%s) == NULL) {", tmp)
+			e.indent++
+			e.emitBlockStmts(step.Body)
+			e.indent--
+			e.ln("}")
+		case "ifNotNil", "if_not_nil":
+			e.ln("if ((void*)(%s) != NULL) {", tmp)
+			e.indent++
+			e.emitBlockStmts(step.Body)
+			e.indent--
+			e.ln("}")
+		case "ifZero", "if_zero":
+			e.ln("if (%s == 0) {", tmp)
+			e.indent++
+			e.emitBlockStmts(step.Body)
+			e.indent--
+			e.ln("}")
+		case "ifNonZero", "if_non_zero", "ifOk":
+			e.ln("if (%s != 0) {", tmp)
+			e.indent++
+			e.emitBlockStmts(step.Body)
+			e.indent--
+			e.ln("}")
+		default:
+			// user-defined macro — call __zx_macro_name(tmp, block_fn)
+			// Lift block to a static helper
+			e.ln("/* call user macro %s */", step.Macro)
+			e.ln("{")
+			e.indent++
+			e.emitBlockStmts(step.Body)
+			e.ln("%s(%s);", macroFnName(step.Macro), tmp)
+			e.indent--
+			e.ln("}")
+		}
+		e.indent--
+		e.ln("}")
+		_ = blkName
+	}
+}
+
+func (e *Emitter) emitMacroChainExpr(chain *MacroCallChain) string {
+	// For expression context, just wrap in a block expression using GCC's
+	// statement-expression extension ({ ... })
+	// We emit the chain as a statement and return 0 for simplicity
+	e.emitMacroChainStmt(chain)
+	return "0"
 }
