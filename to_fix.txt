@@ -173,3 +173,16 @@ int main(int argc, char **argv) {
 - add 10 more error messages for macros , cover everything in errors, it must not be incomplete!
 
 - Move all __zx_tmpX functions to global scope
+
+---
+
+NewFeature:
+```perl
+// my var, todo something, nothing else!
+my x = 190;
+
+// example of moeodern pipes!
+x |my_var> do_something() |output> abc() |w> say "my_var is " my_var ", and output is " output ", and w is " w;
+
+
+```
