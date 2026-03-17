@@ -1073,8 +1073,8 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 		// dbg!(expr) — print to stderr with variable name and value
 		if len(b.Args) == 1 {
 			t := exprType(b.Args[0])
-			return fmt.Sprintf("(fprintf(stderr, \"[dbg] %%s = %s\\n\", \"%s\", (%s)), (%s))",
-				fmtFor(t), arg0, arg0, arg0)
+			return fmt.Sprintf("(fprintf(stderr, \"[dbg] %%s = %s\\n\", \"%s\", (%s)))",
+				fmtFor(t), arg0, arg0)
 		}
 	case "panic":
 		// panic!("msg") — print to stderr and abort

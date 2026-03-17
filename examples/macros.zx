@@ -72,8 +72,8 @@ greet_name!("World");
 say "--- Built-in bang macros ---";
 let x = 42;
 dbg!(x);
-let home = env!("HOME");
-printf("HOME = %s\n", home);
+//let home = env!("HOME");
+//printf("HOME = %s\n", home);
 
 // Chain syntax — NO semicolon after the last closing }
 say "--- Chain syntax ---";
