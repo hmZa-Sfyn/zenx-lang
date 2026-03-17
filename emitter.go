@@ -585,8 +585,7 @@ func (e *Emitter) emitExpr(n Node) string {
 		}
 		result := e.emitExpr(ex.Steps[0])
 		for _, step := range ex.Steps[1:] {
-			fnName := e.emitExpr(step)
-			result = fmt.Sprintf("%s(%s)", fnName, result)
+			result = e.emitPipeStep(step, result)
 		}
 		return result
 
@@ -1032,6 +1031,32 @@ func (e *Emitter) emitMacroCall(mc *MacroCallExpr) string {
 	return fmt.Sprintf("%s(%s)", macroFnName(mc.Name), strings.Join(argStrs, ", "))
 }
 
+// emitPipeStep emits one step of a pipe: value |> step
+// For macro calls with 0 args (used as pipe steps), the accumulated value
+// is passed as the first argument: times2!(3) → __zx_macro_times2(3)
+func (e *Emitter) emitPipeStep(step Node, input string) string {
+	switch s := step.(type) {
+	case *MacroCallExpr:
+		// macro call in pipe: pass input as first arg
+		args := []string{input}
+		for _, a := range s.Args {
+			args = append(args, e.emitExpr(a))
+		}
+		return fmt.Sprintf("%s(%s)", macroFnName(s.Name), strings.Join(args, ", "))
+	case *BangMacroExpr:
+		// built-in bang macro in pipe: pass input as first arg
+		args := []string{input}
+		for _, a := range s.Args {
+			args = append(args, e.emitExpr(a))
+		}
+		return fmt.Sprintf("%s(%s)", macroFnName(s.Name), strings.Join(args, ", "))
+	default:
+		// regular function: fn(input)
+		fnName := e.emitExpr(step)
+		return fmt.Sprintf("%s(%s)", fnName, input)
+	}
+}
+
 // emitBangMacro handles TK_BANG_MACRO calls that are NOT user-defined macros.
 // These are built-in bang-macros: dbg!, panic!, env!, etc.
 func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
@@ -1045,11 +1070,10 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 	}
 	switch b.Name {
 	case "dbg":
-		// dbg!(expr) — print to stderr then return the value unchanged
+		// dbg!(expr) — print to stderr with variable name and value
 		if len(b.Args) == 1 {
 			t := exprType(b.Args[0])
-			// emit as a GCC statement-expression so it works as both stmt and expr
-			return fmt.Sprintf("(fprintf(stderr, \\\"[dbg] %%s = %s\\\\n\\\", \\\"%s\\\", %s), %s)",
+			return fmt.Sprintf("(fprintf(stderr, \"[dbg] %%s = %s\\n\", \"%s\", (%s)), (%s))",
 				fmtFor(t), arg0, arg0, arg0)
 		}
 	case "panic":
@@ -1068,7 +1092,7 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 		}
 		return fmt.Sprintf("(fprintf(stderr, \"TODO: %%s\\n\", %s), abort(), 0)", msg)
 	case "env":
-		// env!(\"VAR\") — shorthand for getenv, returns const char*
+		// env!("VAR") — shorthand for getenv, returns const char*
 		if len(argStrs) > 0 {
 			b.Typ = TypStr
 			return fmt.Sprintf("getenv(%s)", argStrs[0])
