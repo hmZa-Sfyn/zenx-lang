@@ -5,15 +5,14 @@ extern fn printf(fmt: str, ...) -> int;
 extern fn getuid() -> int;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Form A — typed params (like a regular function, just declared with macro)
+//  Form A — typed params (called with name!())
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Simple math macro — called as: double!(5) or double_val!(x)
-macro fn double_val |n: int| -> int {
+macro fn times2 |n: int| -> int {
     return n * 2;
 }
 
-macro fn square_val |n: int| -> int {
+macro fn squared |n: int| -> int {
     return n * n;
 }
 
@@ -23,130 +22,88 @@ macro fn clamp_val |v: int, lo: int, hi: int| -> int {
     return v;
 }
 
-// String macro
-macro fn greet |name: str| -> str {
+macro fn greet_name |name: str| -> str {
     printf("Hello, %s!\n", name);
     return name;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Form B — pipe-style with |input, doStmt| -> |output|
-//  These are designed for the chain call syntax:
-//     expr macroName: do { }
+//  Form B — chain syntax: |input, doStmt| -> |output|
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ifTrue: runs the block if input is truthy
 macro fn ifTrue |input, doStmt| -> |output| {
     output = input;
-    if input {
-        doStmt();
-    }
+    if input { doStmt(); }
     return output;
 }
 
-// ifFalse: runs the block if input is falsy
 macro fn ifFalse |input, doStmt| -> |output| {
     output = input;
-    if !input {
-        doStmt();
-    }
+    if !input { doStmt(); }
     return output;
 }
 
-// then: always runs the block (no condition)
 macro fn then |input, doStmt| -> |output| {
     output = input;
     doStmt();
     return output;
 }
 
-// unless: runs block only if input is zero/false
-macro fn unless_zero |input, doStmt| -> |output| {
-    output = input;
-    unless input {
-        doStmt();
-    }
-    return output;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-//  Main program
+//  Main
 // ─────────────────────────────────────────────────────────────────────────────
 
 say "=== ZX Macros ===";
-say "";
 
-// ── Form A: call like regular functions with ! ────────────────────────────────
-say "--- Form A: typed macros ---";
+// Form A: bang-call
+say "--- Form A ---";
+let d = times2!(7);
+printf("times2!(7) = %lld\n", d);
 
-let d = double_val!(7);
-printf("double_val!(7) = %lld\n", d);
-
-let sq = square_val!(9);
-printf("square_val!(9) = %lld\n", sq);
+let sq = squared!(9);
+printf("squared!(9) = %lld\n", sq);
 
 let cl = clamp_val!(15, 0, 10);
 printf("clamp_val!(15, 0, 10) = %lld\n", cl);
 
-greet!("World");
+greet_name!("World");
 
-// ── Built-in bang macros ──────────────────────────────────────────────────────
-say "";
+// Built-in bang macros
 say "--- Built-in bang macros ---";
-
-// dbg! — print debug info to stderr, returns the value
 let x = 42;
 dbg!(x);
-
-// log! — log to stderr with newline
-log!(x);
-
-// env! — read environment variable
 let home = env!("HOME");
 printf("HOME = %s\n", home);
 
-// panic! / todo! / unreachable! — for error states
-// (commented out since they abort):
-// panic!("something went wrong");
-// todo!("implement this");
-
-// ── Chain syntax: expr macroName: do { } ──────────────────────────────────────
-say "";
+// Chain syntax — NO semicolon after the last closing }
 say "--- Chain syntax ---";
 
-// is_root = (getuid() == 0)
 let is_root = int(getuid() == 0);
 
-// chain: check if root, print accordingly, then always print "done"
 is_root
     ifTrue: do {
-        say "You are root!";
+        say "You are root!"
     }
     ifFalse: do {
-        say "You are NOT root.";
+        say "You are NOT root."
     }
     then: do {
-        say "Check complete.";
+        say "Check complete."
     }
 
-// chain with a value
 let num = 8;
+
 num
     ifTrue: do {
         printf("num=%lld is truthy\n", num);
     }
     then: do {
-        say "done with num";
+        say "done with num"
     }
 
-// ── Macros in pipes ───────────────────────────────────────────────────────────
-say "";
-say "--- Macros in pipes ---";
+// Pipes with macros
+say "--- Pipes ---";
+let piped = 3 |> times2! |> squared!;
+printf("3 |> times2! |> squared! = %lld\n", piped);
 
-// pipe: 3 |> double_val! |> square_val!  = square(double(3)) = 36
-// Note: macro names in pipes use the ! form via the macro function name
-let piped = 3 |> double_val! |> square_val!;
-printf("3 |> double_val! |> square_val! = %lld\n", piped);
-
-say "";
-say "=== done ===";
+say "=== done ==="

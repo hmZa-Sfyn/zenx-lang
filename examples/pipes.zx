@@ -1,11 +1,19 @@
 // Pipe operator demo
-
-import "stdio.h"
+// Run: ./zxc examples/pipes.zx
 
 extern fn printf(fmt: str, ...) -> int;
 
-fn double(x) -> any { return x * 2 };
-fn square(x) -> any { return x * x };
+// Note: don't name functions after C types (double, float, int, char...)
+// ZX will rename them to __zx_double etc. and warn you — just use a different name.
+fn times2(x) -> any { return x * 2; }
+fn squared(x) -> any { return x * x; }
 
-my val = 3 |> double |> square; // square(double(3))
-printf("\n3 |> double |> square = %lld\n", val);
+let val = 3 |> times2 |> squared;
+printf("3 |> times2 |> squared = %lld\n", val);
+
+// chained math
+fn add1(x) -> int { return x + 1; }
+fn negate(x) -> int { return -x; }
+
+let result = 10 |> add1 |> add1 |> negate;
+printf("10 |> add1 |> add1 |> negate = %lld\n", result);

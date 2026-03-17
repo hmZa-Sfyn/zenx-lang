@@ -1189,8 +1189,9 @@ func (p *Parser) parseExprOrAssign() Node {
 		return &AssignStmt{Sp: sp, LHS: expr, Op: op, Value: val}
 	}
 	// Try macro chain:  expr macroName: do { } ...
+	// The last closing } of the chain acts as a statement terminator — no ; needed.
 	if chain := p.tryParseMacroChain(expr); chain != nil {
-		p.expectSemi()
+		p.eatSemi() // optional semicolon after chain
 		return &ExprStmt{Sp: sp, Expr: chain}
 	}
 	p.expectSemi()

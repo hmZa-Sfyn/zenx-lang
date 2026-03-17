@@ -117,7 +117,7 @@ func (e *Emitter) emitProgram(prog *Program) {
 	// forward declare user fns
 	for _, stmt := range prog.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok && fn.Name != "main" {
-			e.ln("%s %s(%s);", cType(fn.RetType), fn.Name, buildParamStr(fn.Params, fn.Variadic))
+			e.ln("%s %s(%s);", cType(fn.RetType), safeFnName(fn.Name), buildParamStr(fn.Params, fn.Variadic))
 		}
 	}
 	for _, m := range prog.Methods {
@@ -181,12 +181,34 @@ func (e *Emitter) emitStruct(s *StructDecl) {
 	e.ln("")
 }
 
+// safeFnName returns a C-safe name for a user function.
+// If the name is a C keyword or type (double, float, int, etc.),
+// it is prefixed with __zx_ so the generated C is valid.
+var cReservedFnNames = map[string]bool{
+	"double": true, "float": true, "int": true, "char": true,
+	"long": true, "short": true, "unsigned": true, "signed": true,
+	"void": true, "struct": true, "union": true, "enum": true,
+	"static": true, "extern": true, "const": true, "inline": true,
+	"register": true, "auto": true, "volatile": true, "typedef": true,
+	"return": true, "if": true, "else": true, "while": true,
+	"for": true, "do": true, "switch": true, "case": true,
+	"break": true, "continue": true, "goto": true, "default": true,
+	"sizeof": true, "bool": true, "string": true,
+}
+
+func safeFnName(name string) string {
+	if cReservedFnNames[name] {
+		return "__zx_" + name
+	}
+	return name
+}
+
 func (e *Emitter) emitFnFull(fn *FnDecl) {
 	sig := ""
 	if fn.Name == "main" {
 		sig = "int main(int argc, char **argv)"
 	} else {
-		sig = fmt.Sprintf("%s %s(%s)", cType(fn.RetType), fn.Name, buildParamStr(fn.Params, fn.Variadic))
+		sig = fmt.Sprintf("%s %s(%s)", cType(fn.RetType), safeFnName(fn.Name), buildParamStr(fn.Params, fn.Variadic))
 	}
 	e.ln("%s {", sig)
 	e.indent++
@@ -516,7 +538,7 @@ func (e *Emitter) emitExpr(n Node) string {
 	case *NilLit:
 		return "NULL"
 	case *Ident:
-		return ex.Name
+		return safeFnName(ex.Name)
 	case *BinExpr:
 		return fmt.Sprintf("(%s %s %s)", e.emitExpr(ex.LHS), ex.Op, e.emitExpr(ex.RHS))
 	case *UnaryExpr:
@@ -753,7 +775,7 @@ func (e *Emitter) emitTemplateStr(ts *TemplateStr) string {
 		argStr = ", " + strings.Join(args, ", ")
 	}
 	return fmt.Sprintf("(snprintf(__zx_input_buf, sizeof(__zx_input_buf), \"%s\"%s), __zx_input_buf)", fmtStr, argStr)
-
+	//_ = tmpName
 }
 
 // ── C type helpers ────────────────────────────────────────────────────────────
