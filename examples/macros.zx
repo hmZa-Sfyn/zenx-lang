@@ -48,10 +48,10 @@ macro fn then |input, doStmt| -> |output| {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-say "=== ZX Macros ==="
+say "=== ZX Macros ===";
 
 // Form A: bang-call
-say "--- Form A ---"
+say "--- Form A ---";
 let d = times2!(7);
 printf("times2!(7) = %lld\n", d);
 
@@ -64,14 +64,14 @@ printf("clamp_val!(15, 0, 10) = %lld\n", cl);
 greet_name!("World");
 
 // Built-in bang macros
-say "--- Built-in bang macros ---"
+say "--- Built-in bang macros ---";
 let x = 42;
 dbg!(x);
-let home = env!("HOME");
-printf("HOME = %s\n", home);
+//let home = env!("HOME");
+//printf("HOME = %s\n", home);
 
 // Chain syntax — do { } blocks run inline (capture all local vars!)
-say "--- Chain syntax ---"
+say "--- Chain syntax ---";
 
 let is_root = int(getuid() == 0);
 
@@ -98,8 +98,8 @@ num
     }
 
 // Pipes with macros
-say "--- Pipes ---"
+say "--- Pipes ---";
 let piped = 3 |> times2! |> squared!;
 printf("3 |> times2! |> squared! = %lld\n", piped);
 
-say "=== done ==="
+say "=== done ===";
