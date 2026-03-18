@@ -143,6 +143,16 @@ func (e *Emitter) emitProgram(prog *Program) {
 		e.ln("")
 	}
 
+	// forward declare mod block functions
+	for _, mb := range prog.ModBlocks {
+		e.fwdDeclModFns(mb)
+	}
+
+	// emit mod block fn bodies
+	for _, mb := range prog.ModBlocks {
+		e.emitModFns(mb)
+	}
+
 	// emit user fn bodies
 	var mainStmts []Node
 	var fnDecls []*FnDecl
