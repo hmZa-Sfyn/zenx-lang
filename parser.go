@@ -267,12 +267,23 @@ func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 			}
 		case TK_SEMI:
 			p.advance()
+		case TK_CONST, TK_OUR, TK_LET, TK_MY:
+			// Allow const/let declarations inside mod blocks
+			isConst := p.peek().Kind == TK_CONST || p.peek().Kind == TK_OUR
+			vd := p.parseVarDecl(isConst)
+			// Store as a top-level stmt of a synthetic fn, OR just add to mod fns
+			// Simplest: wrap as a module-level constant stored in a synthetic FnDecl
+			mb.Fns = append(mb.Fns, &FnDecl{
+				Sp:   vd.Sp,
+				Name: "__zx_const_init_" + vd.Name,
+				Body: &Block{Sp: vd.Sp, Stmts: []Node{vd}},
+			})
 		default:
 			t := p.peek()
 			if t.Kind != TK_RBRACE && t.Kind != TK_EOF {
 				warnAt(t.Span,
-					fmt.Sprintf("unexpected %q inside mod block", t.Value),
-					"mod blocks can contain: fn, struct, type, or nested mod")
+					fmt.Sprintf("unexpected %q inside mod block — move this outside the mod, or use a fn", t.Value),
+					"mod blocks can contain: fn, struct, type, const, let, and nested mod")
 				p.advance()
 			}
 		}
@@ -363,7 +374,7 @@ func (p *Parser) parseImport() *ImportDecl {
 		}
 	} else {
 		errAt(sp, "expected a string path or module name after import/use",
-			"examples:\n use std::str \n use \"stdio.h\" \n import _/utils/logger \n import std/net/soc (socServer)")
+			"examples: \n use std::str \n use \"stdio.h\" \n import _/utils/logger \n import std/net/soc (socServer)")
 		p.ok = false
 	}
 
@@ -1521,6 +1532,39 @@ func (p *Parser) parsePostfix() Node {
 					}
 				}
 			}
+
+		case TK_DCOLON:
+			// mod::fn(args) or mod::const  — namespace access
+			// We consume the :: and treat the right side as a plain call/ident.
+			// The left side (module name) is discarded for now since functions
+			// from mod blocks are registered at global scope by their plain name.
+			// Future: full namespace resolution with a symbol table.
+			p.advance() // consume ::
+			if p.at(TK_IDENT) {
+				name := p.advance()
+				// consume any further ::ident segments (deep nesting: a::b::c)
+				for p.at(TK_DCOLON) && p.peekN(1).Kind == TK_IDENT {
+					p.advance()        // ::
+					name = p.advance() // next segment
+				}
+				if p.at(TK_LPAREN) {
+					p.advance()
+					var args []Node
+					for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
+						args = append(args, p.parseExpr())
+						if p.at(TK_COMMA) {
+							p.advance()
+						}
+					}
+					p.expect(TK_RPAREN)
+					// Emit as a plain function call using the leaf name
+					expr = &CallExpr{Sp: sp, Func: &Ident{Sp: name.Span, Name: name.Value}, Args: args}
+				} else {
+					// mod::CONST — just return as ident
+					expr = &Ident{Sp: name.Span, Name: name.Value}
+				}
+			}
+
 		default:
 			return expr
 		}

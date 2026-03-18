@@ -1261,3 +1261,35 @@ func (e *Emitter) emitMacroChainExpr(chain *MacroCallChain) string {
 	e.emitMacroChainStmt(chain)
 	return "0"
 }
+
+// fwdDeclModFns emits forward declarations for all functions inside a mod block.
+func (e *Emitter) fwdDeclModFns(mb *ModBlock) {
+	for _, s := range mb.Structs {
+		e.emitStruct(s)
+	}
+	for _, fn := range mb.Fns {
+		e.ln("%s %s(%s);", cType(fn.RetType), safeFnName(fn.Name), buildParamStr(fn.Params, fn.Variadic))
+	}
+	for _, td := range mb.Tests {
+		fn := td.Fn
+		e.ln("%s %s(%s);", cType(fn.RetType), safeFnName(fn.Name), buildParamStr(fn.Params, fn.Variadic))
+	}
+	for _, nested := range mb.Mods {
+		e.fwdDeclModFns(nested)
+	}
+}
+
+// emitModFns emits the full bodies of all functions inside a mod block.
+func (e *Emitter) emitModFns(mb *ModBlock) {
+	for _, fn := range mb.Fns {
+		e.emitFnFull(fn)
+		e.ln("")
+	}
+	for _, td := range mb.Tests {
+		e.emitFnFull(td.Fn)
+		e.ln("")
+	}
+	for _, nested := range mb.Mods {
+		e.emitModFns(nested)
+	}
+}

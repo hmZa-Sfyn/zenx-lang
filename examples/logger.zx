@@ -1,0 +1,33 @@
+// mylib/logger.zx — a reusable logging library
+// This file is imported by other .zx files using:
+//   import _/mylib/logger
+//   import _/mylib/logger (Logger)
+
+extern fn printf(fmt: str, ...) -> int;
+extern fn fprintf(f: ref void, fmt: str, ...) -> int;
+extern fn stderr() -> ref void;
+
+// pub mod Logger { ... } — this mod can be imported by name:
+//   import _/mylib/logger (Logger)
+mod Logger {
+    fn info(msg: str) {
+        printf("[INFO]  %s\n", msg);
+    }
+
+    fn warn(msg: str) {
+        printf("[WARN]  %s\n", msg);
+    }
+
+    fn error(msg: str) {
+        printf("[ERROR] %s\n", msg);
+    }
+
+    fn debug(msg: str) {
+        printf("[DEBUG] %s\n", msg);
+    }
+}
+
+// Also expose plain functions at file level (imported with "import all")
+fn log_info(msg: str)  { printf("[INFO]  %s\n", msg); }
+fn log_warn(msg: str)  { printf("[WARN]  %s\n", msg); }
+fn log_error(msg: str) { printf("[ERROR] %s\n", msg); }

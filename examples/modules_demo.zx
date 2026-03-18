@@ -3,7 +3,7 @@
 
 extern fn printf(fmt: str, ...) -> int;
 
-// ── Declaring modules with mod { } ───────────────────────────────────────────
+// ── Modules with nested mods ──────────────────────────────────────────────────
 
 mod math_utils {
     fn add(a: int, b: int) -> int {
@@ -19,7 +19,6 @@ mod math_utils {
         return n * factorial(n - 1);
     }
 
-    // Nested mod
     mod advanced {
         fn power(base: int, exp: int) -> int {
             if exp == 0 { return 1; }
@@ -43,7 +42,7 @@ mod math_utils {
 mod string_utils {
     fn repeat_char(c: char, n: int) {
         for i in 0..n {
-            printf("%c", c);
+            printf("%c", int(c));
         }
     }
 
@@ -56,12 +55,11 @@ mod string_utils {
     }
 }
 
-mod app {
-    mod config {
-        const VERSION: str = "1.0.0";
-        const MAX_RETRIES: int = 3;
-    }
+// consts live at top level, not inside mod blocks
+my VERSION: str = "1.0.0";
+my MAX_RETRIES: int = 3;
 
+mod app {
     mod tests {
         @test
         fn test_add() {
@@ -78,16 +76,16 @@ mod app {
     }
 }
 
-// ── Using module functions ────────────────────────────────────────────────────
+// ── Use module functions directly (names are global) ─────────────────────────
 
-string_utils::print_banner("ZX Module Demo");
+print_banner("ZX Module Demo");
 
-printf("add(10, 20) = %lld\n", add(10, 20));
-printf("multiply(6, 7) = %lld\n", multiply(6, 7));
-printf("factorial(6) = %lld\n", factorial(6));
-printf("power(2, 8) = %lld\n", power(2, 8));
+printf("add(10, 20)    = %d\n", add(10, 20));
+printf("multiply(6, 7) = %d\n", multiply(6, 7));
+printf("factorial(6)   = %d\n", factorial(6));
+printf("power(2, 8)    = %d\n", power(2, 8));
 
-say "Primes from 1-20:";
+say "Primes up to 20:";
 for i in 1..21 {
     if is_prime(i) {
         printf("%lld ", i);
@@ -95,4 +93,5 @@ for i in 1..21 {
 }
 println "";
 
-printf("\nApp version: %s\n", app::config::VERSION);
+printf("App version: %s\n", VERSION);
+printf("Max retries: %lld\n", MAX_RETRIES);
