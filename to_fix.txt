@@ -1,188 +1,51 @@
+-- import statement does not work:
+"
+(myenv)  hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  ./zxc ./examples/imports_named_mod.zx
+
+ error: unexpected token '/' in expression
+   ╭─ ./examples/imports_named_mod.zx:9:9
+   │    8  // If mod Logger doesn't exist in that file → compile error!
+   │    9  import _/logger (Logger)
+   │               ^
+   │               hint: check for a missing operator, unmatched parenthesis, or a typo
+   ╰─
+
+ error: missing ';' after statement
+   ╭─ ./examples/imports_named_mod.zx:9:9
+   │    8  // If mod Logger doesn't exist in that file → compile error!
+   │    9  import _/logger (Logger)
+   │               ^
+   │               hint: add a semicolon ';' at the end of this statement
+   ╰─
+
+ aborting: 2 error(s)
+
+   fix errors and re-run: zxc ./examples/imports_named_mod.zx
+
+(myenv)  ✘ hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  
+"
 
 ---
 
-Also make a thing to import files from current dir or so like: use "./"::abc # this means "./zbc.zx"!
-
---
-
-also when user choses type any as return value of a function then make the return value of that function , the type of the return stmt like:
-
-fn abc() -> any {
-   return 23.5444; // then return vlue must be float!
-}
-- also show a warning if any problems with type any of that function! dont justr assign every any var or fn with long long, try to learn the type of the var's value and then assign it a type in c code!
-
-
-Issues to fix:
-
-- ptr<void> in extern params fails — ptr<T> not parsed in param types (only in return types)
-- `-> any` return type should infer the actual type from the return statement
-- Local file imports: import _/abc // `./abc.zx`
-and: import _/logger (logger) // ths means to import `mod logger { ... }` from `./logger.zx`
-
----
-
-- also add core features like: typeof(), and more! atleast 30 builtin functions like typeof() and some others!
-
-- also add more macros like: cmd!(), i want total 50 macros please!
-
-- extend errors, add more errors and error checks and potential error testing, and make a small .md file documenting all error types and small desc!
-
-- extend import statements, `use` statements, like:
-```pl
-
-import _/mod1/logger (logger_ng) // this means "./mod1/logger.zx", to import `mod logger_ng {` from ./something.zx.
-import __/__/__/mod2/abc // this means to import all from: '../../../mod2/abc.zx'!
-
-```
-
-- also create some examples on how to use modules, like `mod abc { mod def { fn abc() -> any { say "hi"; return 0;}}}`
-
----
-
-NEW FEATURES:
-
-- add a new macrofunction:
+- the mods are not workign ass i expected them!
+i want them like this:
 ```perl
 
-macro fn ifTrue |input,doStmt| -> |output| {
-   if typeof(input) == typeof(True) {   
-      if input == True {
-         output = doStmt();
-      }
-   } elif typeof(input) == typeof(1) {
-      if input == 1 {
-         output = doStmt();
-      }
-   } else {
-      die "please provide a boolean/numberic value!";
-      //skip, we only accept, bolean or number as true or false!
+mod abc {
+   fn def() -> any {
+      say "wasssuppp?";
    }
-
-   return output;
 }
 
-
-macro fn ifFalse |input,doStmt| -> |output| {
-   if typeof(input) == typeof(True) {   
-      if input == False {
-         output = doStmt();
-      }
-   } elif typeof(input) == typeof(1) {
-      if input != 1 {
-         output = doStmt();
-      }
-   } else {
-      die "please provide a boolean/numberic value!";
-      //skip, we only accept, bolean or number as true or false!
-   }
-
-   return output;
-}
+abc->def(); // wasssuppp?
 
 
-macro fn then |doStmt| -> |output| {
-   output = doStmt();
-
-   return output;
-}
-
-whoami()->isroot() ifTrue: do {
-   say "I am root";
-} ifFalse: do {
-   say "I am not root";
-} then: do {
-   say "done!";
-}
-
-
-```
-error: "(myenv)  ✘ hmza@0root  ~/workspaces/hamza/zx-lang/zenx-lang   main ±  ./zxc ./examples/macros.zx
-
- gcc compilation error — the generated C has a problem:
-
-  /tmp/zx_3198758970.c: In function ‘main’:
-  /tmp/zx_3198758970.c:112:17: error: invalid storage class for function ‘__zx_tmp2’
-    112 |     static void __zx_tmp2(void) {
-        |                 ^~~~~~~~~
-  /tmp/zx_3198758970.c:115:17: error: invalid storage class for function ‘__zx_tmp3’
-    115 |     static void __zx_tmp3(void) {
-        |                 ^~~~~~~~~
-  /tmp/zx_3198758970.c:118:17: error: invalid storage class for function ‘__zx_tmp4’
-    118 |     static void __zx_tmp4(void) {
-        |                 ^~~~~~~~~
-  /tmp/zx_3198758970.c:129:17: error: invalid storage class for function ‘__zx_tmp6’
-    129 |     static void __zx_tmp6(void) {
-        |                 ^~~~~~~~~
-  /tmp/zx_3198758970.c:132:17: error: invalid storage class for function ‘__zx_tmp7’
-    132 |     static void __zx_tmp7(void) {
-        |                 ^~~~~~~~~
-" while c code is: "
-... snip ...
-int main(int argc, char **argv) {
-    fprintf(stdout, "%s\n", "=== ZX Macros ===");
-    fprintf(stdout, "%s\n", "--- Form A ---");
-    long long d = __zx_macro_times2(7LL);
-    printf("times2!(7) = %lld\n", d);
-    long long sq = __zx_macro_squared(9LL);
-    printf("squared!(9) = %lld\n", sq);
-    long long cl = __zx_macro_clamp_val(15LL, 0LL, 10LL);
-    printf("clamp_val!(15, 0, 10) = %lld\n", cl);
-    __zx_macro_greet_name("World");
-    fprintf(stdout, "%s\n", "--- Built-in bang macros ---");
-    long long x = 42LL;
-    (fprintf(stderr, "[dbg] %s = %lld\n", "x", (x)));
-    fprintf(stdout, "%s\n", "--- Chain syntax ---");
-    long long is_root = ((long long)((getuid() == 0LL)));
-    static void __zx_tmp2(void) {
-        fprintf(stdout, "%s\n", "You are root!");
-    }
-    static void __zx_tmp3(void) {
-        fprintf(stdout, "%s\n", "You are NOT root.");
-    }
-    static void __zx_tmp4(void) {
-        fprintf(stdout, "%s\n", "Check complete.");
-    }
-    long long __zx_tmp1 = (long long)(is_root);
-    /* macro chain step: ifTrue */
-    __zx_tmp1 = (long long)(__zx_macro_ifTrue(__zx_tmp1, __zx_tmp2));
-    /* macro chain step: ifFalse */
-    __zx_tmp1 = (long long)(__zx_macro_ifFalse(__zx_tmp1, __zx_tmp3));
-    /* macro chain step: then */
-    __zx_tmp1 = (long long)(__zx_macro_then(__zx_tmp1, __zx_tmp4));
-    long long num = 8LL;
-    static void __zx_tmp6(void) {
-        printf("num=%lld is truthy\n", num);
-    }
-    static void __zx_tmp7(void) {
-        fprintf(stdout, "%s\n", "done with num");
-    }
-    long long __zx_tmp5 = (long long)(num);
-    /* macro chain step: ifTrue */
-    __zx_tmp5 = (long long)(__zx_macro_ifTrue(__zx_tmp5, __zx_tmp6));
-    /* macro chain step: then */
-    __zx_tmp5 = (long long)(__zx_macro_then(__zx_tmp5, __zx_tmp7));
-    fprintf(stdout, "%s\n", "--- Pipes ---");
-    long long piped = __zx_macro_squared(__zx_macro_times2(3LL));
-    printf("3 |> times2! |> squared! = %lld\n", piped);
-    fprintf(stdout, "%s\n", "=== done ===");
-    return 0;
-}" -> error, is just that all __zx_tmpX functions are defined in main function, why? idk!!
-
-
-- add 10 more error messages for macros , cover everything in errors, it must not be incomplete!
-
-- Move all __zx_tmpX functions to global scope
+def(); // error!
 
 ---
 
-NewFeature:
-```perl
-// my var, todo something, nothing else!
-my x = 190;
+but currently even if user tyoed `def();`, it just works, and hoes no errors, please i want them to only be callable with their mod name present!
 
-// example of moeodern pipes!
-x |my_var> do_something() |output> abc() |w> say "my_var is " my_var ", and output is " output ", and w is " w;
 
 
 ```
