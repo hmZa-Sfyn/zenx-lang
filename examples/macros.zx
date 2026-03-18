@@ -84,8 +84,7 @@ say "--- Chain syntax ---";
 
 my user = &USER{id:0};
 
-user->isroot()
-    ifTrue: do {
+user->isroot() ifTrue: do {
         say "You are root!"
     }
     ifFalse: do {
