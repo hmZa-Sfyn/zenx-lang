@@ -1247,10 +1247,10 @@ func (tc *TypeChecker) inferField(e *FieldExpr) *ZXType {
 		eff = objType.Elem
 	}
 
-	// 😄 funny warning for dot on ref
+	//  funny warning for dot on ref
 	if e.UsedDot && objType.Kind == TyRef {
 		funnyWarn(e.Sp,
-			"you used '.' on a ref type — sure, it works, but seriously... grow up and use '->' like a C programmer 😄",
+			"you used '.' on a ref type — sure, it works, but seriously... grow up and use '->' like a C programmer ",
 			"replace '.' with '->' for ref/pointer field access")
 	}
 

@@ -47,6 +47,15 @@ macro fn then |input, doStmt| -> |output| {
     return output;
 }
 
+type USER struct {
+    id int;
+}
+
+fn (this *USER) isroot() -> bool {
+    return this->id == 0;
+}
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 say "=== ZX Macros ===";
 
@@ -73,9 +82,9 @@ dbg!(x);
 // Chain syntax — do { } blocks run inline (capture all local vars!)
 say "--- Chain syntax ---";
 
-let is_root = int(getuid() == 0);
+my user = &USER{id:0};
 
-is_root
+user->isroot()
     ifTrue: do {
         say "You are root!"
     }
