@@ -59,7 +59,7 @@ func emitDiag(d Diagnostic) {
 	if diagCount <= maxDiags {
 		printDiag(d)
 	} else if diagCount == maxDiags+1 {
-		fmt.Fprintf(os.Stderr, "%s%s  ⚡ Too many diagnostics — suppressing. Fix errors above first.%s\n\n",
+		fmt.Fprintf(os.Stderr, "%s%s Too many diagnostics — suppressing. Fix errors above first.%s\n\n",
 			colorBold, colorRed, colorReset)
 	}
 }
@@ -88,19 +88,19 @@ func printDiag(d Diagnostic) {
 	var icon, sevColor, sevLabel string
 	switch d.Sev {
 	case SevError:
-		icon = " "
+		icon = "!! "
 		sevColor = colorRed
 		sevLabel = "error"
 	case SevWarn:
-		icon = " "
+		icon = "! "
 		sevColor = colorYellow
 		sevLabel = "warning"
 	case SevNote:
-		icon = "ℹ "
+		icon = "@ "
 		sevColor = colorCyan
 		sevLabel = "note"
 	case SevFunny:
-		icon = "😅 "
+		icon = "$ "
 		sevColor = colorOrange
 		sevLabel = "style"
 	}
