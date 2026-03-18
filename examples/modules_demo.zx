@@ -1,0 +1,98 @@
+// modules_demo.zx — how to use mod blocks in ZX
+// Run: ./zxc examples/modules_demo.zx
+
+extern fn printf(fmt: str, ...) -> int;
+
+// ── Declaring modules with mod { } ───────────────────────────────────────────
+
+mod math_utils {
+    fn add(a: int, b: int) -> int {
+        return a + b;
+    }
+
+    fn multiply(a: int, b: int) -> int {
+        return a * b;
+    }
+
+    fn factorial(n: int) -> int {
+        if n <= 1 { return 1; }
+        return n * factorial(n - 1);
+    }
+
+    // Nested mod
+    mod advanced {
+        fn power(base: int, exp: int) -> int {
+            if exp == 0 { return 1; }
+            let result = 1;
+            for i in 0..exp {
+                result = result * base;
+            }
+            return result;
+        }
+
+        fn is_prime(n: int) -> bool {
+            if n < 2 { return false; }
+            for i in 2..n {
+                if n % i == 0 { return false; }
+            }
+            return true;
+        }
+    }
+}
+
+mod string_utils {
+    fn repeat_char(c: char, n: int) {
+        for i in 0..n {
+            printf("%c", c);
+        }
+    }
+
+    fn print_banner(title: str) {
+        printf("\n");
+        repeat_char('=', 40);
+        printf("\n  %s\n", title);
+        repeat_char('=', 40);
+        printf("\n\n");
+    }
+}
+
+mod app {
+    mod config {
+        const VERSION: str = "1.0.0";
+        const MAX_RETRIES: int = 3;
+    }
+
+    mod tests {
+        @test
+        fn test_add() {
+            assert add(2, 3) == 5, "add(2,3) should be 5";
+            assert add(-1, 1) == 0, "add(-1,1) should be 0";
+        }
+
+        @test
+        @args={"n": 5}
+        @expect=120
+        fn test_factorial(n: int) -> int {
+            return factorial(n);
+        }
+    }
+}
+
+// ── Using module functions ────────────────────────────────────────────────────
+
+string_utils::print_banner("ZX Module Demo");
+
+printf("add(10, 20) = %lld\n", add(10, 20));
+printf("multiply(6, 7) = %lld\n", multiply(6, 7));
+printf("factorial(6) = %lld\n", factorial(6));
+printf("power(2, 8) = %lld\n", power(2, 8));
+
+say "Primes from 1-20:";
+for i in 1..21 {
+    if is_prime(i) {
+        printf("%lld ", i);
+    }
+}
+println "";
+
+printf("\nApp version: %s\n", app::config::VERSION);

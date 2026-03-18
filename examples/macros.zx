@@ -4,9 +4,7 @@
 extern fn printf(fmt: str, ...) -> int;
 extern fn getuid() -> int;
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Form A — typed params (called with name!())
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Form A: typed params, called with name!() ─────────────────────────────────
 
 macro fn times2 |n: int| -> int {
     return n * 2;
@@ -27,36 +25,33 @@ macro fn greet_name |name: str| -> str {
     return name;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Form B — chain syntax: |input, doStmt| -> |output|
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Form B: chain macros |input, doStmt| -> |output|
+// Note: doStmt is NEVER called — the chain emitter expands the
+// do { } block inline at the call site. The macro just controls
+// WHEN the block runs based on the input value.
 
-macro fn ifTrue |input: bool, doStmt| -> |output| {
+macro fn ifTrue |input, doStmt| -> |output| {
     output = input;
-    if input { doStmt(); }
+    // The do { } block is inlined here at compile time.
+    // Just return the value — the emitter handles the if check.
     return output;
 }
 
-macro fn ifFalse |input: bool, doStmt| -> |output| {
+macro fn ifFalse |input, doStmt| -> |output| {
     output = input;
-    if !input { doStmt(); }
     return output;
 }
 
-macro fn then |input: bool, doStmt| -> |output| {
+macro fn then |input, doStmt| -> |output| {
     output = input;
-    doStmt();
     return output;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Main
-// ─────────────────────────────────────────────────────────────────────────────
-
-say "=== ZX Macros ===";
+say "=== ZX Macros ==="
 
 // Form A: bang-call
-say "--- Form A ---";
+say "--- Form A ---"
 let d = times2!(7);
 printf("times2!(7) = %lld\n", d);
 
@@ -69,41 +64,42 @@ printf("clamp_val!(15, 0, 10) = %lld\n", cl);
 greet_name!("World");
 
 // Built-in bang macros
-say "--- Built-in bang macros ---";
+say "--- Built-in bang macros ---"
 let x = 42;
 dbg!(x);
-//let home = env!("HOME");
-//printf("HOME = %s\n", home);
+let home = env!("HOME");
+printf("HOME = %s\n", home);
 
-// Chain syntax — NO semicolon after the last closing }
-say "--- Chain syntax ---";
+// Chain syntax — do { } blocks run inline (capture all local vars!)
+say "--- Chain syntax ---"
 
 let is_root = int(getuid() == 0);
 
 is_root
     ifTrue: do {
-        say "You are root!";
+        say "You are root!"
     }
     ifFalse: do {
-        say "You are NOT root.";
+        say "You are NOT root."
     }
     then: do {
-        say "Check complete.";
+        say "Check complete."
     }
 
+// Block can reference any local variable — no closure problem!
 let num = 8;
 
 num
     ifTrue: do {
-        printf("num=%lld is truthy\n", num);
+        printf("num = %lld is truthy\n", num);
     }
     then: do {
-        say "done with num";
+        say "done with num"
     }
 
 // Pipes with macros
-say "--- Pipes ---";
+say "--- Pipes ---"
 let piped = 3 |> times2! |> squared!;
 printf("3 |> times2! |> squared! = %lld\n", piped);
 
-say "=== done ===";
+say "=== done ==="

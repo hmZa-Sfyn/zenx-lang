@@ -13,7 +13,7 @@ type Parser struct {
 	pos        int
 	file       string
 	ok         bool
-	srcDir     string // directory of the source file, for local imports
+	srcDir     string          // directory of the source file, for local imports
 	macroScope map[string]bool // names of current macro params — shadow keywords
 }
 
@@ -285,12 +285,19 @@ func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 // ── Import / use ──────────────────────────────────────────────────────────────
 //
 // Supported syntax:
-//   use std::str                      stdlib module
-//   use "stdio.h"                     C header
-//   import "stdio.h"                  C header
-//   use "./"::abc                     local file ./abc.zx
-//   import _/mod1/logger (logger_ng)  local path ./mod1/logger.zx, import mod logger_ng
-//   import __/__/mod2/abc             ../../mod2/abc.zx, import all
+//   use std::str                        ZX stdlib module (built-in)
+//   use "stdio.h"                       raw C header
+//   import "stdio.h"                    raw C header
+//   use "./"::abc                       local file ./abc.zx
+//
+//   import _/mod1/logger (logger_ng)    ./mod1/logger.zx — import mod logger_ng
+//   import _/utils                      ./utils.zx       — import everything
+//   import __/sibling                   ../sibling.zx
+//   import __/__/__/mod2/abc            ../../../mod2/abc.zx
+//
+//   import std/net/soc                  $ZX_STD/net/soc.zx — import all
+//   import std/net/soc (socServer)      $ZX_STD/net/soc.zx — import pub mod socServer
+//   import usr/mylib/util               $ZX_USR/mylib/util.zx — import all
 
 func (p *Parser) parseImport() *ImportDecl {
 	sp := p.peek().Span
@@ -299,21 +306,17 @@ func (p *Parser) parseImport() *ImportDecl {
 	imp.Sp = sp
 
 	if p.at(TK_STRING) {
-		pathTok := p.advance()
-		rawPath := pathTok.Value
-
-		// Check for: use "./"::modname  (local file import)
-		if strings.HasPrefix(rawPath, "./") || strings.HasPrefix(rawPath, "../") || rawPath == "./" {
+		rawPath := p.advance().Value
+		// use "./"::abc  — local file import
+		if strings.HasPrefix(rawPath, "./") || strings.HasPrefix(rawPath, "../") {
 			if p.at(TK_DCOLON) {
 				p.advance()
 				modName := p.expect(TK_IDENT).Value
-				// resolve file path: "./" + modName + ".zx"
 				localPath := filepath.Join(p.srcDir, strings.TrimSuffix(rawPath, "/"), modName+".zx")
 				imp.IsLocal = true
 				imp.LocalFile = localPath
 				imp.Module = modName
 			} else {
-				// bare path string — treat as C header or relative
 				imp.Path = rawPath
 			}
 		} else {
@@ -321,14 +324,25 @@ func (p *Parser) parseImport() *ImportDecl {
 		}
 
 	} else if p.at(TK_IDENT) || p.at(TK_TYPE_STR) {
-		// check for _/path/  or  __/__/path/  style (local file path)
 		first := p.peek().Value
-		if first == "_" || strings.HasPrefix(first, "_") {
+
+		// _/path  or  __/__/path  — local file path
+		if strings.HasPrefix(first, "_") && (len(first) == 1 || first[1] == '_') {
 			imp = p.parseLocalPathImport(sp)
 			return &imp
 		}
 
-		// std::module or user::module
+		// std/net/soc  or  usr/mylib/util  — env-var based path
+		// These use TK_SLASH (/) as separator, not ::
+		if first == "std" || first == "usr" {
+			// peek ahead: if next token after ident is SLASH, it's a file path
+			if p.peekN(1).Kind == TK_SLASH {
+				imp = p.parseEnvPathImport(sp)
+				return &imp
+			}
+		}
+
+		// std::module — built-in ZX stdlib modules
 		name := p.advance().Value
 		for p.at(TK_DCOLON) {
 			p.advance()
@@ -343,33 +357,99 @@ func (p *Parser) parseImport() *ImportDecl {
 		imp.IsStd = strings.HasPrefix(name, "std::")
 		imp.IsUser = !imp.IsStd
 
-		// warn if unknown std module
 		if imp.IsStd && LookupStdModule(name) == nil {
 			warnAt(sp, fmt.Sprintf("unknown stdlib module %q", name),
 				"known: std::str std::io std::math std::sys std::fs std::cmd std::mem std::conv std::time std::net")
 		}
 	} else {
 		errAt(sp, "expected a string path or module name after import/use",
-			`examples:  use std::str    use "stdio.h"    use "./"::mymod    import _/utils/logger`)
+			"examples:\n use std::str \n use \"stdio.h\" \n import _/utils/logger \n import std/net/soc (socServer)")
 		p.ok = false
 	}
 
-	// optional: (mod_alias) or as alias
+	// optional alias: (modName)  or  as alias
 	if p.at(TK_LPAREN) {
 		p.advance()
 		imp.Alias = p.expect(TK_IDENT).Value
+		imp.ImportAll = false
 		p.expect(TK_RPAREN)
 	} else if p.at(TK_AS) {
 		p.advance()
 		imp.Alias = p.expect(TK_IDENT).Value
+	} else if imp.IsLocal {
+		imp.ImportAll = true
 	}
 	p.eatSemi()
 	return &imp
 }
 
+// parseEnvPathImport handles:
+//
+//	import std/net/soc                  → $ZX_STD/net/soc.zx, import all
+//	import std/net/soc (socServer)      → $ZX_STD/net/soc.zx, import pub mod socServer
+//	import usr/mylib/util               → $ZX_USR/mylib/util.zx, import all
+//
+// Environment variables:
+//
+//	ZX_STD  — path to ZX standard library (default: same dir as zxc binary)
+//	ZX_USR  — path to user library root   (default: ~/zxlib)
+func (p *Parser) parseEnvPathImport(sp Span) ImportDecl {
+	var imp ImportDecl
+	imp.Sp = sp
+
+	// consume: std / net / soc
+	prefix := p.advance().Value // "std" or "usr"
+	var segments []string
+	for p.at(TK_SLASH) {
+		p.advance()
+		if p.at(TK_IDENT) {
+			segments = append(segments, p.advance().Value)
+		} else {
+			break
+		}
+	}
+
+	// resolve base directory from env var
+	baseEnv := ""
+	switch prefix {
+	case "std":
+		baseEnv = "ZX_STD"
+	case "usr":
+		baseEnv = "ZX_USR"
+	default:
+		baseEnv = "ZX_" + strings.ToUpper(prefix)
+	}
+
+	imp.IsLocal = true
+	imp.IsUser = (prefix != "std")
+
+	if len(segments) > 0 {
+		// store as a resolved path hint; actual resolution happens in main.go
+		imp.LocalFile = filepath.Join(append([]string{"$" + baseEnv}, segments...)...) + ".zx"
+		imp.Module = segments[len(segments)-1]
+	}
+
+	// optional: (modName) to import a specific pub mod
+	if p.at(TK_LPAREN) {
+		p.advance()
+		imp.Alias = p.expect(TK_IDENT).Value
+		imp.ImportAll = false
+		p.expect(TK_RPAREN)
+	} else {
+		imp.ImportAll = true
+	}
+
+	// store the env var name so main.go can resolve it at runtime
+	imp.Path = baseEnv // repurposed: holds the env var name for env-path imports
+	p.eatSemi()
+	return imp
+}
+
 // parseLocalPathImport handles:
-//   import _/mod1/logger (logger_ng)   → ./mod1/logger.zx, import mod logger_ng
-//   import __/__/mod2/abc              → ../../mod2/abc.zx, import all
+//
+//	import _/mod1/logger (logger_ng)   → ./mod1/logger.zx, import mod logger_ng
+//	import __/__/mod2/abc              → ../../mod2/abc.zx, import all
+//
 // '_' = current dir, '__' = parent dir, '___' = grandparent, etc.
 func (p *Parser) parseLocalPathImport(sp Span) ImportDecl {
 	var imp ImportDecl
@@ -651,7 +731,9 @@ func (p *Parser) parseBangMacroCall() Node {
 }
 
 // tryParseMacroChain checks if what follows an expression is a macro chain:
-//   value macroName: do { } macroName2: do { }
+//
+//	value macroName: do { } macroName2: do { }
+//
 // Returns nil if no chain follows.
 func (p *Parser) tryParseMacroChain(recv Node) Node {
 	// A chain step looks like:  IDENT ':'  'do'  block
@@ -666,7 +748,7 @@ func (p *Parser) tryParseMacroChain(recv Node) Node {
 	for p.at(TK_IDENT) && p.peekN(1).Kind == TK_COLON && p.ok {
 		stepSp := p.peek().Span
 		macroName := p.advance().Value // consume macro name
-		p.expect(TK_COLON)            // consume ':'
+		p.expect(TK_COLON)             // consume ':'
 
 		// expect 'do' keyword followed by a block
 		if !p.at(TK_DO) {
