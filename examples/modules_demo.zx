@@ -78,16 +78,16 @@ mod app {
 
 // ── Use module functions directly (names are global) ─────────────────────────
 
-print_banner("ZX Module Demo");
+string_utils::print_banner("ZX Module Demo");
 
-printf("add(10, 20)    = %d\n", add(10, 20));
-printf("multiply(6, 7) = %d\n", multiply(6, 7));
-printf("factorial(6)   = %d\n", factorial(6));
-printf("power(2, 8)    = %d\n", power(2, 8));
+printf("add(10, 20)    = %d\n", math_utils::add(10, 20));
+printf("multiply(6, 7) = %d\n", math_utils::multiply(6, 7));
+printf("factorial(6)   = %d\n", math_utils::factorial(6));
+printf("power(2, 8)    = %d\n", math_utils::power(2, 8));
 
 say "Primes up to 20:";
 for i in 1..21 {
-    if is_prime(i) {
+    if math_utils::advanced::is_prime(i) {
         printf("%lld ", i);
     }
 }
