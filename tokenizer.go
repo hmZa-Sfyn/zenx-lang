@@ -14,43 +14,125 @@ const (
 	TK_BOOL
 	TK_NIL
 	TK_TEMPLATE_STR
+	TK_MULTILINE_STR // @`...` multiline string with ${} interpolation
 	TK_ANNOTATION
 
 	TK_IDENT
 
-	TK_LET; TK_MY; TK_CONST; TK_OUR
-	TK_FN; TK_SUB; TK_MACRO
+	TK_LET
+	TK_MY
+	TK_CONST
+	TK_OUR
+	TK_FN
+	TK_SUB
+	TK_MACRO
 	TK_RETURN
-	TK_IF; TK_UNLESS; TK_ELIF; TK_ELSE
-	TK_WHILE; TK_UNTIL
-	TK_FOR; TK_FOREACH; TK_IN; TK_DO
-	TK_IMPORT; TK_USE; TK_MOD; TK_AS; TK_EXTERN
-	TK_STRUCT; TK_TYPE; TK_NEW
-	TK_BREAK; TK_NEXT; TK_CONTINUE; TK_LAST
-	TK_PRINT; TK_PRINTLN; TK_SAY; TK_WARN; TK_EPRINT
-	TK_EXIT; TK_DIE; TK_SIZEOF; TK_TYPEOF
-	TK_LEN; TK_PUSH; TK_POP
+	TK_IF
+	TK_UNLESS
+	TK_ELIF
+	TK_ELSE
+	TK_WHILE
+	TK_UNTIL
+	TK_FOR
+	TK_FOREACH
+	TK_IN
+	TK_DO
+	TK_IMPORT
+	TK_USE
+	TK_MOD
+	TK_AS
+	TK_EXTERN
+	TK_STRUCT
+	TK_TYPE
+	TK_NEW
+	TK_BREAK
+	TK_NEXT
+	TK_CONTINUE
+	TK_LAST
+	TK_PRINT
+	TK_PRINTLN
+	TK_SAY
+	TK_WARN
+	TK_EPRINT
+	TK_EXIT
+	TK_DIE
+	TK_SIZEOF
+	TK_TYPEOF
+	TK_LEN
+	TK_PUSH
+	TK_POP
 	TK_MATCH
-	TK_TRY; TK_CATCH; TK_FINALLY; TK_THROW; TK_RAISE
+	TK_TRY
+	TK_CATCH
+	TK_FINALLY
+	TK_THROW
+	TK_RAISE
 	TK_DEFER
 	TK_ASSERT
 	TK_SPAWN
-	TK_CMD; TK_READFILE; TK_WRITEFILE; TK_BANG_MACRO
-	TK_INPUT; TK_STDIN; TK_STDOUT; TK_STDERR
+	TK_CMD
+	TK_READFILE
+	TK_WRITEFILE
+	TK_BANG_MACRO
+	TK_INPUT
+	TK_STDIN
+	TK_STDOUT
+	TK_STDERR
 
-	TK_TYPE_INT; TK_TYPE_FLOAT; TK_TYPE_BOOL; TK_TYPE_STR
-	TK_TYPE_VOID; TK_TYPE_CHAR; TK_TYPE_REF; TK_TYPE_ANY
+	TK_TYPE_INT
+	TK_TYPE_FLOAT
+	TK_TYPE_BOOL
+	TK_TYPE_STR
+	TK_TYPE_VOID
+	TK_TYPE_CHAR
+	TK_TYPE_REF
+	TK_TYPE_ANY
 
-	TK_PLUS; TK_MINUS; TK_STAR; TK_SLASH; TK_PERCENT
-	TK_AMP; TK_PIPE; TK_CARET; TK_TILDE; TK_LSHIFT; TK_RSHIFT
-	TK_EQ; TK_NEQ; TK_LT; TK_GT; TK_LTE; TK_GTE
-	TK_AND; TK_OR; TK_NOT
-	TK_ASSIGN; TK_PLUS_EQ; TK_MINUS_EQ; TK_STAR_EQ; TK_SLASH_EQ; TK_PERCENT_EQ
-	TK_ARROW; TK_FAT_ARROW; TK_PIPE_ARROW; TK_QUESTION
-	TK_AT; TK_HAT
-	TK_DOT; TK_DOTDOT; TK_ELLIPSIS
-	TK_LPAREN; TK_RPAREN; TK_LBRACE; TK_RBRACE; TK_LBRACKET; TK_RBRACKET
-	TK_COMMA; TK_SEMI; TK_COLON; TK_DCOLON
+	TK_PLUS
+	TK_MINUS
+	TK_STAR
+	TK_SLASH
+	TK_PERCENT
+	TK_AMP
+	TK_PIPE
+	TK_CARET
+	TK_TILDE
+	TK_LSHIFT
+	TK_RSHIFT
+	TK_EQ
+	TK_NEQ
+	TK_LT
+	TK_GT
+	TK_LTE
+	TK_GTE
+	TK_AND
+	TK_OR
+	TK_NOT
+	TK_ASSIGN
+	TK_PLUS_EQ
+	TK_MINUS_EQ
+	TK_STAR_EQ
+	TK_SLASH_EQ
+	TK_PERCENT_EQ
+	TK_ARROW
+	TK_FAT_ARROW
+	TK_PIPE_ARROW
+	TK_QUESTION
+	TK_AT
+	TK_HAT
+	TK_DOT
+	TK_DOTDOT
+	TK_ELLIPSIS
+	TK_LPAREN
+	TK_RPAREN
+	TK_LBRACE
+	TK_RBRACE
+	TK_LBRACKET
+	TK_RBRACKET
+	TK_COMMA
+	TK_SEMI
+	TK_COLON
+	TK_DCOLON
 	TK_PIPE_MACRO // |  in macro param lists
 
 	TK_EOF
@@ -59,6 +141,7 @@ const (
 var tkNames = map[TK]string{
 	TK_INT: "int-literal", TK_FLOAT: "float-literal",
 	TK_STRING: "string-literal", TK_TEMPLATE_STR: "f-string",
+	TK_MULTILINE_STR: "multiline-string",
 	TK_ANNOTATION: "annotation", TK_BOOL: "bool-literal", TK_NIL: "nil",
 	TK_IDENT: "identifier",
 	TK_LET: "let", TK_MY: "my", TK_CONST: "const", TK_OUR: "our",
@@ -205,6 +288,15 @@ func (t *Tokenizer) nextToken() {
 		t.lexTemplateStr()
 		return
 	}
+
+	// @`...` multiline string — ONLY when @ is followed immediately by backtick.
+	// Plain @ident is still an annotation.
+	if ch == '@' && t.pos+1 < len(t.src) && t.src[t.pos+1] == '`' {
+		t.advance() // consume @
+		t.lexMultilineStr()
+		return
+	}
+
 	if isDigit(ch) {
 		t.lexNumber()
 		return
@@ -394,7 +486,7 @@ func (t *Tokenizer) lexAnnotation(sp Span) {
 
 func (t *Tokenizer) lexTemplateStr() {
 	sp := t.here(1)
-	t.advance()
+	t.advance() // consume opening "
 	var sb strings.Builder
 	for !t.eof() && t.peek(0) != '"' {
 		ch := t.peek(0)
@@ -412,8 +504,37 @@ func (t *Tokenizer) lexTemplateStr() {
 		t.ok = false
 		return
 	}
-	t.advance()
+	t.advance() // consume closing "
 	t.push(TK_TEMPLATE_STR, sb.String(), sp)
+}
+
+// lexMultilineStr lexes @`...` strings.
+// The '@' has already been consumed by nextToken.
+// We consume the opening backtick here and read until the closing backtick.
+// Backticks can be escaped with \` inside the string.
+// The raw content (everything between the backticks) is stored as the token value.
+// ${...} interpolation is parsed later by the parser.
+func (t *Tokenizer) lexMultilineStr() {
+	sp := t.here(1)
+	t.advance() // consume opening `
+	var sb strings.Builder
+	for !t.eof() {
+		ch := t.peek(0)
+		if ch == '\\' && t.pos+1 < len(t.src) && t.src[t.pos+1] == '`' {
+			// escaped backtick \` → literal backtick in output
+			sb.WriteRune('`')
+			t.advance()
+			t.advance()
+			continue
+		}
+		if ch == '`' {
+			t.advance() // consume closing `
+			break
+		}
+		sb.WriteRune(ch)
+		t.advance()
+	}
+	t.push(TK_MULTILINE_STR, sb.String(), sp)
 }
 
 func (t *Tokenizer) lexNumber() {
@@ -490,18 +611,22 @@ func (t *Tokenizer) lexIdent() {
 	// Bang-suffixed macros: cmd! readfile! writefile! dbg! env! ...
 	if !t.eof() && t.peek(0) == '!' {
 		switch val {
-		// Shell / command
 		case "cmd", "sh", "shell", "run", "exec":
-			t.advance(); t.push(TK_CMD, val+"!", sp); return
-		// File read
+			t.advance()
+			t.push(TK_CMD, val+"!", sp)
+			return
 		case "readfile", "slurp", "read_file", "file_read":
-			t.advance(); t.push(TK_READFILE, val+"!", sp); return
-		// File write
+			t.advance()
+			t.push(TK_READFILE, val+"!", sp)
+			return
 		case "writefile", "write_file", "file_write":
-			t.advance(); t.push(TK_WRITEFILE, val+"!", sp); return
-		// Generic bang-ident — emit as TK_BANG_MACRO so parser can handle it
+			t.advance()
+			t.push(TK_WRITEFILE, val+"!", sp)
+			return
 		default:
-			t.advance(); t.push(TK_BANG_MACRO, val+"!", sp); return
+			t.advance()
+			t.push(TK_BANG_MACRO, val+"!", sp)
+			return
 		}
 	}
 	if kw, ok := keywords[val]; ok {

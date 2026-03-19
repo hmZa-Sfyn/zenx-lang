@@ -16,6 +16,9 @@ type VarInfo struct {
 	IsMethod  bool
 	IsExtern  bool
 	IsStd     bool
+	IsGlobal  bool   // declared with 'our'
+	IsModFn   bool   // belongs to a mod block — NOT accessible by plain name
+	ModName   string // which mod block owns this fn
 	Sp        Span
 	UsedCount int
 	Defined   bool
@@ -89,6 +92,12 @@ type TypeChecker struct {
 	importMods    map[string]bool
 	deferredCalls []Node
 	ok            bool
+
+	// modFns maps "modName::fnName" → *FnDecl for namespace-qualified lookup.
+	// Plain name lookup (e.g. just "def") will NOT find these — only ModCallExpr will.
+	modFns  map[string]*FnDecl
+	// modNames is the set of known mod block names, for error messages.
+	modNames map[string]bool
 }
 
 func TypeCheck(prog *Program, src, file string) bool {
@@ -98,6 +107,7 @@ func TypeCheck(prog *Program, src, file string) bool {
 		methods: make(map[string]*MethodDecl), macros: make(map[string]*MacroDecl),
 		externs: make(map[string]*ExternDecl), stdFns: make(map[string]*StdFn),
 		importPaths: make(map[string]bool), importMods: make(map[string]bool),
+		modFns: make(map[string]*FnDecl), modNames: make(map[string]bool),
 		ok: true,
 	}
 	tc.scope = newScope(nil, "global")
@@ -141,7 +151,7 @@ func TypeCheck(prog *Program, src, file string) bool {
 		tc.scope.define(name, &VarInfo{Type: f.Ret, IsFn: true, IsStd: true})
 	}
 
-	// E03 user functions
+	// E03 user top-level functions (NOT mod fns — those are namespace-only)
 	for _, stmt := range prog.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok {
 			if _, exists := tc.fns[fn.Name]; exists {
@@ -150,6 +160,10 @@ func TypeCheck(prog *Program, src, file string) bool {
 			}
 			tc.fns[fn.Name] = fn
 			tc.scope.define(fn.Name, &VarInfo{Type: fn.RetType, IsFn: true, Sp: fn.Sp})
+		}
+		// FIX: hoist 'our' global vars to prog.GlobalVars and define in global scope
+		if vd, ok := stmt.(*VarDecl); ok && vd.IsGlobal {
+			prog.GlobalVars = append(prog.GlobalVars, vd)
 		}
 	}
 
@@ -165,13 +179,14 @@ func TypeCheck(prog *Program, src, file string) bool {
 		}
 	}
 
-	// Register all mod block functions into global scope
-	// (mod functions are accessible by plain name everywhere)
+	// Register mod block functions into NAMESPACE-ONLY scope.
+	// FIX: do NOT put them in global scope by plain name.
+	// They are only callable as modName->fn() or modName::fn().
 	for _, mb := range prog.ModBlocks {
 		tc.registerModFns(mb)
 	}
 
-	// EM01–EM10: register macros (macros compile to regular C functions)
+	// EM01–EM10: register macros
 	for _, mc := range prog.Macros {
 		if _, exists := tc.macros[mc.Name]; exists {
 			errCode("EM03", mc.Sp, fmt.Sprintf("macro %q defined more than once", mc.Name),
@@ -180,11 +195,10 @@ func TypeCheck(prog *Program, src, file string) bool {
 		}
 		if _, exists := tc.fns[mc.Name]; exists {
 			errCode("EM04", mc.Sp, fmt.Sprintf("macro %q has the same name as a function", mc.Name),
-				fmt.Sprintf("rename the macro or the function — they cannot share a name"))
+				"rename the macro or the function — they cannot share a name")
 			tc.ok = false
 		}
 		tc.macros[mc.Name] = mc
-		// Macros are visible as callables in scope
 		tc.scope.define(mc.Name, &VarInfo{Type: mc.RetType, IsFn: true, Sp: mc.Sp})
 	}
 
@@ -197,20 +211,23 @@ func TypeCheck(prog *Program, src, file string) bool {
 	for _, m := range prog.Methods {
 		tc.checkMethod(m)
 	}
-	// check macro bodies
 	for _, mc := range prog.Macros {
 		tc.checkMacro(mc)
 	}
-
 	for _, mb := range prog.ModBlocks {
 		tc.checkModFns(mb)
 	}
-
 	for _, stmt := range prog.TopStmts {
 		if _, ok := stmt.(*FnDecl); !ok {
 			tc.checkStmt(stmt)
 		}
 	}
+
+	// define 'our' globals in scope so top-level non-fn stmts and fns can see them
+	for _, vd := range prog.GlobalVars {
+		tc.checkVarDecl(vd)
+	}
+
 	return tc.ok
 }
 
@@ -237,9 +254,6 @@ func (tc *TypeChecker) checkMacro(mc *MacroDecl) {
 	tc.scope = newScope(saved, "fn")
 	tc.macroStack = append(tc.macroStack, mc)
 
-	// define all input params as local variables.
-	// Params named "doStmt", "block", "body", "action", etc. are callable blocks —
-	// they are registered with IsFn=true so doStmt() compiles without E45 errors.
 	seen := map[string]bool{}
 	for _, p := range mc.Params {
 		if seen[p.Name] {
@@ -252,12 +266,8 @@ func (tc *TypeChecker) checkMacro(mc *MacroDecl) {
 		if t == nil {
 			t = TypAny
 		}
-		// All macro params that look like block/callback params are callable.
-		// This covers: doStmt, block, body, action, callback, fn, proc, handler, etc.
 		isCallable := isBlockParam(p.Name, t)
 		tc.scope.define(p.Name, &VarInfo{Type: t, IsFn: isCallable, Sp: p.Sp})
-		// Also register callable params directly in tc.fns as zero-param fns,
-		// so inferCall finds them in the fast path and skips the E44/E45 check.
 		if isCallable {
 			syntheticFn := &FnDecl{
 				Sp:      p.Sp,
@@ -270,18 +280,13 @@ func (tc *TypeChecker) checkMacro(mc *MacroDecl) {
 		}
 	}
 
-	// define output variables as any (they are assigned in the body)
 	for _, out := range mc.Outputs {
 		tc.scope.define(out, &VarInfo{Type: TypAny, Sp: mc.Sp})
 	}
 
-	// EM06: validate return type exists
 	tc.validateTypeExists(mc.RetType, mc.Sp)
-
-	// check the body
 	tc.checkBlock(mc.Body)
 
-	// clean up synthetic fn entries we added for callable block params
 	for _, p := range mc.Params {
 		t := p.Type
 		if t == nil {
@@ -346,6 +351,16 @@ func (tc *TypeChecker) checkFn(fn *FnDecl) {
 		}
 		tc.scope.define(p2.Name, &VarInfo{Type: t, Sp: p2.Sp})
 	}
+	// FIX: make 'our' globals visible inside functions
+	for _, vd := range tc.prog.GlobalVars {
+		if vd.ResolvedType != nil {
+			tc.scope.define(vd.Name, &VarInfo{Type: vd.ResolvedType, IsGlobal: true, Sp: vd.Sp})
+		} else if vd.VarType != nil {
+			tc.scope.define(vd.Name, &VarInfo{Type: vd.VarType, IsGlobal: true, Sp: vd.Sp})
+		} else {
+			tc.scope.define(vd.Name, &VarInfo{Type: TypAny, IsGlobal: true, Sp: vd.Sp})
+		}
+	}
 	tc.validateTypeExists(fn.RetType, fn.Sp)
 	tc.checkBlock(fn.Body)
 	tc.fnStack = tc.fnStack[:len(tc.fnStack)-1]
@@ -367,6 +382,17 @@ func (tc *TypeChecker) checkMethod(m *MethodDecl) {
 			t = TypAny
 		}
 		tc.scope.define(p2.Name, &VarInfo{Type: t, Sp: p2.Sp})
+	}
+	// FIX: globals visible in methods too
+	for _, vd := range tc.prog.GlobalVars {
+		typ := vd.ResolvedType
+		if typ == nil {
+			typ = vd.VarType
+		}
+		if typ == nil {
+			typ = TypAny
+		}
+		tc.scope.define(vd.Name, &VarInfo{Type: typ, IsGlobal: true, Sp: vd.Sp})
 	}
 	tc.checkBlock(m.Body)
 	tc.methodStack = tc.methodStack[:len(tc.methodStack)-1]
@@ -509,24 +535,20 @@ func (tc *TypeChecker) checkVarDecl(v *VarDecl) {
 			}
 		}
 	}
-	// E12 void variable
 	if resolved != nil && resolved.Kind == TyVoid {
 		errCode("E12", v.Sp, fmt.Sprintf("variable %q cannot have type void — void means 'no value'", v.Name),
 			"use any, int, float, str, bool, or a struct type instead")
 		tc.ok = false
 	}
-	// E13 const without init
 	if v.IsConst && v.Init == nil {
 		errCode("E13", v.Sp, fmt.Sprintf("const/our %q must have an initializer", v.Name),
 			fmt.Sprintf("add = <value>, e.g. const %s = 42", v.Name))
 		tc.ok = false
 	}
-	// E60 all-lowercase const naming warning
 	if v.IsConst && v.Name == strings.ToLower(v.Name) && len(v.Name) > 1 {
 		warnCode("W02", v.Sp, fmt.Sprintf("const %q should be UPPER_CASE by convention", v.Name),
 			fmt.Sprintf("rename to %s", strings.ToUpper(v.Name)))
 	}
-	// W01 shadowing
 	if outer := tc.scope.parent; outer != nil {
 		if o2 := outer.lookup(v.Name); o2 != nil && !o2.IsFn && !o2.IsExtern {
 			warnCode("W01", v.Sp, fmt.Sprintf("variable %q shadows an outer variable", v.Name),
@@ -534,7 +556,13 @@ func (tc *TypeChecker) checkVarDecl(v *VarDecl) {
 		}
 	}
 	v.ResolvedType = resolved
-	tc.scope.define(v.Name, &VarInfo{Type: resolved, IsConst: v.IsConst, Sp: v.Sp, Defined: true})
+	tc.scope.define(v.Name, &VarInfo{
+		Type:     resolved,
+		IsConst:  v.IsConst,
+		IsGlobal: v.IsGlobal,
+		Sp:       v.Sp,
+		Defined:  true,
+	})
 }
 
 func (tc *TypeChecker) checkReturn(r *ReturnStmt) {
@@ -548,7 +576,7 @@ func (tc *TypeChecker) checkReturn(r *ReturnStmt) {
 	if r.Value == nil {
 		if ret.Kind != TyVoid && ret.Kind != TyAny {
 			errCode("E15", r.Sp, fmt.Sprintf("function %q must return %s, but has an empty return", tc.currentName(), ret),
-				fmt.Sprintf("return a value: return <expr>, or change the return type to void"))
+				"return a value: return <expr>, or change the return type to void")
 			tc.ok = false
 		}
 		return
@@ -704,6 +732,19 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 			}
 		}
 		return TypStr
+	case *MultilineStr:
+		e.Typ = TypStr
+		for _, part := range e.Parts {
+			if part.IsExpr && part.Expr != nil {
+				tc.inferExpr(part.Expr)
+			}
+			if part.IsStmt {
+				for _, s := range part.Stmts {
+					tc.checkStmt(s)
+				}
+			}
+		}
+		return TypStr
 	case *CmdExpr:
 		e.Typ = TypStr
 		tc.inferExpr(e.Command)
@@ -726,6 +767,26 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 				e.Typ = bd.Ret
 				return bd.Ret
 			}
+			// FIX: give a better error if the name is a mod function called without namespace
+			if tc.modNames[e.Name] {
+				errCode("E80", e.Sp, fmt.Sprintf("%q is a mod block name, not a value — use %s->fn() to call its functions", e.Name, e.Name),
+					fmt.Sprintf("example: %s->myFn()", e.Name))
+				tc.ok = false
+				e.Typ = TypUnknown
+				return TypUnknown
+			}
+			// Check if user tried to call a mod fn by plain name
+			for modKey := range tc.modFns {
+				parts := strings.SplitN(modKey, "::", 2)
+				if len(parts) == 2 && parts[1] == e.Name {
+					errCode("E81", e.Sp,
+						fmt.Sprintf("%q is a mod-private function — call it as %s->%s()", e.Name, parts[0], e.Name),
+						fmt.Sprintf("use: %s->%s()", parts[0], e.Name))
+					tc.ok = false
+					e.Typ = TypUnknown
+					return TypUnknown
+				}
+			}
 			suggestion := tc.suggestName(e.Name)
 			hint := fmt.Sprintf("declare it: let %s = ...", e.Name)
 			if suggestion != "" {
@@ -736,9 +797,21 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 			e.Typ = TypUnknown
 			return TypUnknown
 		}
+		// FIX: if it's a mod fn in scope but user accessed by plain name, error
+		if vi.IsModFn {
+			errCode("E81", e.Sp,
+				fmt.Sprintf("%q is a mod-private function in mod %q — call it as %s->%s()", e.Name, vi.ModName, vi.ModName, e.Name),
+				fmt.Sprintf("use: %s->%s()", vi.ModName, e.Name))
+			tc.ok = false
+			e.Typ = TypUnknown
+			return TypUnknown
+		}
 		vi.UsedCount++
 		e.Typ = vi.Type
 		return vi.Type
+
+	case *ModCallExpr:
+		return tc.inferModCall(e)
 
 	case *BinExpr:
 		return tc.inferBin(e)
@@ -838,21 +911,14 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 		e.Typ = ArrayOf(first, len(e.Elems))
 		return e.Typ
 
-	// ── Macro call:  macroName!(arg1, arg2) ──────────────────────────────────
 	case *MacroCallExpr:
 		return tc.inferMacroCall(e)
-
-	// ── Macro chain:  value macroName: do { } ────────────────────────────────
 	case *MacroCallChain:
 		return tc.inferMacroChain(e)
-
-	// ── typeof(x) ─────────────────────────────────────────────────────────────
 	case *TypeofExpr:
 		tc.inferExpr(e.Arg)
 		e.Typ = TypStr
 		return TypStr
-
-	// ── BangMacroExpr: unknown! macros forwarded to C ────────────────────────
 	case *BangMacroExpr:
 		for _, a := range e.Args {
 			tc.inferExpr(a)
@@ -865,12 +931,73 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 	}
 }
 
+// inferModCall type-checks  modName->fn(args)  and  modName::fn(args).
+// Only functions registered in tc.modFns["modName::fnName"] are valid.
+func (tc *TypeChecker) inferModCall(e *ModCallExpr) *ZXType {
+	if !tc.modNames[e.Mod] {
+		errCode("E82", e.Sp, fmt.Sprintf("unknown mod %q — no mod block with this name", e.Mod),
+			fmt.Sprintf("declare it: mod %s { fn %s() { ... } }", e.Mod, e.Fn))
+		tc.ok = false
+		e.Typ = TypUnknown
+		return TypUnknown
+	}
+	key := e.Mod + "::" + e.Fn
+	fn, ok := tc.modFns[key]
+	if !ok {
+		// list available fns in this mod for a helpful error
+		var available []string
+		prefix := e.Mod + "::"
+		for k := range tc.modFns {
+			if strings.HasPrefix(k, prefix) {
+				available = append(available, strings.TrimPrefix(k, prefix))
+			}
+		}
+		hint := fmt.Sprintf("mod %q has no function %q", e.Mod, e.Fn)
+		if len(available) > 0 {
+			hint += fmt.Sprintf(" — available: %s", strings.Join(available, ", "))
+		}
+		errCode("E83", e.Sp, hint,
+			fmt.Sprintf("define it: mod %s { fn %s() { ... } }", e.Mod, e.Fn))
+		tc.ok = false
+		e.Typ = TypUnknown
+		return TypUnknown
+	}
+	// type-check arguments
+	if !fn.Variadic && len(e.Args) != len(fn.Params) {
+		minArgs := 0
+		for _, p := range fn.Params {
+			if p.Default == nil {
+				minArgs++
+			}
+		}
+		if len(e.Args) < minArgs || (!fn.Variadic && len(e.Args) > len(fn.Params)) {
+			errCode("E42", e.Sp,
+				fmt.Sprintf("%s->%s expects %d argument(s), got %d", e.Mod, e.Fn, len(fn.Params), len(e.Args)),
+				fmt.Sprintf("signature: fn %s(%s)", e.Fn, listParamTypes(fn.Params)))
+			tc.ok = false
+		}
+	}
+	for i, arg := range e.Args {
+		got := tc.inferExpr(arg)
+		if i < len(fn.Params) {
+			expected := fn.Params[i].Type
+			if expected != nil && expected.Kind != TyAny && got.Kind != TyAny && got.Kind != TyUnknown && !coercible(got, expected) {
+				errCode("E43", arg.nodeSpan(),
+					fmt.Sprintf("%s->%s arg %d: expected %s, got %s", e.Mod, e.Fn, i+1, expected, got),
+					fmt.Sprintf("cast with: %s(value)", expected))
+				tc.ok = false
+			}
+		}
+	}
+	e.Typ = fn.RetType
+	return fn.RetType
+}
+
 // ── Macro inference ───────────────────────────────────────────────────────────
 
 func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 	mc, ok := tc.macros[e.Name]
 	if !ok {
-		// EM07: call to undefined macro
 		hint := fmt.Sprintf("declare it: macro fn %s |input| -> |output| { }", e.Name)
 		if s := tc.suggestName(e.Name); s != "" {
 			hint = fmt.Sprintf("did you mean %q?", s)
@@ -880,9 +1007,6 @@ func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 		e.Typ = TypUnknown
 		return TypUnknown
 	}
-	// EM08: wrong number of arguments
-	// Exception: if 0 args are given, the macro may be used as a pipe step
-	// (e.g. 3 |> times2!) — the pipe provides the argument.
 	expected := len(mc.Params)
 	got := len(e.Args)
 	if expected != got && !(got == 0 && expected <= 1) {
@@ -891,7 +1015,6 @@ func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 			fmt.Sprintf("signature: macro fn %s |%s|", e.Name, listParamTypes(mc.Params)))
 		tc.ok = false
 	}
-	// type-check each argument
 	for i, arg := range e.Args {
 		argType := tc.inferExpr(arg)
 		if i < len(mc.Params) {
@@ -914,28 +1037,24 @@ func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 }
 
 func (tc *TypeChecker) inferMacroChain(e *MacroCallChain) *ZXType {
-	// type-check the receiver value
 	recvType := tc.inferExpr(e.Recv)
 	lastType := recvType
 
 	for _, step := range e.Steps {
 		mc, ok := tc.macros[step.Macro]
 		if !ok {
-			// EM07: undefined macro in chain
 			hint := fmt.Sprintf("declare: macro fn %s |input, doStmt| -> |output| { }", step.Macro)
 			errCode("EM07", step.Sp, fmt.Sprintf("undefined macro %q in chain", step.Macro), hint)
 			tc.ok = false
 			tc.checkBlock(step.Body)
 			continue
 		}
-		// EM10: chain step macro must accept at least one param (the receiver)
 		if len(mc.Params) == 0 {
 			errCode("EM10", step.Sp,
 				fmt.Sprintf("macro %q used in chain must accept at least one parameter (the piped value)", step.Macro),
 				fmt.Sprintf("add a param: macro fn %s |input| { }", step.Macro))
 			tc.ok = false
 		}
-		// the block body is type-checked in its own scope
 		tc.checkBlock(step.Body)
 		lastType = mc.RetType
 		if lastType == nil {
@@ -1066,7 +1185,6 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 		fnName = id.Name
 	}
 
-	// builtin
 	if bd := LookupBuiltin(fnName); bd != nil {
 		for _, a := range e.Args {
 			tc.inferExpr(a)
@@ -1083,7 +1201,6 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 		return bd.Ret
 	}
 
-	// std fn
 	if sf, ok := tc.stdFns[fnName]; ok {
 		for _, a := range e.Args {
 			tc.inferExpr(a)
@@ -1092,7 +1209,6 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 		return sf.Ret
 	}
 
-	// extern
 	if ext, ok := tc.externs[fnName]; ok {
 		for i, a := range e.Args {
 			got := tc.inferExpr(a)
@@ -1117,10 +1233,8 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 		return ext.RetType
 	}
 
-	// user fn
 	if fn, ok := tc.fns[fnName]; ok {
 		if !fn.Variadic && len(e.Args) != len(fn.Params) {
-			// check for params with defaults
 			minArgs := 0
 			for _, p2 := range fn.Params {
 				if p2.Default == nil {
@@ -1151,7 +1265,6 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 		return fn.RetType
 	}
 
-	// E44 undefined function
 	if fnName != "" {
 		vi := tc.scope.lookup(fnName)
 		if vi == nil {
@@ -1247,7 +1360,6 @@ func (tc *TypeChecker) inferField(e *FieldExpr) *ZXType {
 		eff = objType.Elem
 	}
 
-	//  funny warning for dot on ref
 	if e.UsedDot && objType.Kind == TyRef {
 		funnyWarn(e.Sp,
 			"you used '.' on a ref type — sure, it works, but seriously... grow up and use '->' like a C programmer ",
@@ -1484,19 +1596,14 @@ func listParamTypes(params []Param) string {
 	return strings.Join(parts, ", ")
 }
 
-// isBlockParam returns true if a macro param represents a callable block.
-// Params named doStmt, block, body, action, fn, callback, handler, etc.
-// are treated as callable so doStmt() works inside macro bodies.
 func isBlockParam(name string, t *ZXType) bool {
 	lower := strings.ToLower(name)
-	// explicit block-sounding names
 	switch lower {
 	case "dostmt", "block", "body", "action", "fn", "callback",
 		"handler", "stmt", "run", "exec", "proc", "closure", "do",
 		"then", "ontrue", "onfalse", "iftrue", "iffalse":
 		return true
 	}
-	// suffix/prefix patterns
 	if strings.HasSuffix(lower, "stmt") || strings.HasSuffix(lower, "block") ||
 		strings.HasSuffix(lower, "fn") || strings.HasSuffix(lower, "func") ||
 		strings.HasPrefix(lower, "do") || strings.HasPrefix(lower, "on") {
@@ -1505,7 +1612,6 @@ func isBlockParam(name string, t *ZXType) bool {
 	return false
 }
 
-// isCReservedFnTC checks for C reserved names (typechecker version)
 func isCReservedFnTC(name string) bool {
 	switch name {
 	case "double", "float", "int", "char", "long", "short",
@@ -1519,21 +1625,21 @@ func isCReservedFnTC(name string) bool {
 	return false
 }
 
-// registerModFns recursively registers all functions from a mod block into
-// the global scope so they can be called by plain name from anywhere.
+// registerModFns registers mod block functions ONLY under namespace keys
+// "modName::fnName". They are NOT added to global scope by plain name.
+// This enforces that mod->fn() or mod::fn() is required to call them.
 func (tc *TypeChecker) registerModFns(mb *ModBlock) {
+	tc.modNames[mb.Name] = true
 	for _, fn := range mb.Fns {
-		if _, exists := tc.fns[fn.Name]; !exists {
-			tc.fns[fn.Name] = fn
-			tc.scope.define(fn.Name, &VarInfo{Type: fn.RetType, IsFn: true, Sp: fn.Sp})
-		}
+		key := mb.Name + "::" + fn.Name
+		tc.modFns[key] = fn
+		// Also register in tc.fns with the qualified key for inferCall to skip it
+		// (we deliberately do NOT register by plain fn.Name)
 	}
 	for _, td := range mb.Tests {
 		fn := td.Fn
-		if _, exists := tc.fns[fn.Name]; !exists {
-			tc.fns[fn.Name] = fn
-			tc.scope.define(fn.Name, &VarInfo{Type: fn.RetType, IsFn: true, Sp: fn.Sp})
-		}
+		key := mb.Name + "::" + fn.Name
+		tc.modFns[key] = fn
 	}
 	for _, s := range mb.Structs {
 		if _, exists := tc.structs[s.Name]; !exists {
@@ -1545,7 +1651,7 @@ func (tc *TypeChecker) registerModFns(mb *ModBlock) {
 	}
 }
 
-// checkModFns recursively type-checks all function bodies inside mod blocks.
+// checkModFns type-checks all function bodies inside mod blocks.
 func (tc *TypeChecker) checkModFns(mb *ModBlock) {
 	for _, fn := range mb.Fns {
 		tc.checkFn(fn)

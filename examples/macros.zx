@@ -1,6 +1,8 @@
 // macros.zx — ZX macro system showcase
 // Run: ./zxc examples/macros.zx
 
+import "stdio.h"
+
 extern fn printf(fmt: str, ...) -> int;
 extern fn getuid() -> int;
 

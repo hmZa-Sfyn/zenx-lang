@@ -1,6 +1,8 @@
 extern fn sqrt(...) -> int 
 extern fn printf(fmt: str, ...) -> int;
 
+import "stdio.h"
+
 type Vec2 struct {
     x float;
     y float;

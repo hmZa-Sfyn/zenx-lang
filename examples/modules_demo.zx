@@ -16,7 +16,7 @@ mod math_utils {
 
     fn factorial(n: int) -> int {
         if n <= 1 { return 1; }
-        return n * factorial(n - 1);
+        return n * math_utils->factorial(n - 1);
     }
 
     mod advanced {
@@ -48,9 +48,9 @@ mod string_utils {
 
     fn print_banner(title: str) {
         printf("\n");
-        repeat_char('=', 40);
+        string_utils->repeat_char('=', 40);
         printf("\n  %s\n", title);
-        repeat_char('=', 40);
+        string_utils->repeat_char('=', 40);
         printf("\n\n");
     }
 }
@@ -71,23 +71,23 @@ mod app {
         @args={"n": 5}
         @expect=120
         fn test_factorial(n: int) -> int {
-            return factorial(n);
+            return math_utils->factorial(n);
         }
     }
 }
 
 // ── Use module functions directly (names are global) ─────────────────────────
 
-string_utils::print_banner("ZX Module Demo");
+string_utils->print_banner("ZX Module Demo");
 
-printf("add(10, 20)    = %d\n", math_utils::add(10, 20));
-printf("multiply(6, 7) = %d\n", math_utils::multiply(6, 7));
-printf("factorial(6)   = %d\n", math_utils::factorial(6));
-printf("power(2, 8)    = %d\n", math_utils::power(2, 8));
+printf("add(10, 20)    = %d\n", math_utils->add(10, 20));
+printf("multiply(6, 7) = %d\n", math_utils->multiply(6, 7));
+printf("factorial(6)   = %d\n", math_utils->factorial(6));
+printf("power(2, 8)    = %d\n", math_utils->power(2, 8));
 
 say "Primes up to 20:";
 for i in 1..21 {
-    if math_utils::advanced::is_prime(i) {
+    if math_utils->advanced->is_prime(i) {
         printf("%lld ", i);
     }
 }

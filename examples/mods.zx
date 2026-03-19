@@ -1,0 +1,7 @@
+mod a {
+    fn b(x: int) -> int {
+        return int(2.55 * x)
+    }
+}
+
+say a->b(2);

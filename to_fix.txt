@@ -42,10 +42,38 @@ abc->def(); // wasssuppp?
 
 def(); // error!
 
----
+```
 
 but currently even if user tyoed `def();`, it just works, and hoes no errors, please i want them to only be callable with their mod name present!
 
+---
 
+- NEWFEATURE + ADVANCEMENT:
+- if user uses `our` keyword to declare a variable in top-level scope then make sure that that var is accessable from all the functions andeverything,! because it is global!
+
+---
+
+- add support for speical multiline strings like:
+```perl
+
+my siteNAME: str = "cool website";
+
+my indexHTML: str = @`
+<html>
+  <head>
+   <title>${siteNAME}</title>
+  </head>
+  <body>
+    <h1>example of embedded code into html page, which is calculated in the \`...\` string.</h1>
+    ${
+      for x in 0.99 {
+        say x;
+      }
+    }
+  </body>
+</html>
+`;
 
 ```
+---
+

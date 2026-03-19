@@ -13,8 +13,8 @@ type Parser struct {
 	pos        int
 	file       string
 	ok         bool
-	srcDir     string          // directory of the source file, for local imports
-	macroScope map[string]bool // names of current macro params — shadow keywords
+	srcDir     string
+	macroScope map[string]bool
 }
 
 func Parse(tokens []Token, src, file string) *Program {
@@ -29,8 +29,6 @@ func Parse(tokens []Token, src, file string) *Program {
 	}
 	return prog
 }
-
-// ── token helpers ─────────────────────────────────────────────────────────────
 
 func (p *Parser) peek() Token {
 	if p.pos >= len(p.tokens) {
@@ -93,8 +91,6 @@ func (p *Parser) eatSemi() {
 	}
 }
 
-// isInMacroScope returns true if name is a macro param name that should
-// shadow any keyword with the same name (e.g. param named "input" shadows TK_INPUT)
 func (p *Parser) isInMacroScope(name string) bool {
 	return p.macroScope != nil && p.macroScope[name]
 }
@@ -108,8 +104,6 @@ func (p *Parser) isTypeStart() bool {
 	}
 	return false
 }
-
-// ── Annotation helpers ────────────────────────────────────────────────────────
 
 func (p *Parser) parseAnnotations() []Annotation {
 	var anns []Annotation
@@ -148,7 +142,6 @@ func parseAnnotationValue(t Token) Annotation {
 	return ann
 }
 
-// buildTestDecl converts a @test fn into a TestDecl.
 func buildTestDecl(fn *FnDecl, modPath string) *TestDecl {
 	td := &TestDecl{Fn: fn, ModPath: modPath}
 	for _, ann := range fn.Annotations {
@@ -172,11 +165,8 @@ func buildTestDecl(fn *FnDecl, modPath string) *TestDecl {
 	return td
 }
 
-// ── Program ───────────────────────────────────────────────────────────────────
-
 func (p *Parser) parseProgram() *Program {
 	prog := &Program{}
-	// optional: mod name;
 	if p.at(TK_MOD) && p.peekN(1).Kind == TK_IDENT && p.peekN(2).Kind != TK_LBRACE {
 		p.advance()
 		prog.Module = p.expect(TK_IDENT).Value
@@ -232,8 +222,6 @@ func (p *Parser) isFnMethod() bool {
 	return p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Kind == TK_LPAREN
 }
 
-// ── mod name { ... } ──────────────────────────────────────────────────────────
-
 func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 	sp := p.peek().Span
 	p.expect(TK_MOD)
@@ -268,11 +256,8 @@ func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 		case TK_SEMI:
 			p.advance()
 		case TK_CONST, TK_OUR, TK_LET, TK_MY:
-			// Allow const/let declarations inside mod blocks
 			isConst := p.peek().Kind == TK_CONST || p.peek().Kind == TK_OUR
 			vd := p.parseVarDecl(isConst)
-			// Store as a top-level stmt of a synthetic fn, OR just add to mod fns
-			// Simplest: wrap as a module-level constant stored in a synthetic FnDecl
 			mb.Fns = append(mb.Fns, &FnDecl{
 				Sp:   vd.Sp,
 				Name: "__zx_const_init_" + vd.Name,
@@ -293,23 +278,13 @@ func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 	return mb
 }
 
-// ── Import / use ──────────────────────────────────────────────────────────────
-//
-// Supported syntax:
-//   use std::str                        ZX stdlib module (built-in)
-//   use "stdio.h"                       raw C header
-//   import "stdio.h"                    raw C header
-//   use "./"::abc                       local file ./abc.zx
-//
-//   import _/mod1/logger (logger_ng)    ./mod1/logger.zx — import mod logger_ng
-//   import _/utils                      ./utils.zx       — import everything
-//   import __/sibling                   ../sibling.zx
-//   import __/__/__/mod2/abc            ../../../mod2/abc.zx
-//
-//   import std/net/soc                  $ZX_STD/net/soc.zx — import all
-//   import std/net/soc (socServer)      $ZX_STD/net/soc.zx — import pub mod socServer
-//   import usr/mylib/util               $ZX_USR/mylib/util.zx — import all
-
+// parseImport handles all import forms:
+//   import _/logger (Logger)    → local path with slash separator
+//   import _::logger (Logger)   → local path with :: separator
+//   import __/sibling           → one level up
+//   import std/net/soc          → env-var based path
+//   use std::str                → stdlib module
+//   use "stdio.h"               → raw C header
 func (p *Parser) parseImport() *ImportDecl {
 	sp := p.peek().Span
 	p.advance() // import or use
@@ -318,7 +293,6 @@ func (p *Parser) parseImport() *ImportDecl {
 
 	if p.at(TK_STRING) {
 		rawPath := p.advance().Value
-		// use "./"::abc  — local file import
 		if strings.HasPrefix(rawPath, "./") || strings.HasPrefix(rawPath, "../") {
 			if p.at(TK_DCOLON) {
 				p.advance()
@@ -333,27 +307,24 @@ func (p *Parser) parseImport() *ImportDecl {
 		} else {
 			imp.Path = rawPath
 		}
-
 	} else if p.at(TK_IDENT) || p.at(TK_TYPE_STR) {
 		first := p.peek().Value
 
-		// _/path  or  __/__/path  — local file path
-		if strings.HasPrefix(first, "_") && (len(first) == 1 || first[1] == '_') {
+		// FIX: detect _/path or __/path local imports.
+		// The _ ident is followed by TK_SLASH (/) or TK_DCOLON (::).
+		// We dispatch to parseLocalPathImport which handles both separators.
+		if len(first) > 0 && first[0] == '_' {
 			imp = p.parseLocalPathImport(sp)
 			return &imp
 		}
 
-		// std/net/soc  or  usr/mylib/util  — env-var based path
-		// These use TK_SLASH (/) as separator, not ::
-		if first == "std" || first == "usr" {
-			// peek ahead: if next token after ident is SLASH, it's a file path
-			if p.peekN(1).Kind == TK_SLASH {
-				imp = p.parseEnvPathImport(sp)
-				return &imp
-			}
+		// std/net/soc or usr/mylib/util — env-var based path
+		if (first == "std" || first == "usr") && p.peekN(1).Kind == TK_SLASH {
+			imp = p.parseEnvPathImport(sp)
+			return &imp
 		}
 
-		// std::module — built-in ZX stdlib modules
+		// std::module or plain module name
 		name := p.advance().Value
 		for p.at(TK_DCOLON) {
 			p.advance()
@@ -378,7 +349,6 @@ func (p *Parser) parseImport() *ImportDecl {
 		p.ok = false
 	}
 
-	// optional alias: (modName)  or  as alias
 	if p.at(TK_LPAREN) {
 		p.advance()
 		imp.Alias = p.expect(TK_IDENT).Value
@@ -394,21 +364,9 @@ func (p *Parser) parseImport() *ImportDecl {
 	return &imp
 }
 
-// parseEnvPathImport handles:
-//
-//	import std/net/soc                  → $ZX_STD/net/soc.zx, import all
-//	import std/net/soc (socServer)      → $ZX_STD/net/soc.zx, import pub mod socServer
-//	import usr/mylib/util               → $ZX_USR/mylib/util.zx, import all
-//
-// Environment variables:
-//
-//	ZX_STD  — path to ZX standard library (default: same dir as zxc binary)
-//	ZX_USR  — path to user library root   (default: ~/zxlib)
 func (p *Parser) parseEnvPathImport(sp Span) ImportDecl {
 	var imp ImportDecl
 	imp.Sp = sp
-
-	// consume: std / net / soc
 	prefix := p.advance().Value // "std" or "usr"
 	var segments []string
 	for p.at(TK_SLASH) {
@@ -419,8 +377,6 @@ func (p *Parser) parseEnvPathImport(sp Span) ImportDecl {
 			break
 		}
 	}
-
-	// resolve base directory from env var
 	baseEnv := ""
 	switch prefix {
 	case "std":
@@ -430,17 +386,12 @@ func (p *Parser) parseEnvPathImport(sp Span) ImportDecl {
 	default:
 		baseEnv = "ZX_" + strings.ToUpper(prefix)
 	}
-
 	imp.IsLocal = true
 	imp.IsUser = (prefix != "std")
-
 	if len(segments) > 0 {
-		// store as a resolved path hint; actual resolution happens in main.go
 		imp.LocalFile = filepath.Join(append([]string{"$" + baseEnv}, segments...)...) + ".zx"
 		imp.Module = segments[len(segments)-1]
 	}
-
-	// optional: (modName) to import a specific pub mod
 	if p.at(TK_LPAREN) {
 		p.advance()
 		imp.Alias = p.expect(TK_IDENT).Value
@@ -449,34 +400,33 @@ func (p *Parser) parseEnvPathImport(sp Span) ImportDecl {
 	} else {
 		imp.ImportAll = true
 	}
-
-	// store the env var name so main.go can resolve it at runtime
-	imp.Path = baseEnv // repurposed: holds the env var name for env-path imports
+	imp.Path = baseEnv
 	p.eatSemi()
 	return imp
 }
 
-// parseLocalPathImport handles:
-//
-//	import _/mod1/logger (logger_ng)   → ./mod1/logger.zx, import mod logger_ng
-//	import __/__/mod2/abc              → ../../mod2/abc.zx, import all
-//
-// '_' = current dir, '__' = parent dir, '___' = grandparent, etc.
+// parseLocalPathImport handles  _/a/b  __/a  ___/a  with / or :: as separator.
+// A single _ = current dir, __ = one level up, ___ = two levels up, etc.
 func (p *Parser) parseLocalPathImport(sp Span) ImportDecl {
 	var imp ImportDecl
 	imp.Sp = sp
 
-	// collect path segments separated by /
+	seg := p.advance().Value // e.g. "_", "__", "___"
+	ups := 0
+	for _, c := range seg {
+		if c == '_' {
+			ups++
+		}
+	}
+	ups-- // one underscore = current dir (0 ups)
+
 	var segments []string
-	seg := p.advance().Value // first segment like "_", "__", "___"
-	// count underscores to determine how many levels up
-	ups := len(seg) - 1 // _ = 0 up, __ = 1 up, ___ = 2 up
 	for i := 0; i < ups; i++ {
 		segments = append(segments, "..")
 	}
-	// consume remaining path segments separated by /
-	// In ZX, we use :: as path separator since / is division
-	for p.at(TK_DCOLON) {
+
+	// Accept both / (TK_SLASH) and :: (TK_DCOLON) as path separators
+	for (p.at(TK_SLASH) || p.at(TK_DCOLON)) && p.ok {
 		p.advance()
 		if p.at(TK_IDENT) {
 			segments = append(segments, p.advance().Value)
@@ -485,21 +435,18 @@ func (p *Parser) parseLocalPathImport(sp Span) ImportDecl {
 		}
 	}
 
-	// build the local file path
 	if len(segments) > 0 {
 		localPath := filepath.Join(append([]string{p.srcDir}, segments...)...) + ".zx"
 		imp.IsLocal = true
 		imp.LocalFile = localPath
-		if len(segments) > 0 {
-			imp.Module = segments[len(segments)-1]
-		}
+		imp.Module = segments[len(segments)-1]
 	}
 
-	// optional: (modname) to import a specific mod from the file
 	if p.at(TK_LPAREN) {
 		p.advance()
 		imp.Alias = p.expect(TK_IDENT).Value
 		p.expect(TK_RPAREN)
+		imp.ImportAll = false
 	} else {
 		imp.ImportAll = true
 	}
@@ -573,35 +520,13 @@ func (p *Parser) parseStructFields() []Param {
 	return fields
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Macro declarations
-//
-//  Two forms are accepted:
-//
-//  Form A — typed (preferred):
-//    macro fn double |n: int| -> int {
-//        return n * 2;
-//    }
-//
-//  Form B — legacy untyped pipe syntax:
-//    macro fn ifTrue |input, doStmt| -> |output| {
-//        if input { output = doStmt(); }
-//        return output;
-//    }
-// ─────────────────────────────────────────────────────────────────────────────
-
 func (p *Parser) parseMacroDecl() *MacroDecl {
 	sp := p.peek().Span
 	p.expect(TK_MACRO)
-
-	// 'fn' is optional after macro
 	if p.atAny(TK_FN, TK_SUB) {
 		p.advance()
 	}
-
 	name := p.expect(TK_IDENT).Value
-
-	// E_M01: macro name cannot be a C reserved word
 	if isCReservedFn(name) {
 		errCode("EM01", sp,
 			fmt.Sprintf("macro name %q is a C keyword and cannot be used", name),
@@ -609,18 +534,14 @@ func (p *Parser) parseMacroDecl() *MacroDecl {
 		p.ok = false
 		return nil
 	}
-
 	var params []Param
 	retType := TypVoid
 	var inputs, outputs []string
 
 	if p.at(TK_PIPE) {
-		// Form B: |input, doStmt| -> |output|
-		// NOTE: param names can be keywords like 'input', 'output' — use advance() not expect(TK_IDENT)
 		p.advance()
 		for !p.at(TK_PIPE) && !p.at(TK_EOF) && p.ok {
 			psp := p.peek().Span
-			// Accept any token as a param name (keywords like 'input' are valid param names here)
 			pnameTok := p.advance()
 			pname := pnameTok.Value
 			if pname == "" {
@@ -643,11 +564,9 @@ func (p *Parser) parseMacroDecl() *MacroDecl {
 		if p.at(TK_PIPE) {
 			p.advance()
 		}
-		// optional -> |output| or -> type
 		if p.at(TK_ARROW) {
 			p.advance()
 			if p.at(TK_PIPE) {
-				// |output| form — treat as any return
 				p.advance()
 				for !p.at(TK_PIPE) && !p.at(TK_EOF) {
 					onameTok := p.advance()
@@ -666,7 +585,6 @@ func (p *Parser) parseMacroDecl() *MacroDecl {
 			}
 		}
 	} else if p.at(TK_LPAREN) {
-		// Form A with parens: macro fn double(n: int) -> int { }
 		p.advance()
 		params, _ = p.parseParamList()
 		p.expect(TK_RPAREN)
@@ -676,7 +594,6 @@ func (p *Parser) parseMacroDecl() *MacroDecl {
 		}
 	}
 
-	// Populate macroScope so params shadow keywords in the body
 	savedScope := p.macroScope
 	p.macroScope = make(map[string]bool)
 	for _, param := range params {
@@ -688,19 +605,14 @@ func (p *Parser) parseMacroDecl() *MacroDecl {
 	for _, out := range outputs {
 		p.macroScope[out] = true
 	}
-
 	body := p.parseBlock()
-
-	// Restore previous macro scope
 	p.macroScope = savedScope
 
-	// E_M02: macro body must not be empty
 	if body == nil || len(body.Stmts) == 0 {
 		warnAt(sp,
 			fmt.Sprintf("macro %q has an empty body", name),
 			"add at least one statement to the macro body")
 	}
-
 	return &MacroDecl{
 		Sp: sp, Name: name,
 		Params: params, RetType: retType,
@@ -709,15 +621,10 @@ func (p *Parser) parseMacroDecl() *MacroDecl {
 	}
 }
 
-// parseBangMacroCall parses:  name!(arg1, arg2, ...)
-// Called from parsePrimary when TK_BANG_MACRO is seen.
-// parseBangMacroCall parses:  name!(arg1, arg2, ...)
-// Returns MacroCallExpr for user-defined macros, BangMacroExpr for built-ins.
 func (p *Parser) parseBangMacroCall() Node {
 	sp := p.peek().Span
-	t := p.advance() // consume TK_BANG_MACRO token
+	t := p.advance()
 	name := strings.TrimSuffix(t.Value, "!")
-
 	var args []Node
 	if p.at(TK_LPAREN) {
 		p.advance()
@@ -729,9 +636,6 @@ func (p *Parser) parseBangMacroCall() Node {
 		}
 		p.expect(TK_RPAREN)
 	}
-
-	// Built-in bang macros use BangMacroExpr (no __zx_macro_ prefix needed).
-	// User-defined macros use MacroCallExpr (resolved at emit time with prefix).
 	switch name {
 	case "dbg", "panic", "unreachable", "todo", "env",
 		"assert", "ok", "try", "log", "time":
@@ -741,27 +645,16 @@ func (p *Parser) parseBangMacroCall() Node {
 	}
 }
 
-// tryParseMacroChain checks if what follows an expression is a macro chain:
-//
-//	value macroName: do { } macroName2: do { }
-//
-// Returns nil if no chain follows.
 func (p *Parser) tryParseMacroChain(recv Node) Node {
-	// A chain step looks like:  IDENT ':'  'do'  block
-	// We need 2-token lookahead: IDENT followed by COLON
 	if !p.at(TK_IDENT) || p.peekN(1).Kind != TK_COLON {
 		return nil
 	}
-
 	sp := p.peek().Span
 	chain := &MacroCallChain{Sp: sp, Recv: recv}
-
 	for p.at(TK_IDENT) && p.peekN(1).Kind == TK_COLON && p.ok {
 		stepSp := p.peek().Span
-		macroName := p.advance().Value // consume macro name
-		p.expect(TK_COLON)             // consume ':'
-
-		// expect 'do' keyword followed by a block
+		macroName := p.advance().Value
+		p.expect(TK_COLON)
 		if !p.at(TK_DO) {
 			errAt(p.peek().Span,
 				fmt.Sprintf("expected 'do { }' after '%s:'", macroName),
@@ -769,7 +662,7 @@ func (p *Parser) tryParseMacroChain(recv Node) Node {
 			p.ok = false
 			break
 		}
-		p.advance() // consume 'do'
+		p.advance()
 		body := p.parseBlock()
 		chain.Steps = append(chain.Steps, MacroChainStep{
 			Sp:    stepSp,
@@ -777,20 +670,16 @@ func (p *Parser) tryParseMacroChain(recv Node) Node {
 			Body:  body,
 		})
 	}
-
 	if len(chain.Steps) == 0 {
 		return nil
 	}
 	return chain
 }
 
-// ── Function declarations ─────────────────────────────────────────────────────
-
 func (p *Parser) parseFnDecl(anns []Annotation) *FnDecl {
 	sp := p.peek().Span
-	p.advance() // fn or sub
+	p.advance()
 	name := p.expect(TK_IDENT)
-	// E90: warn if name conflicts with C keyword
 	if isCReservedFn(name.Value) {
 		warnCode("W10", name.Span,
 			fmt.Sprintf("function name %q is a C keyword — it will be compiled as __zx_%s", name.Value, name.Value),
@@ -820,14 +709,6 @@ func validateFnAnnotations(fn *FnDecl) {
 			warnAt(ann.Sp, fmt.Sprintf("unknown annotation @%s", ann.Name),
 				"known: @test @ignore @skip @args @expect @timeout @inline @deprecated @noreturn @pure @unsafe @export @benchmark")
 		}
-	}
-	if fn.HasAnnotation(AnnArgs) && !fn.HasAnnotation(AnnTest) {
-		warnAt(fn.Sp, fmt.Sprintf("@args on %q has no effect without @test", fn.Name),
-			"add @test to make this a test case")
-	}
-	if fn.HasAnnotation(AnnExpect) && !fn.HasAnnotation(AnnTest) {
-		warnAt(fn.Sp, fmt.Sprintf("@expect on %q has no effect without @test", fn.Name),
-			"add @test to make this a test case")
 	}
 }
 
@@ -889,8 +770,6 @@ func (p *Parser) parseParamList() ([]Param, bool) {
 	}
 	return params, variadic
 }
-
-// ── Types ─────────────────────────────────────────────────────────────────────
 
 func (p *Parser) parseType() *ZXType {
 	t := p.peek()
@@ -958,8 +837,6 @@ func (p *Parser) parseType() *ZXType {
 	}
 }
 
-// ── Block ─────────────────────────────────────────────────────────────────────
-
 func (p *Parser) parseBlock() *Block {
 	sp := p.peek().Span
 	p.expect(TK_LBRACE)
@@ -972,8 +849,6 @@ func (p *Parser) parseBlock() *Block {
 	p.expect(TK_RBRACE)
 	return &Block{Sp: sp, Stmts: stmts}
 }
-
-// ── Statements ────────────────────────────────────────────────────────────────
 
 func (p *Parser) parseStmt() Node {
 	if p.at(TK_ANNOTATION) {
@@ -1053,7 +928,9 @@ func (p *Parser) parseStmt() Node {
 
 func (p *Parser) parseVarDecl(isConst bool) *VarDecl {
 	sp := p.peek().Span
-	p.advance()
+	tok := p.advance()
+	// 'our' keyword means global variable
+	isGlobal := tok.Kind == TK_OUR
 	name := p.expect(TK_IDENT)
 	var vt *ZXType
 	if p.at(TK_COLON) {
@@ -1072,7 +949,7 @@ func (p *Parser) parseVarDecl(isConst bool) *VarDecl {
 		p.ok = false
 	}
 	p.expectSemi()
-	return &VarDecl{Sp: sp, Name: name.Value, VarType: vt, Init: init, IsConst: isConst}
+	return &VarDecl{Sp: sp, Name: name.Value, VarType: vt, Init: init, IsConst: isConst, IsGlobal: isGlobal}
 }
 
 func (p *Parser) parseReturn() *ReturnStmt {
@@ -1304,17 +1181,13 @@ func (p *Parser) parseExprOrAssign() Node {
 		p.expectSemi()
 		return &AssignStmt{Sp: sp, LHS: expr, Op: op, Value: val}
 	}
-	// Try macro chain:  expr macroName: do { } ...
-	// The last closing } of the chain acts as a statement terminator — no ; needed.
 	if chain := p.tryParseMacroChain(expr); chain != nil {
-		p.eatSemi() // optional semicolon after chain
+		p.eatSemi()
 		return &ExprStmt{Sp: sp, Expr: chain}
 	}
 	p.expectSemi()
 	return &ExprStmt{Sp: sp, Expr: expr}
 }
-
-// ── Pipe ──────────────────────────────────────────────────────────────────────
 
 func (p *Parser) parsePipeExpr() Node {
 	lhs := p.parseTernary()
@@ -1330,16 +1203,6 @@ func (p *Parser) parsePipeExpr() Node {
 	return &PipeExpr{Sp: sp, Steps: steps}
 }
 
-// After parsing a primary expression as a statement, check if a macro chain follows.
-// e.g.  whoami() ifTrue: do { say "root"; } ifFalse: do { say "not root"; }
-func (p *Parser) parseMaybeChain(expr Node) Node {
-	chain := p.tryParseMacroChain(expr)
-	if chain != nil {
-		return chain
-	}
-	return expr
-}
-
 func (p *Parser) parseTernary() Node {
 	cond := p.parseExpr()
 	if !p.at(TK_QUESTION) {
@@ -1352,8 +1215,6 @@ func (p *Parser) parseTernary() Node {
 	els := p.parseExpr()
 	return &TernaryExpr{Sp: sp, Cond: cond, Then: then, Else: els}
 }
-
-// ── Expressions ───────────────────────────────────────────────────────────────
 
 func (p *Parser) parseExpr() Node { return p.parseOr() }
 func (p *Parser) parseOr() Node {
@@ -1524,6 +1385,8 @@ func (p *Parser) parsePostfix() Node {
 						}
 					}
 					p.expect(TK_RPAREN)
+					// Always MethodCallExpr — typechecker detects mod-name receivers
+					// and redirects to ModCallExpr logic in inferMethodCall.
 					expr = &MethodCallExpr{Sp: sp, Recv: expr, Method: field.Value, Args: args}
 				} else {
 					expr = &FieldExpr{Sp: sp,
@@ -1534,18 +1397,12 @@ func (p *Parser) parsePostfix() Node {
 			}
 
 		case TK_DCOLON:
-			// mod::fn(args) or mod::const  — namespace access
-			// We consume the :: and treat the right side as a plain call/ident.
-			// The left side (module name) is discarded for now since functions
-			// from mod blocks are registered at global scope by their plain name.
-			// Future: full namespace resolution with a symbol table.
-			p.advance() // consume ::
+			p.advance()
 			if p.at(TK_IDENT) {
 				name := p.advance()
-				// consume any further ::ident segments (deep nesting: a::b::c)
 				for p.at(TK_DCOLON) && p.peekN(1).Kind == TK_IDENT {
-					p.advance()        // ::
-					name = p.advance() // next segment
+					p.advance()
+					name = p.advance()
 				}
 				if p.at(TK_LPAREN) {
 					p.advance()
@@ -1557,10 +1414,9 @@ func (p *Parser) parsePostfix() Node {
 						}
 					}
 					p.expect(TK_RPAREN)
-					// Emit as a plain function call using the leaf name
-					expr = &CallExpr{Sp: sp, Func: &Ident{Sp: name.Span, Name: name.Value}, Args: args}
+					// Always MethodCallExpr — typechecker handles mod dispatch.
+					expr = &MethodCallExpr{Sp: sp, Recv: expr, Method: name.Value, Args: args}
 				} else {
-					// mod::CONST — just return as ident
 					expr = &Ident{Sp: name.Span, Name: name.Value}
 				}
 			}
@@ -1574,8 +1430,6 @@ func (p *Parser) parsePostfix() Node {
 
 func (p *Parser) parsePrimary() Node {
 	t := p.peek()
-	// If we are inside a macro body and this token (even if normally a keyword)
-	// matches a macro param name, treat it as a plain identifier.
 	if p.isInMacroScope(t.Value) {
 		p.advance()
 		return &Ident{Sp: t.Span, Name: t.Value}
@@ -1598,6 +1452,9 @@ func (p *Parser) parsePrimary() Node {
 	case TK_TEMPLATE_STR:
 		p.advance()
 		return p.parseTemplateStr(t)
+	case TK_MULTILINE_STR:
+		p.advance()
+		return p.parseMultilineStr(t)
 	case TK_NIL:
 		p.advance()
 		return &NilLit{Sp: t.Span}
@@ -1626,7 +1483,6 @@ func (p *Parser) parsePrimary() Node {
 	case TK_BANG_MACRO:
 		return p.parseBangMacroCall()
 	case TK_INPUT, TK_STDIN:
-		// If this keyword is actually a macro param name, treat as identifier
 		if p.isInMacroScope(t.Value) {
 			p.advance()
 			return &Ident{Sp: t.Span, Name: t.Value}
@@ -1703,6 +1559,63 @@ func (p *Parser) parseTemplateStr(tok Token) *TemplateStr {
 		}
 	}
 	return ts
+}
+
+// parseMultilineStr parses @`...` multiline strings with ${expr} and ${stmts} interpolation.
+func (p *Parser) parseMultilineStr(tok Token) *MultilineStr {
+	sp := tok.Span
+	raw := tok.Value
+	ms := &MultilineStr{Sp: sp, Typ: TypStr}
+	i := 0
+	for i < len(raw) {
+		dIdx := strings.Index(raw[i:], "${")
+		if dIdx < 0 {
+			ms.Parts = append(ms.Parts, MlsPart{Text: raw[i:]})
+			break
+		}
+		if dIdx > 0 {
+			ms.Parts = append(ms.Parts, MlsPart{Text: raw[i : i+dIdx]})
+		}
+		i = i + dIdx + 2
+
+		depth := 1
+		j := i
+		for j < len(raw) && depth > 0 {
+			if raw[j] == '{' {
+				depth++
+			} else if raw[j] == '}' {
+				depth--
+			}
+			if depth > 0 {
+				j++
+			}
+		}
+		if depth != 0 {
+			errAt(sp, "multiline string: unclosed ${ in interpolation",
+				"add a closing } for the ${ expression")
+			p.ok = false
+			break
+		}
+		inner := raw[i:j]
+		i = j + 1
+
+		subToks := Tokenize(inner, sp.File)
+		if subToks == nil {
+			continue
+		}
+		subProg := Parse(subToks, inner, sp.File)
+		if subProg == nil {
+			continue
+		}
+		if len(subProg.TopStmts) == 1 {
+			if es, ok := subProg.TopStmts[0].(*ExprStmt); ok {
+				ms.Parts = append(ms.Parts, MlsPart{IsExpr: true, Expr: es.Expr})
+				continue
+			}
+		}
+		ms.Parts = append(ms.Parts, MlsPart{IsStmt: true, Stmts: subProg.TopStmts})
+	}
+	return ms
 }
 
 func (p *Parser) parseCmdOrFile() Node {
@@ -1836,8 +1749,6 @@ func tokenToType(t Token) *ZXType {
 	}
 }
 
-// isCReservedFn returns true if the name is a C keyword that would
-// break emitted code if used as a function name.
 func isCReservedFn(name string) bool {
 	switch name {
 	case "double", "float", "int", "long", "short", "char", "void",
