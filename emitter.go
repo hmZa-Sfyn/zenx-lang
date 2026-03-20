@@ -1185,10 +1185,273 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 			return fmt.Sprintf("(fprintf(stderr, \"[log] %s\\n\", %s), %s)", fmtFor(t), arg0, arg0)
 		}
 	case "time":
-		tmp := fmt.Sprintf("__zx_t%d", e.tmpCounter)
-		e.tmpCounter++
-		_ = tmp
-		return fmt.Sprintf("(clock())")
+		// time!(expr) — measure wall-clock time to evaluate expr, print to stderr, return result
+		tmp := e.tmp()
+		result := e.tmp()
+		t := exprType(b.Args[0])
+		_ = result
+		return fmt.Sprintf(
+			"({ clock_t %s = clock(); %s __r = (%s); fprintf(stderr, \"[time] %%s = %s  (%%ldms)\n\", \"%s\", __r, (long)(clock()-%s)*1000/CLOCKS_PER_SEC); __r; })",
+			tmp, cType(t), arg0, fmtFor(t), arg0, tmp,
+		)
+
+	// ── Type inspection ──────────────────────────────────────────────────────
+
+	case "type_of":
+		// type_of!(expr) → prints the ZX type name as a const char* at runtime
+		if len(b.Args) == 1 {
+			t := exprType(b.Args[0])
+			typeName := "any"
+			if t != nil {
+				typeName = t.String()
+			}
+			b.Typ = TypStr
+			return fmt.Sprintf("(\"%s\")", typeName)
+		}
+
+	case "size_of":
+		// size_of!(expr) → sizeof the value's type in bytes (int)
+		if len(b.Args) == 1 {
+			t := exprType(b.Args[0])
+			b.Typ = TypInt
+			return fmt.Sprintf("((long long)sizeof(%s))", cType(t))
+		}
+
+	// ── Math shortcuts ───────────────────────────────────────────────────────
+
+	case "max":
+		// max!(a, b) → larger of two values
+		if len(argStrs) == 2 {
+			a, bv := argStrs[0], argStrs[1]
+			return fmt.Sprintf("((%s) > (%s) ? (%s) : (%s))", a, bv, a, bv)
+		}
+
+	case "min":
+		// min!(a, b) → smaller of two values
+		if len(argStrs) == 2 {
+			a, bv := argStrs[0], argStrs[1]
+			return fmt.Sprintf("((%s) < (%s) ? (%s) : (%s))", a, bv, a, bv)
+		}
+
+	case "abs":
+		// abs!(n) → absolute value
+		if len(argStrs) == 1 {
+			return fmt.Sprintf("((%s) < 0 ? -(%s) : (%s))", arg0, arg0, arg0)
+		}
+
+	case "clamp":
+		// clamp!(val, lo, hi) → val clamped to [lo, hi]
+		if len(argStrs) == 3 {
+			v, lo, hi := argStrs[0], argStrs[1], argStrs[2]
+			return fmt.Sprintf("((%s)<(%s)?(%s):((%s)>(%s)?(%s):(%s)))", v, lo, lo, v, hi, hi, v)
+		}
+
+	case "swap":
+		// swap!(a, b) → swap two variables in place (statement, returns 0)
+		if len(argStrs) == 2 {
+			tmp := e.tmp()
+			a, bv := argStrs[0], argStrs[1]
+			t := exprType(b.Args[0])
+			return fmt.Sprintf("({ %s %s = %s; %s = %s; %s = %s; 0; })",
+				cType(t), tmp, a, a, bv, bv, tmp)
+		}
+
+	// ── String shortcuts ─────────────────────────────────────────────────────
+
+	case "len":
+		// len!(s) → length of string (int)
+		if len(argStrs) == 1 {
+			b.Typ = TypInt
+			return fmt.Sprintf("((long long)strlen((const char*)(%s)))", arg0)
+		}
+
+	case "str_eq":
+		// str_eq!(a, b) → 1 if strings are equal, 0 otherwise
+		if len(argStrs) == 2 {
+			b.Typ = TypBool
+			return fmt.Sprintf("(strcmp(%s, %s) == 0)", argStrs[0], argStrs[1])
+		}
+
+	case "str_ne":
+		// str_ne!(a, b) → 1 if strings differ
+		if len(argStrs) == 2 {
+			b.Typ = TypBool
+			return fmt.Sprintf("(strcmp(%s, %s) != 0)", argStrs[0], argStrs[1])
+		}
+
+	case "str_contains":
+		// str_contains!(haystack, needle) → 1 if needle is found in haystack
+		if len(argStrs) == 2 {
+			b.Typ = TypBool
+			return fmt.Sprintf("(strstr(%s, %s) != NULL)", argStrs[0], argStrs[1])
+		}
+
+	case "str_starts":
+		// str_starts!(s, prefix) → 1 if s starts with prefix
+		if len(argStrs) == 2 {
+			b.Typ = TypBool
+			return fmt.Sprintf("(strncmp(%s, %s, strlen(%s)) == 0)", argStrs[0], argStrs[1], argStrs[1])
+		}
+
+	case "str_ends":
+		// str_ends!(s, suffix) → 1 if s ends with suffix
+		if len(argStrs) == 2 {
+			b.Typ = TypBool
+			s, suf := argStrs[0], argStrs[1]
+			return fmt.Sprintf(
+				"(strlen(%s) >= strlen(%s) && strcmp(%s + strlen(%s) - strlen(%s), %s) == 0)",
+				s, suf, s, s, suf, suf)
+		}
+
+	case "str_to_int":
+		// str_to_int!(s) → atoi(s)
+		if len(argStrs) == 1 {
+			b.Typ = TypInt
+			return fmt.Sprintf("((long long)atoi(%s))", arg0)
+		}
+
+	case "str_to_float":
+		// str_to_float!(s) → atof(s)
+		if len(argStrs) == 1 {
+			b.Typ = TypFloat
+			return fmt.Sprintf("(atof(%s))", arg0)
+		}
+
+	case "int_to_str":
+		// int_to_str!(n) → integer as decimal string (uses static buffer)
+		if len(argStrs) == 1 {
+			b.Typ = TypStr
+			tmp := e.tmp()
+			return fmt.Sprintf(
+				"({ static char %s[32]; snprintf(%s, sizeof(%s), \"%%lld\", (long long)(%s)); %s; })",
+				tmp, tmp, tmp, arg0, tmp)
+		}
+
+	case "float_to_str":
+		// float_to_str!(f) → float as string (uses static buffer)
+		if len(argStrs) == 1 {
+			b.Typ = TypStr
+			tmp := e.tmp()
+			return fmt.Sprintf(
+				"({ static char %s[64]; snprintf(%s, sizeof(%s), \"%%g\", (double)(%s)); %s; })",
+				tmp, tmp, tmp, arg0, tmp)
+		}
+
+	// ── I/O shortcuts ────────────────────────────────────────────────────────
+
+	case "print":
+		// print!(fmt, ...) → printf shorthand
+		if len(argStrs) >= 1 {
+			rest := ""
+			if len(argStrs) > 1 {
+				rest = ", " + strings.Join(argStrs[1:], ", ")
+			}
+			return fmt.Sprintf("(printf(%s%s))", arg0, rest)
+		}
+
+	case "eprint":
+		// eprint!(fmt, ...) → fprintf(stderr, ...) shorthand
+		if len(argStrs) >= 1 {
+			rest := ""
+			if len(argStrs) > 1 {
+				rest = ", " + strings.Join(argStrs[1:], ", ")
+			}
+			return fmt.Sprintf("(fprintf(stderr, %s%s))", arg0, rest)
+		}
+
+	case "read_line":
+		// read_line!() → read a line from stdin into static buffer, returns str
+		b.Typ = TypStr
+		return "((__zx_input(NULL)))"
+
+	case "exit_ok":
+		// exit_ok!() → exit(0)
+		return "(exit(0), 0)"
+
+	case "exit_err":
+		// exit_err!(msg) → print msg to stderr and exit(1)
+		msg := `"error"`
+		if len(argStrs) > 0 {
+			msg = argStrs[0]
+		}
+		return fmt.Sprintf("(fprintf(stderr, \"%%s\\n\", %s), exit(1), 0)", msg)
+
+	// ── Memory ───────────────────────────────────────────────────────────────
+
+	case "alloc":
+		// alloc!(n) → malloc(n), returns void*
+		if len(argStrs) == 1 {
+			return fmt.Sprintf("(malloc((size_t)(%s)))", arg0)
+		}
+
+	case "zalloc":
+		// zalloc!(n) → calloc(n, 1), zero-initialized malloc
+		if len(argStrs) == 1 {
+			return fmt.Sprintf("(calloc((size_t)(%s), 1))", arg0)
+		}
+
+	case "free":
+		// free!(ptr) → free(ptr)
+		if len(argStrs) == 1 {
+			return fmt.Sprintf("(free(%s), 0)", arg0)
+		}
+
+	case "memcpy":
+		// memcpy!(dst, src, n) → memcpy
+		if len(argStrs) == 3 {
+			return fmt.Sprintf("(memcpy(%s, %s, (size_t)(%s)))",
+				argStrs[0], argStrs[1], argStrs[2])
+		}
+
+	case "memset":
+		// memset!(ptr, val, n) → memset
+		if len(argStrs) == 3 {
+			return fmt.Sprintf("(memset(%s, (int)(%s), (size_t)(%s)))",
+				argStrs[0], argStrs[1], argStrs[2])
+		}
+
+	// ── Misc ─────────────────────────────────────────────────────────────────
+
+	case "is_nil":
+		// is_nil!(ptr) → 1 if pointer is NULL
+		if len(argStrs) == 1 {
+			b.Typ = TypBool
+			return fmt.Sprintf("((void*)(%s) == NULL)", arg0)
+		}
+
+	case "not_nil":
+		// not_nil!(ptr) → 1 if pointer is NOT NULL
+		if len(argStrs) == 1 {
+			b.Typ = TypBool
+			return fmt.Sprintf("((void*)(%s) != NULL)", arg0)
+		}
+
+	case "cast":
+		// cast!(T, expr) — NOTE: T must be a ZX type keyword token
+		// For simplicity we emit C-style cast using the second arg
+		if len(argStrs) == 2 {
+			return fmt.Sprintf("((%s)(%s))", argStrs[0], argStrs[1])
+		}
+
+	case "count_of":
+		// count_of!(array) → number of elements in a fixed-size C array
+		if len(argStrs) == 1 {
+			b.Typ = TypInt
+			return fmt.Sprintf("((long long)(sizeof(%s)/sizeof((%s)[0])))", arg0, arg0)
+		}
+
+	case "likely":
+		// likely!(cond) → hint to compiler that cond is usually true
+		if len(argStrs) == 1 {
+			return fmt.Sprintf("(__builtin_expect(!!(%s), 1))", arg0)
+		}
+
+	case "unlikely":
+		// unlikely!(cond) → hint to compiler that cond is usually false
+		if len(argStrs) == 1 {
+			return fmt.Sprintf("(__builtin_expect(!!(%s), 0))", arg0)
+		}
+
 	}
 	return fmt.Sprintf("%s(%s)", macroFnName(b.Name), strings.Join(argStrs, ", "))
 }

@@ -341,7 +341,7 @@ func (p *Parser) parseImport() *ImportDecl {
 
 	default:
 		errAt(sp, fmt.Sprintf("unexpected token %q after import/use", p.peek().Value),
-			"valid forms:\n"+"  import std/net/socket\n"+"  import std/net/socket (socServ)\n"+"  import _/a\n"+"  import _/a (ModName)\n"+"  import __/a\n"+"  use std::str\n"+"  use \"stdio.h\"")
+			"valid forms:\n"+"  import std/net/socket\n"+"  import std/net/socket (socServ)\n"+"  import _/a\n"+"  import _/a (ModName)\n"+"  import __/a\n"+"  use std::str\n"+"  use \"stdio.h\"\n")
 		p.ok = false
 	}
 
@@ -760,7 +760,20 @@ func (p *Parser) parseBangMacroCall() Node {
 	}
 	switch name {
 	case "dbg", "panic", "unreachable", "todo", "env",
-		"assert", "ok", "try", "log", "time":
+		"assert", "ok", "try", "log", "time",
+		// type inspection
+		"type_of", "size_of",
+		// math
+		"max", "min", "abs", "clamp", "swap",
+		// strings
+		"len", "str_eq", "str_ne", "str_contains", "str_starts", "str_ends",
+		"str_to_int", "str_to_float", "int_to_str", "float_to_str",
+		// i/o
+		"print", "eprint", "read_line", "exit_ok", "exit_err",
+		// memory
+		"alloc", "zalloc", "free", "memcpy", "memset",
+		// misc
+		"is_nil", "not_nil", "cast", "count_of", "likely", "unlikely":
 		return &BangMacroExpr{Sp: sp, Name: name, Args: args}
 	default:
 		return &MacroCallExpr{Sp: sp, Name: name, Args: args}
