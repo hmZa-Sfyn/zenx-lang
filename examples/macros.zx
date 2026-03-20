@@ -32,6 +32,8 @@ macro fn greet_name |name: str| -> str {
 // do { } block inline at the call site. The macro just controls
 // WHEN the block runs based on the input value.
 
+// these below are hard coded, user assigned comming soon!
+
 macro fn ifTrue |input, doStmt| -> |output| {
     output = input;
     // The do { } block is inlined here at compile time.
