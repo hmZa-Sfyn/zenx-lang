@@ -73,6 +73,14 @@ func (s *Scope) inTry() bool {
 	return s.parent.inTry()
 }
 
+// depth returns how many scopes are nested (for shadowing analysis)
+func (s *Scope) depth() int {
+	if s == nil {
+		return 0
+	}
+	return 1 + s.parent.depth()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  TypeChecker
 // ─────────────────────────────────────────────────────────────────────────────
@@ -95,10 +103,12 @@ type TypeChecker struct {
 	ok            bool
 
 	// modFns maps "modName::fnName" → *FnDecl for namespace-qualified lookup.
-	// Plain name lookup (e.g. just "def") will NOT find these — only ModCallExpr will.
-	modFns map[string]*FnDecl
-	// modNames is the set of known mod block names, for error messages.
+	modFns   map[string]*FnDecl
 	modNames map[string]bool
+
+	// returnSeen tracks whether the current fn has a reachable return
+	// (used for non-void functions that appear to have no return)
+	returnSeen bool
 }
 
 func TypeCheck(prog *Program, src, file string) bool {
@@ -120,34 +130,60 @@ func TypeCheck(prog *Program, src, file string) bool {
 		} else if imp.IsCHeader {
 			tc.importPaths[imp.Path] = true
 		} else if imp.IsFileImport && imp.IsLocal {
-			// Resolve the local file import: read, parse, and merge into prog.
 			tc.resolveFileImport(imp, prog)
 		}
 	}
 	tc.stdFns = prog.AllStdFns()
 
-	// E01 structs
+	// ── E01: struct registration ─────────────────────────────────────────────
 	for _, s := range prog.Structs {
-		if _, exists := tc.structs[s.Name]; exists {
-			errCode("E01", s.Sp, fmt.Sprintf("struct %q defined more than once", s.Name), "rename one")
+		if existing, exists := tc.structs[s.Name]; exists {
+			errCodeSecondary("E01", s.Sp,
+				fmt.Sprintf("struct %q is defined more than once", s.Name),
+				"rename one of these struct definitions",
+				[]SecondarySpan{{Span: existing.Sp, Label: "first defined here"}})
 			tc.ok = false
 		}
 		tc.structs[s.Name] = s
-		seen := map[string]bool{}
+
+		// ── E02: duplicate struct fields ─────────────────────────────────────
+		seen := map[string]Span{}
 		for _, f := range s.Fields {
-			if seen[f.Name] {
-				errCode("E02", f.Sp, fmt.Sprintf("duplicate field %q in struct %q", f.Name, s.Name), "remove the duplicate")
+			if prev, dup := seen[f.Name]; dup {
+				errCodeSecondary("E02", f.Sp,
+					fmt.Sprintf("duplicate field %q in struct %q", f.Name, s.Name),
+					"remove the duplicate field or rename it",
+					[]SecondarySpan{{Span: prev, Label: "first declared here"}})
 				tc.ok = false
 			}
-			seen[f.Name] = true
+			seen[f.Name] = f.Sp
 			if f.Type != nil && f.Type.Kind == TyStruct {
 				tc.validateTypeExists(f.Type, f.Sp)
 			}
 		}
+
+		// ── NEW: warn on empty structs ────────────────────────────────────────
+		if len(s.Fields) == 0 {
+			warnCode("W20", s.Sp,
+				fmt.Sprintf("struct %q has no fields — it carries no data", s.Name),
+				"add at least one field, or remove the struct if it is unused")
+		}
+
+		// ── NEW: warn on very large structs (> 32 fields) ────────────────────
+		if len(s.Fields) > 32 {
+			warnCode("W21", s.Sp,
+				fmt.Sprintf("struct %q has %d fields — consider splitting it into smaller structs", s.Name, len(s.Fields)),
+				"large structs are harder to maintain and may hurt cache performance")
+		}
 	}
 
-	// register externs + std fns
+	// ── register externs + std fns ───────────────────────────────────────────
 	for _, e := range prog.Externs {
+		if existing := tc.scope.lookupLocal(e.Name); existing != nil {
+			warnCode("W22", e.Sp,
+				fmt.Sprintf("extern %q re-declared — previous declaration will be shadowed", e.Name),
+				"remove the duplicate extern declaration")
+		}
 		tc.externs[e.Name] = e
 		tc.scope.define(e.Name, &VarInfo{Type: e.RetType, IsFn: true, IsExtern: true, Sp: e.Sp})
 	}
@@ -156,58 +192,76 @@ func TypeCheck(prog *Program, src, file string) bool {
 		tc.scope.define(name, &VarInfo{Type: f.Ret, IsFn: true, IsStd: true})
 	}
 
-	// E03 user top-level functions (NOT mod fns — those are namespace-only)
+	// ── E03: top-level function registration ─────────────────────────────────
 	for _, stmt := range prog.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok {
-			if _, exists := tc.fns[fn.Name]; exists {
-				errCode("E03", fn.Sp, fmt.Sprintf("function %q defined more than once", fn.Name), "rename one")
+			if existing, exists := tc.fns[fn.Name]; exists {
+				errCodeSecondary("E03", fn.Sp,
+					fmt.Sprintf("function %q is defined more than once", fn.Name),
+					"rename one of these function definitions",
+					[]SecondarySpan{{Span: existing.Sp, Label: "first defined here"}})
 				tc.ok = false
 			}
 			tc.fns[fn.Name] = fn
 			tc.scope.define(fn.Name, &VarInfo{Type: fn.RetType, IsFn: true, Sp: fn.Sp})
+
+			// ── NEW: warn on suspiciously long parameter lists ────────────────
+			if len(fn.Params) > 8 {
+				warnCode("W23", fn.Sp,
+					fmt.Sprintf("function %q has %d parameters — consider grouping them into a struct", fn.Name, len(fn.Params)),
+					fmt.Sprintf("example: fn %s(cfg Config) { ... }", fn.Name))
+			}
 		}
-		// FIX: hoist 'our' global vars to prog.GlobalVars and define in global scope
 		if vd, ok := stmt.(*VarDecl); ok && vd.IsGlobal {
 			prog.GlobalVars = append(prog.GlobalVars, vd)
 		}
 	}
 
-	// methods
+	// ── methods ──────────────────────────────────────────────────────────────
 	for _, m := range prog.Methods {
 		key := m.CName()
+		if existing, exists := tc.methods[key]; exists {
+			errCodeSecondary("E58", m.Sp,
+				fmt.Sprintf("method %q on %q is defined more than once", m.Name, m.RecvType),
+				"rename or remove one of the duplicate method definitions",
+				[]SecondarySpan{{Span: existing.Sp, Label: "first defined here"}})
+			tc.ok = false
+		}
 		tc.methods[key] = m
 		tc.scope.define(key, &VarInfo{Type: m.RetType, IsFn: true, IsMethod: true, Sp: m.Sp})
 		if _, ok := tc.structs[m.RecvType]; !ok {
-			errCode("E57", m.Sp, fmt.Sprintf("method on undefined struct %q", m.RecvType),
+			errCode("E57", m.Sp,
+				fmt.Sprintf("method %q defined on unknown struct type %q", m.Name, m.RecvType),
 				fmt.Sprintf("declare the struct first: type %s struct { ... }", m.RecvType))
 			tc.ok = false
 		}
 	}
 
-	// Register mod block functions into NAMESPACE-ONLY scope.
-	// FIX: do NOT put them in global scope by plain name.
-	// They are only callable as modName->fn() or modName::fn().
+	// ── mod block function registration ──────────────────────────────────────
 	for _, mb := range prog.ModBlocks {
 		tc.registerModFns(mb)
 	}
 
-	// EM01–EM10: register macros
+	// ── EM01–EM10: macro registration ────────────────────────────────────────
 	for _, mc := range prog.Macros {
-		if _, exists := tc.macros[mc.Name]; exists {
-			errCode("EM03", mc.Sp, fmt.Sprintf("macro %q defined more than once", mc.Name),
-				"rename one of the macro definitions")
+		if existing, exists := tc.macros[mc.Name]; exists {
+			errCodeSecondary("EM03", mc.Sp,
+				fmt.Sprintf("macro %q is defined more than once", mc.Name),
+				"rename one of the macro definitions",
+				[]SecondarySpan{{Span: existing.Sp, Label: "first defined here"}})
 			tc.ok = false
 		}
 		if _, exists := tc.fns[mc.Name]; exists {
-			errCode("EM04", mc.Sp, fmt.Sprintf("macro %q has the same name as a function", mc.Name),
-				"rename the macro or the function — they cannot share a name")
+			errCode("EM04", mc.Sp,
+				fmt.Sprintf("macro %q has the same name as a function — names must be unique", mc.Name),
+				"rename the macro or the function")
 			tc.ok = false
 		}
 		tc.macros[mc.Name] = mc
 		tc.scope.define(mc.Name, &VarInfo{Type: mc.RetType, IsFn: true, Sp: mc.Sp})
 	}
 
-	// check bodies
+	// ── check bodies ─────────────────────────────────────────────────────────
 	for _, stmt := range prog.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok {
 			tc.checkFn(fn)
@@ -228,12 +282,33 @@ func TypeCheck(prog *Program, src, file string) bool {
 		}
 	}
 
-	// define 'our' globals in scope so top-level non-fn stmts and fns can see them
+	// ── define 'our' globals so non-fn stmts can see them ───────────────────
 	for _, vd := range prog.GlobalVars {
 		tc.checkVarDecl(vd)
 	}
 
+	// ── NEW: unused-variable lint pass ───────────────────────────────────────
+	tc.checkUnusedVars()
+
 	return tc.ok
+}
+
+// checkUnusedVars walks all registered scopes and warns on unused local vars.
+// We only warn — never error — for unused variables.
+func (tc *TypeChecker) checkUnusedVars() {
+	// The global scope vars are already walked via tc.scope.
+	// We rely on UsedCount incremented during inferExpr/checkStmt.
+	// Walk the global scope vars only (function-local scopes are ephemeral).
+	for name, vi := range tc.scope.vars {
+		if vi.IsFn || vi.IsExtern || vi.IsStd || vi.IsGlobal {
+			continue
+		}
+		if vi.UsedCount == 0 && vi.Defined {
+			warnCode("W30", vi.Sp,
+				fmt.Sprintf("variable %q is declared but never used", name),
+				"remove the declaration, or use _ as the variable name to suppress this warning")
+		}
+	}
 }
 
 func (tc *TypeChecker) currentFn() *FnDecl {
@@ -259,14 +334,16 @@ func (tc *TypeChecker) checkMacro(mc *MacroDecl) {
 	tc.scope = newScope(saved, "fn")
 	tc.macroStack = append(tc.macroStack, mc)
 
-	seen := map[string]bool{}
+	seen := map[string]Span{}
 	for _, p := range mc.Params {
-		if seen[p.Name] {
-			errCode("EM05", p.Sp, fmt.Sprintf("duplicate param %q in macro %q", p.Name, mc.Name),
-				"rename one of the duplicate parameters")
+		if prev, dup := seen[p.Name]; dup {
+			errCodeSecondary("EM05", p.Sp,
+				fmt.Sprintf("duplicate parameter %q in macro %q", p.Name, mc.Name),
+				"rename one of the duplicate parameters",
+				[]SecondarySpan{{Span: prev, Label: "first declared here"}})
 			tc.ok = false
 		}
-		seen[p.Name] = true
+		seen[p.Name] = p.Sp
 		t := p.Type
 		if t == nil {
 			t = TypAny
@@ -343,20 +420,38 @@ func (tc *TypeChecker) checkFn(fn *FnDecl) {
 	saved := tc.scope
 	tc.scope = newScope(saved, "fn")
 	tc.fnStack = append(tc.fnStack, fn)
-	seen := map[string]bool{}
+
+	// ── NEW: check for C-keyword function names ───────────────────────────────
+	if isCReservedFnTC(fn.Name) {
+		warnCode("W10", fn.Sp,
+			fmt.Sprintf("function name %q shadows a C keyword — it will be compiled as __zx_%s", fn.Name, fn.Name),
+			fmt.Sprintf("rename to avoid confusion: fn my_%s(...) { ... }", fn.Name))
+	}
+
+	seen := map[string]Span{}
 	for _, p2 := range fn.Params {
-		if seen[p2.Name] {
-			errCode("E04", p2.Sp, fmt.Sprintf("duplicate param %q in %q", p2.Name, fn.Name), "rename one")
+		if prev, dup := seen[p2.Name]; dup {
+			errCodeSecondary("E04", p2.Sp,
+				fmt.Sprintf("duplicate parameter %q in function %q", p2.Name, fn.Name),
+				"rename one of the duplicate parameters",
+				[]SecondarySpan{{Span: prev, Label: "first declared here"}})
 			tc.ok = false
 		}
-		seen[p2.Name] = true
+		seen[p2.Name] = p2.Sp
 		t := p2.Type
 		if t == nil {
 			t = TypAny
 		}
-		tc.scope.define(p2.Name, &VarInfo{Type: t, Sp: p2.Sp})
+		// ── NEW: warn on shadowing of outer names by param ────────────────────
+		if outer := saved.lookup(p2.Name); outer != nil && !outer.IsFn && !outer.IsExtern {
+			warnCode("W01", p2.Sp,
+				fmt.Sprintf("parameter %q shadows an outer variable", p2.Name),
+				"rename the parameter to avoid confusion")
+		}
+		tc.scope.define(p2.Name, &VarInfo{Type: t, Sp: p2.Sp, Defined: true})
 	}
-	// FIX: make 'our' globals visible inside functions
+
+	// make 'our' globals visible inside functions
 	for _, vd := range tc.prog.GlobalVars {
 		if vd.ResolvedType != nil {
 			tc.scope.define(vd.Name, &VarInfo{Type: vd.ResolvedType, IsGlobal: true, Sp: vd.Sp})
@@ -366,8 +461,22 @@ func (tc *TypeChecker) checkFn(fn *FnDecl) {
 			tc.scope.define(vd.Name, &VarInfo{Type: TypAny, IsGlobal: true, Sp: vd.Sp})
 		}
 	}
+
 	tc.validateTypeExists(fn.RetType, fn.Sp)
+
+	// ── NEW: check non-void function for at least one return ─────────────────
+	savedReturnSeen := tc.returnSeen
+	tc.returnSeen = false
 	tc.checkBlock(fn.Body)
+	if fn.RetType != nil && fn.RetType.Kind != TyVoid && fn.RetType.Kind != TyAny {
+		if !tc.returnSeen && fn.Name != "main" {
+			warnCode("W40", fn.Sp,
+				fmt.Sprintf("function %q declares return type %s but may not return a value on all paths", fn.Name, fn.RetType),
+				"add a return statement, or change the return type to void")
+		}
+	}
+	tc.returnSeen = savedReturnSeen
+
 	tc.fnStack = tc.fnStack[:len(tc.fnStack)-1]
 	tc.scope = saved
 }
@@ -380,15 +489,26 @@ func (tc *TypeChecker) checkMethod(m *MethodDecl) {
 	if m.RecvRef {
 		recvType = RefOf(StructType(m.RecvType))
 	}
-	tc.scope.define(m.RecvName, &VarInfo{Type: recvType, Sp: m.Sp})
+	tc.scope.define(m.RecvName, &VarInfo{Type: recvType, Sp: m.Sp, Defined: true})
+
+	seen := map[string]Span{}
 	for _, p2 := range m.Params {
+		if prev, dup := seen[p2.Name]; dup {
+			errCodeSecondary("E04", p2.Sp,
+				fmt.Sprintf("duplicate parameter %q in method %q", p2.Name, m.Name),
+				"rename one of the duplicate parameters",
+				[]SecondarySpan{{Span: prev, Label: "first declared here"}})
+			tc.ok = false
+		}
+		seen[p2.Name] = p2.Sp
 		t := p2.Type
 		if t == nil {
 			t = TypAny
 		}
-		tc.scope.define(p2.Name, &VarInfo{Type: t, Sp: p2.Sp})
+		tc.scope.define(p2.Name, &VarInfo{Type: t, Sp: p2.Sp, Defined: true})
 	}
-	// FIX: globals visible in methods too
+
+	// globals visible in methods
 	for _, vd := range tc.prog.GlobalVars {
 		typ := vd.ResolvedType
 		if typ == nil {
@@ -399,7 +519,19 @@ func (tc *TypeChecker) checkMethod(m *MethodDecl) {
 		}
 		tc.scope.define(vd.Name, &VarInfo{Type: typ, IsGlobal: true, Sp: vd.Sp})
 	}
+
+	savedReturnSeen := tc.returnSeen
+	tc.returnSeen = false
 	tc.checkBlock(m.Body)
+	if m.RetType != nil && m.RetType.Kind != TyVoid && m.RetType.Kind != TyAny {
+		if !tc.returnSeen {
+			warnCode("W40", m.Sp,
+				fmt.Sprintf("method %q.%s declares return type %s but may not return a value on all paths", m.RecvType, m.Name, m.RetType),
+				"add a return statement, or change the return type to void")
+		}
+	}
+	tc.returnSeen = savedReturnSeen
+
 	tc.methodStack = tc.methodStack[:len(tc.methodStack)-1]
 	tc.scope = saved
 }
@@ -452,13 +584,29 @@ func (tc *TypeChecker) checkStmt(n Node) {
 	case *IfStmt:
 		tc.checkIf(s)
 	case *UnlessStmt:
-		tc.inferExpr(s.Cond)
+		condT := tc.inferExpr(s.Cond)
+		// ── NEW: unless with a const-false condition ──────────────────────────
+		if lit, ok := s.Cond.(*BoolLit); ok && !lit.Val {
+			warnCode("W50", s.Sp,
+				"unless condition is always false — this block will always run",
+				"use an if statement or remove the condition")
+		}
+		_ = condT
 		tc.checkBlock(s.Body)
 		if s.Else != nil {
 			tc.checkBlock(s.Else)
 		}
 	case *WhileStmt:
-		tc.inferExpr(s.Cond)
+		condT := tc.inferExpr(s.Cond)
+		// ── NEW: while(true) without break inside ─────────────────────────────
+		if lit, ok := s.Cond.(*BoolLit); ok && lit.Val {
+			if !blockHasBreak(s.Body) {
+				warnCode("W51", s.Sp,
+					"while(true) loop has no break — this may be an infinite loop",
+					"add a break statement or a condition that eventually becomes false")
+			}
+		}
+		_ = condT
 		tc.checkBlockInLoop(s.Body)
 	case *UntilStmt:
 		tc.inferExpr(s.Cond)
@@ -472,33 +620,68 @@ func (tc *TypeChecker) checkStmt(n Node) {
 	case *AssignStmt:
 		tc.checkAssign(s)
 	case *DeferStmt:
+		// ── NEW: defer outside fn ────────────────────────────────────────────
+		if !tc.scope.inFn() {
+			errCode("E60", s.Sp,
+				"'defer' used outside a function — defer only runs at function exit",
+				"move this defer inside a fn block")
+			tc.ok = false
+		}
 		tc.inferExpr(s.Call)
 	case *AssertStmt:
 		cond := tc.inferExpr(s.Cond)
 		if cond.Kind == TyVoid {
-			errCode("E71", s.Sp, "assert condition has type void — it cannot be true or false",
-				"use a boolean or comparison expression")
+			errCode("E71", s.Sp,
+				"assert condition has type void — void expressions cannot be true or false",
+				"use a boolean expression or a comparison")
 			tc.ok = false
+		}
+		// ── NEW: assert(true) is always satisfied ─────────────────────────────
+		if lit, ok := s.Cond.(*BoolLit); ok && lit.Val {
+			warnCode("W52", s.Sp,
+				"assert condition is always true — this assert does nothing",
+				"remove it, or change the condition to something that can fail")
 		}
 		tc.inferExpr(s.Msg)
 	case *SpawnStmt:
 		tc.inferExpr(s.Call)
 	case *ExprStmt:
-		tc.inferExpr(s.Expr)
+		t := tc.inferExpr(s.Expr)
+		// ── NEW: warn on discarded non-void call results ──────────────────────
+		if call, ok := s.Expr.(*CallExpr); ok {
+			if id, ok2 := call.Func.(*Ident); ok2 {
+				_ = id
+			}
+			if t != nil && t.Kind != TyVoid && t.Kind != TyAny {
+				warnCode("W60", s.Sp,
+					fmt.Sprintf("result of this call (type %s) is discarded", t),
+					"assign the result to a variable, or cast to void if intentional: _ = expr")
+			}
+		}
 	case *PrintStmt:
 		for _, a := range s.Args {
 			tc.inferExpr(a)
 		}
 	case *ExitStmt:
-		tc.inferExpr(s.Code)
+		code := tc.inferExpr(s.Code)
+		if code != nil && code.Kind != TyInt && code.Kind != TyAny && code.Kind != TyUnknown {
+			errCode("E72", s.Sp,
+				fmt.Sprintf("exit code must be an integer, got %s", code),
+				"use an integer expression as the exit code: exit 0  or  exit 1")
+			tc.ok = false
+		}
 	case *BreakStmt:
 		if !tc.scope.inLoop() {
-			errCode("E07", s.Sp, "'break'/'last' outside of a loop", "only use break inside while / for / until loops")
+			errCode("E07", s.Sp,
+				"'break' used outside a loop",
+				"break can only appear inside while / for / until loops")
 			tc.ok = false
 		}
 	case *ContinueStmt:
 		if !tc.scope.inLoop() {
-			errCode("E08", s.Sp, "'continue'/'next' outside of a loop", "only use continue inside while / for / until loops")
+			errCode("E08", s.Sp,
+				"'continue' used outside a loop",
+				"continue can only appear inside while / for / until loops")
 			tc.ok = false
 		}
 	case *FnDecl:
@@ -511,12 +694,24 @@ func (tc *TypeChecker) checkStmt(n Node) {
 }
 
 func (tc *TypeChecker) checkVarDecl(v *VarDecl) {
+	// ── E09: duplicate in same scope ─────────────────────────────────────────
 	if existing := tc.scope.lookupLocal(v.Name); existing != nil {
-		errCode("E09", v.Sp, fmt.Sprintf("variable %q already declared in this scope", v.Name),
-			"use a different name, or remove the duplicate declaration")
-		noteAt(existing.Sp, "previous declaration here")
+		errCodeSecondary("E09", v.Sp,
+			fmt.Sprintf("variable %q is already declared in this scope", v.Name),
+			"use a different name, or remove the duplicate declaration",
+			[]SecondarySpan{{Span: existing.Sp, Label: "previous declaration here"}})
 		tc.ok = false
 	}
+
+	// ── NEW: disallow single-underscore as a named variable (it's a discard) ─
+	if v.Name == "_" {
+		// Allow _ as a discard sink but don't register it
+		if v.Init != nil {
+			tc.inferExpr(v.Init)
+		}
+		return
+	}
+
 	var initType *ZXType
 	if v.Init != nil {
 		initType = tc.inferExpr(v.Init)
@@ -534,32 +729,64 @@ func (tc *TypeChecker) checkVarDecl(v *VarDecl) {
 		if initType != nil && initType.Kind != TyUnknown && initType.Kind != TyAny {
 			if !coercible(initType, resolved) {
 				errCode("E11", v.Sp,
-					fmt.Sprintf("cannot assign %s to %s variable %q", initType, resolved, v.Name),
-					fmt.Sprintf("either change the type to %s, or cast: %s(%s)", initType, resolved, v.Name))
+					fmt.Sprintf("type mismatch: cannot assign %s to variable %q of type %s", initType, v.Name, resolved),
+					fmt.Sprintf("change the declared type to %s, or convert: %s(%s)", initType, resolved, v.Name))
 				tc.ok = false
 			}
 		}
 	}
+
+	// ── E12: void variable ────────────────────────────────────────────────────
 	if resolved != nil && resolved.Kind == TyVoid {
-		errCode("E12", v.Sp, fmt.Sprintf("variable %q cannot have type void — void means 'no value'", v.Name),
-			"use any, int, float, str, bool, or a struct type instead")
+		errCode("E12", v.Sp,
+			fmt.Sprintf("variable %q cannot have type void — void means 'no value'", v.Name),
+			"use int, float, str, bool, any, or a struct type instead")
 		tc.ok = false
 	}
+
+	// ── E13: const without init ───────────────────────────────────────────────
 	if v.IsConst && v.Init == nil {
-		errCode("E13", v.Sp, fmt.Sprintf("const/our %q must have an initializer", v.Name),
-			fmt.Sprintf("add = <value>, e.g. const %s = 42", v.Name))
+		errCode("E13", v.Sp,
+			fmt.Sprintf("const %q must have an initializer — constants must be assigned at declaration", v.Name),
+			fmt.Sprintf("add a value: const %s = 42", v.Name))
 		tc.ok = false
 	}
-	if v.IsConst && v.Name == strings.ToLower(v.Name) && len(v.Name) > 1 {
-		warnCode("W02", v.Sp, fmt.Sprintf("const %q should be UPPER_CASE by convention", v.Name),
+
+	// ── W02: const naming convention ─────────────────────────────────────────
+	if v.IsConst && !v.IsGlobal && v.Name == strings.ToLower(v.Name) && len(v.Name) > 1 {
+		warnCode("W02", v.Sp,
+			fmt.Sprintf("const %q should be UPPER_CASE by convention", v.Name),
 			fmt.Sprintf("rename to %s", strings.ToUpper(v.Name)))
 	}
+
+	// ── W01: shadowing ────────────────────────────────────────────────────────
 	if outer := tc.scope.parent; outer != nil {
 		if o2 := outer.lookup(v.Name); o2 != nil && !o2.IsFn && !o2.IsExtern {
-			warnCode("W01", v.Sp, fmt.Sprintf("variable %q shadows an outer variable", v.Name),
-				"consider using a different name to avoid confusion")
+			warnCode("W01", v.Sp,
+				fmt.Sprintf("variable %q shadows an outer variable declared at line %d", v.Name, o2.Sp.Line),
+				"rename to avoid confusion")
 		}
 	}
+
+	// ── NEW: warn if initializing with nil but no ref type ────────────────────
+	if v.Init != nil {
+		if _, isNil := v.Init.(*NilLit); isNil {
+			if resolved != nil && resolved.Kind != TyRef && resolved.Kind != TyAny && resolved.Kind != TyUnknown {
+				errCode("E73", v.Sp,
+					fmt.Sprintf("cannot assign nil to variable %q of type %s — nil is only valid for ref types", v.Name, resolved),
+					"declare it as ref<T> if you need a nullable pointer")
+				tc.ok = false
+			}
+		}
+	}
+
+	// ── NEW: warn on very long variable names ─────────────────────────────────
+	if len(v.Name) > 50 {
+		warnCode("W31", v.Sp,
+			fmt.Sprintf("variable name %q is very long (%d characters)", v.Name, len(v.Name)),
+			"consider a shorter, more descriptive name")
+	}
+
 	v.ResolvedType = resolved
 	tc.scope.define(v.Name, &VarInfo{
 		Type:     resolved,
@@ -571,31 +798,36 @@ func (tc *TypeChecker) checkVarDecl(v *VarDecl) {
 }
 
 func (tc *TypeChecker) checkReturn(r *ReturnStmt) {
+	tc.returnSeen = true
 	ret := tc.currentRetType()
 	if ret == nil {
-		errCode("E14", r.Sp, "'return' used outside of a function",
+		errCode("E14", r.Sp,
+			"'return' used outside a function",
 			"move this return statement inside a fn block")
 		tc.ok = false
 		return
 	}
 	if r.Value == nil {
 		if ret.Kind != TyVoid && ret.Kind != TyAny {
-			errCode("E15", r.Sp, fmt.Sprintf("function %q must return %s, but has an empty return", tc.currentName(), ret),
-				"return a value: return <expr>, or change the return type to void")
+			errCode("E15", r.Sp,
+				fmt.Sprintf("function %q has return type %s but this return has no value", tc.currentName(), ret),
+				fmt.Sprintf("return a value: return <expr>  —  or change the return type to void"))
 			tc.ok = false
 		}
 		return
 	}
 	got := tc.inferExpr(r.Value)
 	if ret.Kind == TyVoid {
-		errCode("E16", r.Sp, fmt.Sprintf("void function %q is returning a %s value — void means no return value", tc.currentName(), got),
-			"remove the return value, or change '-> void' to '-> "+got.String()+"'")
+		errCode("E16", r.Sp,
+			fmt.Sprintf("function %q is declared void but returns a %s value", tc.currentName(), got),
+			fmt.Sprintf("remove the return value, or change the return type to '-> %s'", got))
 		tc.ok = false
 		return
 	}
 	if got.Kind != TyUnknown && got.Kind != TyAny && ret.Kind != TyAny && !coercible(got, ret) {
-		errCode("E17", r.Sp, fmt.Sprintf("return type mismatch in %q — expected %s, got %s", tc.currentName(), ret, got),
-			fmt.Sprintf("either cast: %s(value), or change the return type to %s", ret, got))
+		errCode("E17", r.Sp,
+			fmt.Sprintf("return type mismatch in %q — expected %s but got %s", tc.currentName(), ret, got),
+			fmt.Sprintf("cast the value: %s(value)  —  or change the return type to '-> %s'", ret, got))
 		tc.ok = false
 	}
 }
@@ -603,13 +835,32 @@ func (tc *TypeChecker) checkReturn(r *ReturnStmt) {
 func (tc *TypeChecker) checkIf(s *IfStmt) {
 	cond := tc.inferExpr(s.Cond)
 	if cond.Kind == TyVoid {
-		errCode("E18", s.Cond.nodeSpan(), "if condition has type void — void cannot be truthy or falsy",
+		errCode("E18", s.Cond.nodeSpan(),
+			"if condition has type void — void expressions have no truth value",
 			"use a comparison expression that produces a bool or int")
 		tc.ok = false
 	}
+	// ── NEW: constant condition warnings ─────────────────────────────────────
+	if lit, ok := s.Cond.(*BoolLit); ok {
+		if lit.Val {
+			warnCode("W50", s.Sp,
+				"if condition is always true — the else branch (if any) will never run",
+				"remove the condition or replace with unconditional code")
+		} else {
+			warnCode("W50", s.Sp,
+				"if condition is always false — the then branch will never run",
+				"remove the if block or fix the condition")
+		}
+	}
 	tc.checkBlock(s.Then)
 	for _, el := range s.Elifs {
-		tc.inferExpr(el.Cond)
+		condT := tc.inferExpr(el.Cond)
+		if condT.Kind == TyVoid {
+			errCode("E18", el.Cond.nodeSpan(),
+				"elif condition has type void",
+				"use a comparison expression")
+			tc.ok = false
+		}
 		tc.checkBlock(el.Body)
 	}
 	if s.Else != nil {
@@ -621,18 +872,30 @@ func (tc *TypeChecker) checkForRange(s *ForRangeStmt) {
 	fromT := tc.inferExpr(s.From)
 	toT := tc.inferExpr(s.To)
 	if !isInteger(fromT) && fromT.Kind != TyUnknown && fromT.Kind != TyAny {
-		errCode("E20", s.From.nodeSpan(), fmt.Sprintf("for-range start must be int, got %s", fromT),
+		errCode("E20", s.From.nodeSpan(),
+			fmt.Sprintf("for-range start must be an integer, got %s", fromT),
 			"use an integer expression, e.g.:  for i in 0..10 { }")
 		tc.ok = false
 	}
 	if !isInteger(toT) && toT.Kind != TyUnknown && toT.Kind != TyAny {
-		errCode("E21", s.To.nodeSpan(), fmt.Sprintf("for-range end must be int, got %s", toT),
+		errCode("E21", s.To.nodeSpan(),
+			fmt.Sprintf("for-range end must be an integer, got %s", toT),
 			"use an integer expression, e.g.:  for i in 0..len(arr) { }")
 		tc.ok = false
 	}
+	// ── NEW: empty range warning ───────────────────────────────────────────────
+	if fromLit, ok1 := s.From.(*IntLit); ok1 {
+		if toLit, ok2 := s.To.(*IntLit); ok2 {
+			if fromLit.Val >= toLit.Val {
+				warnCode("W53", s.Sp,
+					fmt.Sprintf("for-range %d..%d will never execute — start >= end", fromLit.Val, toLit.Val),
+					"check that the range is correct")
+			}
+		}
+	}
 	saved := tc.scope
 	tc.scope = newScope(saved, "loop")
-	tc.scope.define(s.Var, &VarInfo{Type: TypInt, Sp: s.Sp})
+	tc.scope.define(s.Var, &VarInfo{Type: TypInt, Sp: s.Sp, Defined: true})
 	for _, st := range s.Body.Stmts {
 		tc.checkStmt(st)
 	}
@@ -641,8 +904,27 @@ func (tc *TypeChecker) checkForRange(s *ForRangeStmt) {
 
 func (tc *TypeChecker) checkMatch(s *MatchStmt) {
 	tc.inferExpr(s.Expr)
+	hasWild := false
+	seenPatterns := map[int64]Span{}
 	for _, arm := range s.Arms {
-		if arm.Pattern != nil {
+		if arm.IsWild {
+			if hasWild {
+				warnCode("W54", arm.Sp,
+					"duplicate wildcard arm in match — only the first will ever match",
+					"remove the extra wildcard arm")
+			}
+			hasWild = true
+		} else if arm.Pattern != nil {
+			if lit, ok := arm.Pattern.(*IntLit); ok {
+				if prev, dup := seenPatterns[lit.Val]; dup {
+					errCodeSecondary("E74", arm.Sp,
+						fmt.Sprintf("duplicate match arm for value %d", lit.Val),
+						"remove the duplicate arm or change its pattern",
+						[]SecondarySpan{{Span: prev, Label: "first arm here"}})
+					tc.ok = false
+				}
+				seenPatterns[lit.Val] = arm.Sp
+			}
 			tc.inferExpr(arm.Pattern)
 		}
 		if arm.Guard != nil {
@@ -658,7 +940,7 @@ func (tc *TypeChecker) checkTryCatch(s *TryCatchStmt) {
 		saved := tc.scope
 		tc.scope = newScope(saved, "block")
 		if s.ErrVar != "" {
-			tc.scope.define(s.ErrVar, &VarInfo{Type: TypInt, Sp: s.Sp})
+			tc.scope.define(s.ErrVar, &VarInfo{Type: TypInt, Sp: s.Sp, Defined: true})
 		}
 		for _, st := range s.Catch.Stmts {
 			tc.checkStmt(st)
@@ -672,39 +954,83 @@ func (tc *TypeChecker) checkTryCatch(s *TryCatchStmt) {
 
 func (tc *TypeChecker) checkAssign(s *AssignStmt) {
 	lhsType := tc.inferExpr(s.LHS)
+
+	// ── check assignability of LHS ────────────────────────────────────────────
 	if id, ok := s.LHS.(*Ident); ok {
 		vi := tc.scope.lookup(id.Name)
 		if vi != nil && vi.IsConst {
-			errCode("E22", s.Sp, fmt.Sprintf("cannot assign to const/our %q — it is immutable", id.Name),
-				"use let/my instead of const/our if you need a mutable variable")
+			errCode("E22", s.Sp,
+				fmt.Sprintf("cannot assign to const %q — constants are immutable", id.Name),
+				"use 'let' instead of 'const' if you need a mutable variable")
 			tc.ok = false
 			return
 		}
 		if vi != nil && vi.IsFn {
-			errCode("E23", s.Sp, fmt.Sprintf("cannot assign to function %q — functions are not variables", id.Name),
-				"if you want a function pointer, use: let f = fn_name")
+			errCode("E23", s.Sp,
+				fmt.Sprintf("cannot assign to function %q — functions are not variables", id.Name),
+				"declare a variable to hold the result: let result = "+id.Name+"(...)")
+			tc.ok = false
+			return
+		}
+		if vi == nil {
+			// Assignment to undeclared variable
+			suggestion := tc.suggestName(id.Name)
+			hint := fmt.Sprintf("declare it first: let %s = ...", id.Name)
+			if suggestion != "" {
+				hint = fmt.Sprintf("did you mean %q? — or declare it: let %s = ...", suggestion, id.Name)
+			}
+			errCode("E75", s.Sp,
+				fmt.Sprintf("assignment to undeclared variable %q", id.Name),
+				hint)
 			tc.ok = false
 			return
 		}
 	}
+
+	// ── disallow assigning to literals ────────────────────────────────────────
 	switch s.LHS.(type) {
 	case *IntLit, *FloatLit, *BoolLit, *StrLit:
-		errCode("E24", s.Sp, "left side of assignment is a literal — you cannot assign to a value",
+		errCode("E24", s.Sp,
+			"left side of assignment is a literal — you cannot assign to a value",
 			"use a variable name on the left side: let x = ...")
 		tc.ok = false
 		return
 	}
+
+	// ── NEW: assigning to a call result is nonsensical ────────────────────────
+	if _, ok := s.LHS.(*CallExpr); ok {
+		errCode("E76", s.Sp,
+			"left side of assignment is a function call — call results are not assignable",
+			"store the result in a variable first: let x = f(); x = ...")
+		tc.ok = false
+		return
+	}
+
 	rhsType := tc.inferExpr(s.Value)
+
+	// ── NEW: nil to non-ref assignment ────────────────────────────────────────
+	if _, isNil := s.Value.(*NilLit); isNil {
+		if lhsType != nil && lhsType.Kind != TyRef && lhsType.Kind != TyAny && lhsType.Kind != TyUnknown {
+			errCode("E73", s.Sp,
+				fmt.Sprintf("cannot assign nil to %s — nil is only valid for ref types", lhsType),
+				"declare the variable as ref<T> to allow nil values")
+			tc.ok = false
+			return
+		}
+	}
+
 	if lhsType.Kind != TyUnknown && lhsType.Kind != TyAny && rhsType.Kind != TyUnknown && rhsType.Kind != TyAny {
 		if !coercible(rhsType, lhsType) {
-			errCode("E25", s.Sp, fmt.Sprintf("type mismatch: cannot assign %s to %s variable", rhsType, lhsType),
-				fmt.Sprintf("cast the right side: %s(expr)", lhsType))
+			errCode("E25", s.Sp,
+				fmt.Sprintf("type mismatch: cannot assign %s to %s", rhsType, lhsType),
+				fmt.Sprintf("cast the right-hand side: %s(expr)", lhsType))
 			tc.ok = false
 		}
 	}
 	if s.Op != "=" && lhsType.Kind != TyAny && !isNumeric(lhsType) {
-		errCode("E26", s.Sp, fmt.Sprintf("%s requires a numeric type, but variable is %s", s.Op, lhsType),
-			"compound assignment (+=, -=, *=, /=) only works on int, float, and char")
+		errCode("E26", s.Sp,
+			fmt.Sprintf("compound operator %s requires a numeric operand, but variable is %s", s.Op, lhsType),
+			"compound assignment (+=, -=, *=, /=, %=) only works on int, float, and char")
 		tc.ok = false
 	}
 }
@@ -723,6 +1049,12 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 	case *BoolLit:
 		return TypBool
 	case *StrLit:
+		// ── NEW: warn on very long string literals ────────────────────────────
+		if len(e.Val) > 4096 {
+			warnCode("W32", e.Sp,
+				fmt.Sprintf("string literal is very long (%d bytes) — consider loading it from a file", len(e.Val)),
+				"use readfile!() or a multiline string @`...` for large text")
+		}
 		return TypStr
 	case *NilLit:
 		return RefOf(TypVoid)
@@ -759,9 +1091,23 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 		tc.inferExpr(e.Path)
 		return TypStr
 	case *TernaryExpr:
-		tc.inferExpr(e.Cond)
+		condT := tc.inferExpr(e.Cond)
+		if condT.Kind == TyVoid {
+			errCode("E18", e.Cond.nodeSpan(),
+				"ternary condition has type void — void expressions have no truth value",
+				"use a comparison expression")
+			tc.ok = false
+		}
 		then := tc.inferExpr(e.Then)
-		tc.inferExpr(e.Else)
+		els := tc.inferExpr(e.Else)
+		// ── NEW: warn on ternary branch type mismatch ─────────────────────────
+		if then.Kind != TyAny && then.Kind != TyUnknown &&
+			els.Kind != TyAny && els.Kind != TyUnknown &&
+			!coercible(then, els) && !coercible(els, then) {
+			warnCode("W61", e.Sp,
+				fmt.Sprintf("ternary branches have different types: %s vs %s", then, els),
+				fmt.Sprintf("cast one branch to match the other, e.g. %s(expr)", then))
+		}
 		e.Typ = then
 		return then
 
@@ -772,20 +1118,21 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 				e.Typ = bd.Ret
 				return bd.Ret
 			}
-			// FIX: give a better error if the name is a mod function called without namespace
+			// mod block name used as value
 			if tc.modNames[e.Name] {
-				errCode("E80", e.Sp, fmt.Sprintf("%q is a mod block name, not a value — use %s->fn() to call its functions", e.Name, e.Name),
-					fmt.Sprintf("example: %s->myFn()", e.Name))
+				errCode("E80", e.Sp,
+					fmt.Sprintf("%q is a mod block, not a value", e.Name),
+					fmt.Sprintf("call a function inside it: %s->myFn()", e.Name))
 				tc.ok = false
 				e.Typ = TypUnknown
 				return TypUnknown
 			}
-			// Check if user tried to call a mod fn by plain name
+			// mod fn called without namespace
 			for modKey := range tc.modFns {
 				parts := strings.SplitN(modKey, "::", 2)
 				if len(parts) == 2 && parts[1] == e.Name {
 					errCode("E81", e.Sp,
-						fmt.Sprintf("%q is a mod-private function — call it as %s->%s()", e.Name, parts[0], e.Name),
+						fmt.Sprintf("%q is a mod-private function — it must be called with its module name", e.Name),
 						fmt.Sprintf("use: %s->%s()", parts[0], e.Name))
 					tc.ok = false
 					e.Typ = TypUnknown
@@ -797,16 +1144,18 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 			if suggestion != "" {
 				hint = fmt.Sprintf("did you mean %q?", suggestion)
 			}
-			errCode("E27", e.Sp, fmt.Sprintf("undefined variable or function %q", e.Name), hint)
+			errCode("E27", e.Sp,
+				fmt.Sprintf("undefined name %q", e.Name),
+				hint)
 			tc.ok = false
 			e.Typ = TypUnknown
 			return TypUnknown
 		}
-		// FIX: if it's a mod fn in scope but user accessed by plain name, error
+		// mod fn accessed by plain name
 		if vi.IsModFn {
 			errCode("E81", e.Sp,
-				fmt.Sprintf("%q is a mod-private function in mod %q — call it as %s->%s()", e.Name, vi.ModName, vi.ModName, e.Name),
-				fmt.Sprintf("use: %s->%s()", vi.ModName, e.Name))
+				fmt.Sprintf("%q is a mod-private function in mod %q", e.Name, vi.ModName),
+				fmt.Sprintf("call it as: %s->%s()", vi.ModName, e.Name))
 			tc.ok = false
 			e.Typ = TypUnknown
 			return TypUnknown
@@ -835,9 +1184,18 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 		obj := tc.inferExpr(e.Obj)
 		idx := tc.inferExpr(e.Idx)
 		if !isInteger(idx) && idx.Kind != TyUnknown && idx.Kind != TyAny {
-			errCode("E47", e.Idx.nodeSpan(), fmt.Sprintf("array index must be int, got %s", idx),
-				"use an integer expression as the array/string index")
+			errCode("E47", e.Idx.nodeSpan(),
+				fmt.Sprintf("array index must be an integer, got %s", idx),
+				"use an integer expression as the index")
 			tc.ok = false
+		}
+		// ── NEW: negative literal index ────────────────────────────────────────
+		if lit, ok := e.Idx.(*UnaryExpr); ok && lit.Op == "-" {
+			if _, isInt := lit.Operand.(*IntLit); isInt {
+				warnCode("W62", e.Idx.nodeSpan(),
+					"negative index — this will likely be out of bounds at runtime",
+					"use len(arr) - N for reverse indexing")
+			}
 		}
 		if obj.Kind == TyArray && obj.Elem != nil {
 			e.Typ = obj.Elem
@@ -856,7 +1214,8 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 			return TypChar
 		}
 		if obj.Kind != TyAny && obj.Kind != TyUnknown {
-			errCode("E46", e.Sp, fmt.Sprintf("cannot index into type %s — only arrays and strings can be indexed", obj),
+			errCode("E46", e.Sp,
+				fmt.Sprintf("cannot index into type %s — only arrays and strings support indexing", obj),
 				"use an array [1,2,3] or a string \"abc\"")
 			tc.ok = false
 		}
@@ -869,9 +1228,16 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 	case *CastExpr:
 		from := tc.inferExpr(e.Operand)
 		if !canCast(from, e.ToType) {
-			errCode("E28", e.Sp, fmt.Sprintf("cannot cast %s to %s", from, e.ToType),
+			errCode("E28", e.Sp,
+				fmt.Sprintf("cannot cast %s to %s", from, e.ToType),
 				"valid casts: between numeric types (int/float/char/bool), and between str and ref char")
 			tc.ok = false
+		}
+		// ── NEW: warn on redundant cast ────────────────────────────────────────
+		if typeEq(from, e.ToType) {
+			warnCode("W63", e.Sp,
+				fmt.Sprintf("redundant cast — expression is already of type %s", e.ToType),
+				"remove the cast")
 		}
 		e.Typ = e.ToType
 		return e.ToType
@@ -880,8 +1246,9 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 		inner := tc.inferExpr(e.Operand)
 		if e.Deref {
 			if inner.Kind != TyRef {
-				errCode("E29", e.Sp, fmt.Sprintf("cannot dereference type %s with ^ — it is not a ref", inner),
-					"only ref<T> values can be dereferenced — use ^ on a ref variable")
+				errCode("E29", e.Sp,
+					fmt.Sprintf("cannot dereference type %s — only ref<T> values can be dereferenced", inner),
+					"use ^ on a ref variable, e.g. ^myPtr")
 				tc.ok = false
 				e.Typ = TypAny
 				return TypAny
@@ -908,8 +1275,9 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 		for i, el := range e.Elems[1:] {
 			got := tc.inferExpr(el)
 			if got.Kind != TyAny && got.Kind != TyUnknown && !coercible(got, first) {
-				errCode("E55", el.nodeSpan(), fmt.Sprintf("array element %d has type %s, but first element is %s", i+2, got, first),
-					fmt.Sprintf("cast this element to %s to make all elements the same type", first))
+				errCode("E55", el.nodeSpan(),
+					fmt.Sprintf("array element %d has type %s but the first element is %s — all elements must have the same type", i+2, got, first),
+					fmt.Sprintf("cast this element: %s(value)", first))
 				tc.ok = false
 			}
 		}
@@ -937,11 +1305,17 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 }
 
 // inferModCall type-checks  modName->fn(args)  and  modName::fn(args).
-// Only functions registered in tc.modFns["modName::fnName"] are valid.
 func (tc *TypeChecker) inferModCall(e *ModCallExpr) *ZXType {
 	if !tc.modNames[e.Mod] {
-		errCode("E82", e.Sp, fmt.Sprintf("unknown mod %q — no mod block with this name", e.Mod),
-			fmt.Sprintf("declare it: mod %s { fn %s() { ... } }", e.Mod, e.Fn))
+		// suggest similar mod name
+		bestMod := tc.suggestModName(e.Mod)
+		hint := fmt.Sprintf("declare it: mod %s { fn %s() { ... } }", e.Mod, e.Fn)
+		if bestMod != "" {
+			hint = fmt.Sprintf("did you mean mod %q?", bestMod)
+		}
+		errCode("E82", e.Sp,
+			fmt.Sprintf("unknown module %q — no mod block with this name exists", e.Mod),
+			hint)
 		tc.ok = false
 		e.Typ = TypUnknown
 		return TypUnknown
@@ -949,7 +1323,6 @@ func (tc *TypeChecker) inferModCall(e *ModCallExpr) *ZXType {
 	key := e.Mod + "::" + e.Fn
 	fn, ok := tc.modFns[key]
 	if !ok {
-		// list available fns in this mod for a helpful error
 		var available []string
 		prefix := e.Mod + "::"
 		for k := range tc.modFns {
@@ -959,7 +1332,7 @@ func (tc *TypeChecker) inferModCall(e *ModCallExpr) *ZXType {
 		}
 		hint := fmt.Sprintf("mod %q has no function %q", e.Mod, e.Fn)
 		if len(available) > 0 {
-			hint += fmt.Sprintf(" — available: %s", strings.Join(available, ", "))
+			hint += fmt.Sprintf(" — available functions: %s", strings.Join(available, ", "))
 		}
 		errCode("E83", e.Sp, hint,
 			fmt.Sprintf("define it: mod %s { fn %s() { ... } }", e.Mod, e.Fn))
@@ -977,7 +1350,7 @@ func (tc *TypeChecker) inferModCall(e *ModCallExpr) *ZXType {
 		}
 		if len(e.Args) < minArgs || (!fn.Variadic && len(e.Args) > len(fn.Params)) {
 			errCode("E42", e.Sp,
-				fmt.Sprintf("%s->%s expects %d argument(s), got %d", e.Mod, e.Fn, len(fn.Params), len(e.Args)),
+				fmt.Sprintf("%s->%s expects %d argument(s) but got %d", e.Mod, e.Fn, len(fn.Params), len(e.Args)),
 				fmt.Sprintf("signature: fn %s(%s)", e.Fn, listParamTypes(fn.Params)))
 			tc.ok = false
 		}
@@ -988,7 +1361,7 @@ func (tc *TypeChecker) inferModCall(e *ModCallExpr) *ZXType {
 			expected := fn.Params[i].Type
 			if expected != nil && expected.Kind != TyAny && got.Kind != TyAny && got.Kind != TyUnknown && !coercible(got, expected) {
 				errCode("E43", arg.nodeSpan(),
-					fmt.Sprintf("%s->%s arg %d: expected %s, got %s", e.Mod, e.Fn, i+1, expected, got),
+					fmt.Sprintf("%s->%s argument %d: expected %s but got %s", e.Mod, e.Fn, i+1, expected, got),
 					fmt.Sprintf("cast with: %s(value)", expected))
 				tc.ok = false
 			}
@@ -996,6 +1369,19 @@ func (tc *TypeChecker) inferModCall(e *ModCallExpr) *ZXType {
 	}
 	e.Typ = fn.RetType
 	return fn.RetType
+}
+
+// suggestModName returns the closest existing mod name to the given name.
+func (tc *TypeChecker) suggestModName(name string) string {
+	best := ""
+	bestDist := 3
+	for n := range tc.modNames {
+		if d := editDistance(name, n); d < bestDist {
+			bestDist = d
+			best = n
+		}
+	}
+	return best
 }
 
 // ── Macro inference ───────────────────────────────────────────────────────────
@@ -1007,7 +1393,9 @@ func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 		if s := tc.suggestName(e.Name); s != "" {
 			hint = fmt.Sprintf("did you mean %q?", s)
 		}
-		errCode("EM07", e.Sp, fmt.Sprintf("call to undefined macro %q", e.Name), hint)
+		errCode("EM07", e.Sp,
+			fmt.Sprintf("call to undefined macro %q", e.Name),
+			hint)
 		tc.ok = false
 		e.Typ = TypUnknown
 		return TypUnknown
@@ -1016,7 +1404,7 @@ func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 	got := len(e.Args)
 	if expected != got && !(got == 0 && expected <= 1) {
 		errCode("EM08", e.Sp,
-			fmt.Sprintf("macro %q expects %d argument(s), got %d", e.Name, expected, got),
+			fmt.Sprintf("macro %q expects %d argument(s) but got %d", e.Name, expected, got),
 			fmt.Sprintf("signature: macro fn %s |%s|", e.Name, listParamTypes(mc.Params)))
 		tc.ok = false
 	}
@@ -1028,7 +1416,7 @@ func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 				argType.Kind != TyAny && argType.Kind != TyUnknown &&
 				!coercible(argType, expected) {
 				errCode("EM09", arg.nodeSpan(),
-					fmt.Sprintf("macro %q arg %d: expected %s, got %s", e.Name, i+1, expected, argType),
+					fmt.Sprintf("macro %q argument %d: expected %s but got %s", e.Name, i+1, expected, argType),
 					fmt.Sprintf("cast with: %s(value)", expected))
 				tc.ok = false
 			}
@@ -1044,50 +1432,36 @@ func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 func (tc *TypeChecker) inferMacroChain(e *MacroCallChain) *ZXType {
 	recvType := tc.inferExpr(e.Recv)
 	lastType := recvType
-
 	for _, step := range e.Steps {
-		// type-check explicit args if any
 		for _, a := range step.Args {
 			tc.inferExpr(a)
 		}
-
 		mc, ok := tc.macros[step.Macro]
 		if !ok {
-			// Not a user-defined macro — check if it's a built-in chain macro.
-			// Built-in chain macros don't need a declaration: ifTrue, ifFalse,
-			// then, unless, repeat, times, whileTrue, etc.
 			if isBuiltinChainMacro(step.Macro) {
 				tc.checkBlock(step.Body)
-				// built-ins don't change the type — pass-through
 				continue
 			}
-			// Unknown — warn but don't hard-error so user can still run
 			hint := fmt.Sprintf("declare it: macro fn %s |input, doStmt| -> |output| { output = input; if input { doStmt; } }", step.Macro)
-			errCode("EM07", step.Sp, fmt.Sprintf("undefined macro %q in chain", step.Macro), hint)
+			errCode("EM07", step.Sp,
+				fmt.Sprintf("undefined macro %q in chain", step.Macro),
+				hint)
 			tc.ok = false
 			tc.checkBlock(step.Body)
 			continue
 		}
-
-		// User macro found — typecheck the do{} block body
 		tc.checkBlock(step.Body)
-
-		// Determine output type: if macro has outputs, use RetType; otherwise pass-through
 		if mc.RetType != nil && mc.RetType.Kind != TyVoid {
 			lastType = mc.RetType
 		}
-		// If outputs are declared, the macro produces a value of RetType
 		if len(mc.Outputs) > 0 && mc.RetType != nil {
 			lastType = mc.RetType
 		}
 	}
-
 	e.Typ = lastType
 	return lastType
 }
 
-// isBuiltinChainMacro returns true for the built-in chain macro names that
-// the emitter handles without a user macro declaration.
 func isBuiltinChainMacro(name string) bool {
 	switch name {
 	case "ifTrue", "if_true", "whenTrue", "onTrue",
@@ -1113,30 +1487,56 @@ func (tc *TypeChecker) inferBin(e *BinExpr) *ZXType {
 	case "==", "!=":
 		if lhs.Kind != TyUnknown && rhs.Kind != TyUnknown && lhs.Kind != TyAny && rhs.Kind != TyAny {
 			if !coercible(lhs, rhs) && !coercible(rhs, lhs) {
-				errCode("E30", e.Sp, fmt.Sprintf("cannot compare %s with %s using %s — incompatible types", lhs, rhs, e.Op),
-					"both sides of == or != must have the same (or compatible) types")
+				errCode("E30", e.Sp,
+					fmt.Sprintf("cannot compare %s with %s using %s — incompatible types", lhs, rhs, e.Op),
+					"both sides of == or != must have the same (or compatible) type")
 				tc.ok = false
 			}
+		}
+		// ── NEW: comparing to self is always true/false ────────────────────────
+		if isSameIdent(e.LHS, e.RHS) {
+			warnCode("W64", e.Sp,
+				fmt.Sprintf("comparing a variable to itself with %s — result is always %v", e.Op, e.Op == "=="),
+				"this comparison is redundant; check the variable names")
 		}
 		e.Typ = TypBool
 		return TypBool
 	case "<", ">", "<=", ">=":
 		if lhs.Kind != TyAny && rhs.Kind != TyAny && lhs.Kind != TyUnknown {
 			if !isNumeric(lhs) || !isNumeric(rhs) {
-				errCode("E31", e.Sp, fmt.Sprintf("comparison %s requires numeric operands, got %s and %s", e.Op, lhs, rhs),
+				errCode("E31", e.Sp,
+					fmt.Sprintf("comparison %s requires numeric operands, got %s and %s", e.Op, lhs, rhs),
 					"comparisons only work on int, float, and char")
 				tc.ok = false
 			}
 		}
+		// ── NEW: compare same ident ────────────────────────────────────────────
+		if isSameIdent(e.LHS, e.RHS) {
+			warnCode("W64", e.Sp,
+				fmt.Sprintf("comparing a variable to itself with %s — result is always %v", e.Op, e.Op == "<=" || e.Op == ">="),
+				"this comparison is redundant")
+		}
 		e.Typ = TypBool
 		return TypBool
 	case "&&", "||":
+		// ── NEW: warn on non-bool operands of logical operators ───────────────
+		if lhs.Kind != TyAny && lhs.Kind != TyUnknown && !isTruthy(lhs) {
+			warnCode("W65", e.LHS.nodeSpan(),
+				fmt.Sprintf("left operand of %s has type %s — only bool/int/ref are truthy", e.Op, lhs),
+				"cast to bool: bool(expr)")
+		}
+		if rhs.Kind != TyAny && rhs.Kind != TyUnknown && !isTruthy(rhs) {
+			warnCode("W65", e.RHS.nodeSpan(),
+				fmt.Sprintf("right operand of %s has type %s — only bool/int/ref are truthy", e.Op, rhs),
+				"cast to bool: bool(expr)")
+		}
 		e.Typ = TypBool
 		return TypBool
 	case "+":
 		if lhs.Kind == TyStr || rhs.Kind == TyStr {
-			errCode("E32", e.Sp, "'+' cannot concatenate strings — ZX does not support string addition",
-				"use str_cat(a, b) from std::str, or use f-strings: f\"{a}{b}\"")
+			errCode("E32", e.Sp,
+				"'+' cannot concatenate strings in ZX",
+				"use str_cat(a, b) from std::str, or an f-string: f\"{a}{b}\"")
 			tc.ok = false
 			e.Typ = TypStr
 			return TypStr
@@ -1144,23 +1544,33 @@ func (tc *TypeChecker) inferBin(e *BinExpr) *ZXType {
 		fallthrough
 	case "-", "*", "/", "%":
 		if lhs.Kind != TyAny && lhs.Kind != TyUnknown && !isNumeric(lhs) {
-			errCode("E33", e.LHS.nodeSpan(), fmt.Sprintf("operator '%s' requires numeric operands, but left side is %s", e.Op, lhs),
+			errCode("E33", e.LHS.nodeSpan(),
+				fmt.Sprintf("operator %q requires numeric operands but left side is %s", e.Op, lhs),
+				"arithmetic operators only work on int, float, and char")
+			tc.ok = false
+		}
+		if rhs.Kind != TyAny && rhs.Kind != TyUnknown && !isNumeric(rhs) {
+			errCode("E33", e.RHS.nodeSpan(),
+				fmt.Sprintf("operator %q requires numeric operands but right side is %s", e.Op, rhs),
 				"arithmetic operators only work on int, float, and char")
 			tc.ok = false
 		}
 		if e.Op == "/" {
 			if lit, ok := e.RHS.(*IntLit); ok && lit.Val == 0 {
-				errCode("E34", e.RHS.nodeSpan(), "division by literal zero — this will crash at runtime",
-					"use a variable as divisor, or check for zero before dividing")
+				errCode("E34", e.RHS.nodeSpan(),
+					"division by zero — this will crash at runtime",
+					"check the divisor before dividing: if divisor != 0 { ... }")
 				tc.ok = false
 			}
 			if lit, ok := e.RHS.(*FloatLit); ok && lit.Val == 0.0 {
-				warnCode("W03", e.RHS.nodeSpan(), "division by 0.0 will produce Inf or NaN",
+				warnCode("W03", e.RHS.nodeSpan(),
+					"division by 0.0 produces Inf or NaN",
 					"check for zero before dividing floating-point values")
 			}
 		}
 		if e.Op == "%" && (lhs.Kind == TyFloat || rhs.Kind == TyFloat) {
-			errCode("E35", e.Sp, "modulo '%' cannot be used with float operands",
+			errCode("E35", e.Sp,
+				"modulo '%' does not work on float operands",
 				"use fmod(x, y) from std::math for floating-point modulo")
 			tc.ok = false
 		}
@@ -1175,9 +1585,31 @@ func (tc *TypeChecker) inferBin(e *BinExpr) *ZXType {
 		return e.Typ
 	case "|", "&", "^", "<<", ">>":
 		if lhs.Kind != TyAny && lhs.Kind != TyUnknown && !isInteger(lhs) {
-			errCode("E36", e.Sp, fmt.Sprintf("bitwise operator '%s' requires integer operands, got %s", e.Op, lhs),
+			errCode("E36", e.Sp,
+				fmt.Sprintf("bitwise operator %q requires integer operands but left side is %s", e.Op, lhs),
 				"bitwise operators only work on int and char")
 			tc.ok = false
+		}
+		if rhs.Kind != TyAny && rhs.Kind != TyUnknown && !isInteger(rhs) {
+			errCode("E36", e.Sp,
+				fmt.Sprintf("bitwise operator %q requires integer operands but right side is %s", e.Op, rhs),
+				"bitwise operators only work on int and char")
+			tc.ok = false
+		}
+		// ── NEW: warn on shift by negative or large constant ─────────────────
+		if e.Op == "<<" || e.Op == ">>" {
+			if lit, ok := e.RHS.(*IntLit); ok {
+				if lit.Val < 0 {
+					errCode("E77", e.RHS.nodeSpan(),
+						fmt.Sprintf("shift by negative amount %d — this is undefined behaviour", lit.Val),
+						"use a non-negative shift amount")
+					tc.ok = false
+				} else if lit.Val >= 64 {
+					warnCode("W66", e.RHS.nodeSpan(),
+						fmt.Sprintf("shift by %d — shifting a 64-bit integer by >= 64 bits is undefined behaviour", lit.Val),
+						"use a shift amount between 0 and 63")
+				}
+			}
 		}
 		e.Typ = TypInt
 		return TypInt
@@ -1192,7 +1624,8 @@ func (tc *TypeChecker) inferUnary(e *UnaryExpr) *ZXType {
 	switch e.Op {
 	case "!":
 		if inner.Kind != TyAny && inner.Kind != TyUnknown && !isTruthy(inner) {
-			errCode("E37", e.Sp, fmt.Sprintf("logical NOT '!' cannot be applied to type %s", inner),
+			errCode("E37", e.Sp,
+				fmt.Sprintf("logical NOT '!' cannot be applied to type %s", inner),
 				"'!' works on bool, int, and ref values only")
 			tc.ok = false
 		}
@@ -1200,15 +1633,17 @@ func (tc *TypeChecker) inferUnary(e *UnaryExpr) *ZXType {
 		return TypBool
 	case "-":
 		if inner.Kind != TyAny && inner.Kind != TyUnknown && !isNumeric(inner) {
-			errCode("E38", e.Sp, fmt.Sprintf("unary '-' cannot be applied to type %s", inner),
-				"unary minus only works on numeric types (int, float, char)")
+			errCode("E38", e.Sp,
+				fmt.Sprintf("unary minus cannot be applied to type %s", inner),
+				"unary minus only works on int, float, and char")
 			tc.ok = false
 		}
 		e.Typ = inner
 		return inner
 	case "~":
 		if inner.Kind != TyAny && inner.Kind != TyUnknown && !isInteger(inner) {
-			errCode("E39", e.Sp, fmt.Sprintf("bitwise NOT '~' cannot be applied to type %s", inner),
+			errCode("E39", e.Sp,
+				fmt.Sprintf("bitwise NOT '~' cannot be applied to type %s", inner),
 				"bitwise NOT requires an integer operand")
 			tc.ok = false
 		}
@@ -1230,7 +1665,8 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 			tc.inferExpr(a)
 		}
 		if bd.Arity >= 0 && len(e.Args) != bd.Arity {
-			errCode("E41", e.Sp, fmt.Sprintf("builtin %q expects %d argument(s), got %d", fnName, bd.Arity, len(e.Args)),
+			errCode("E41", e.Sp,
+				fmt.Sprintf("builtin %q expects %d argument(s) but got %d", fnName, bd.Arity, len(e.Args)),
 				"check the number of arguments")
 			tc.ok = false
 		}
@@ -1255,15 +1691,17 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 			if !ext.Variadic && i < len(ext.Params) {
 				expected := ext.Params[i].Type
 				if expected.Kind != TyAny && got.Kind != TyAny && got.Kind != TyUnknown && !coercible(got, expected) {
-					errCode("E40", a.nodeSpan(), fmt.Sprintf("extern %q arg %d: expected %s, got %s", fnName, i+1, expected, got),
+					errCode("E40", a.nodeSpan(),
+						fmt.Sprintf("extern %q argument %d: expected %s but got %s", fnName, i+1, expected, got),
 						fmt.Sprintf("cast with: %s(value)", expected))
 					tc.ok = false
 				}
 			}
 		}
 		if !ext.Variadic && len(e.Args) != len(ext.Params) {
-			errCode("E41", e.Sp, fmt.Sprintf("extern %q expects %d argument(s), got %d", fnName, len(ext.Params), len(e.Args)),
-				"check the extern declaration to see the expected parameters")
+			errCode("E41", e.Sp,
+				fmt.Sprintf("extern %q expects %d argument(s) but got %d", fnName, len(ext.Params), len(e.Args)),
+				"check the extern declaration for the expected parameters")
 			tc.ok = false
 		}
 		if id, ok := e.Func.(*Ident); ok {
@@ -1282,8 +1720,9 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 				}
 			}
 			if len(e.Args) < minArgs || (!fn.Variadic && len(e.Args) > len(fn.Params)) {
-				errCode("E42", e.Sp, fmt.Sprintf("function %q expects %d argument(s), got %d", fnName, len(fn.Params), len(e.Args)),
-					fmt.Sprintf("the function signature is: fn %s(%s)", fnName, listParamTypes(fn.Params)))
+				errCode("E42", e.Sp,
+					fmt.Sprintf("function %q expects %d argument(s) but got %d", fnName, len(fn.Params), len(e.Args)),
+					fmt.Sprintf("signature: fn %s(%s)", fnName, listParamTypes(fn.Params)))
 				tc.ok = false
 			}
 		}
@@ -1292,7 +1731,8 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 			if i < len(fn.Params) {
 				expected := fn.Params[i].Type
 				if expected != nil && expected.Kind != TyAny && got.Kind != TyAny && got.Kind != TyUnknown && !coercible(got, expected) {
-					errCode("E43", a.nodeSpan(), fmt.Sprintf("function %q arg %d: expected %s, got %s", fnName, i+1, expected, got),
+					errCode("E43", a.nodeSpan(),
+						fmt.Sprintf("function %q argument %d: expected %s but got %s", fnName, i+1, expected, got),
 						fmt.Sprintf("cast with: %s(value)", expected))
 					tc.ok = false
 				}
@@ -1311,16 +1751,19 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 			suggestion := tc.suggestName(fnName)
 			hint := fmt.Sprintf("declare it: extern fn %s(...) -> int  or  fn %s(...) { }", fnName, fnName)
 			if suggestion != "" {
-				hint = fmt.Sprintf("did you mean %q? (or declare it as an extern fn)", suggestion)
+				hint = fmt.Sprintf("did you mean %q?", suggestion)
 			}
-			errCode("E44", e.Sp, fmt.Sprintf("call to undefined function %q", fnName), hint)
+			errCode("E44", e.Sp,
+				fmt.Sprintf("call to undefined function %q", fnName),
+				hint)
 			tc.ok = false
 			e.Typ = TypUnknown
 			return TypUnknown
 		}
 		if !vi.IsFn {
-			errCode("E45", e.Sp, fmt.Sprintf("%q is a %s variable, not callable", fnName, vi.Type),
-				fmt.Sprintf("to call a function, declare: fn %s() { } or extern fn %s()", fnName, fnName))
+			errCode("E45", e.Sp,
+				fmt.Sprintf("%q is a %s variable, not a function — it cannot be called", fnName, vi.Type),
+				fmt.Sprintf("declare a function: fn %s() { }  or  extern fn %s()", fnName, fnName))
 			tc.ok = false
 			e.Typ = TypUnknown
 			return TypUnknown
@@ -1350,10 +1793,6 @@ func (tc *TypeChecker) inferBuiltin(e *BuiltinExpr) *ZXType {
 }
 
 func (tc *TypeChecker) inferMethodCall(e *MethodCallExpr) *ZXType {
-	// FIX: if the receiver is a plain ident that names a mod block,
-	// treat this as a namespaced mod call (mod->fn() or mod::fn()).
-	// We set id.Typ = TypUnknown as a sentinel so the emitter knows
-	// to emit  modName_fnName(args)  instead of a struct method call.
 	if id, ok := e.Recv.(*Ident); ok && tc.modNames[id.Name] {
 		modCall := &ModCallExpr{
 			Sp:   e.Sp,
@@ -1363,11 +1802,22 @@ func (tc *TypeChecker) inferMethodCall(e *MethodCallExpr) *ZXType {
 		}
 		t := tc.inferModCall(modCall)
 		e.Typ = t
-		id.Typ = TypUnknown // sentinel: receiver is a mod name, not a variable
+		id.Typ = TypUnknown
 		return t
 	}
 
 	recvType := tc.inferExpr(e.Recv)
+
+	// ── NEW: method call on nil ────────────────────────────────────────────────
+	if _, isNil := e.Recv.(*NilLit); isNil {
+		errCode("E78", e.Sp,
+			fmt.Sprintf("calling method %q on nil — nil has no methods", e.Method),
+			"check for nil before calling methods on ref values")
+		tc.ok = false
+		e.Typ = TypAny
+		return TypAny
+	}
+
 	for _, a := range e.Args {
 		tc.inferExpr(a)
 	}
@@ -1385,12 +1835,13 @@ func (tc *TypeChecker) inferMethodCall(e *MethodCallExpr) *ZXType {
 			return m.RetType
 		}
 		available := tc.methodsFor(structName)
-		hint := fmt.Sprintf("struct %q has no method %q", structName, e.Method)
+		hint := fmt.Sprintf("define it: fn (s ref %s) %s() { }", structName, e.Method)
 		if len(available) > 0 {
-			hint += fmt.Sprintf(" — available: %s", strings.Join(available, ", "))
+			hint = fmt.Sprintf("available methods on %s: %s", structName, strings.Join(available, ", "))
 		}
-		errCode("E59", e.Sp, hint,
-			fmt.Sprintf("define it: fn (s ref %s) %s() { }", structName, e.Method))
+		errCode("E59", e.Sp,
+			fmt.Sprintf("struct %q has no method %q", structName, e.Method),
+			hint)
 		tc.ok = false
 	}
 	e.Typ = TypAny
@@ -1419,14 +1870,15 @@ func (tc *TypeChecker) inferField(e *FieldExpr) *ZXType {
 
 	if e.UsedDot && objType.Kind == TyRef {
 		funnyWarn(e.Sp,
-			"you used '.' on a ref type — sure, it works, but seriously... grow up and use '->' like a C programmer ",
-			"replace '.' with '->' for ref/pointer field access")
+			"used '.' on a ref — it works, but use '->' for pointer field access",
+			"replace '.' with '->' for consistency with C conventions")
 	}
 
 	if eff.Kind != TyStruct {
 		if eff.Kind != TyAny && eff.Kind != TyUnknown {
-			errCode("E48", e.Sp, fmt.Sprintf("cannot access field %q on type %s — only structs have fields", e.Field, objType),
-				"field access works only on struct types and ref<StructType>")
+			errCode("E48", e.Sp,
+				fmt.Sprintf("cannot access field %q on type %s — field access is only valid on struct types", e.Field, objType),
+				"use a struct type or ref<StructType>")
 			tc.ok = false
 		}
 		e.Typ = TypAny
@@ -1434,7 +1886,8 @@ func (tc *TypeChecker) inferField(e *FieldExpr) *ZXType {
 	}
 	sd, ok := tc.structs[eff.Name]
 	if !ok {
-		errCode("E49", e.Sp, fmt.Sprintf("struct type %q is not defined", eff.Name),
+		errCode("E49", e.Sp,
+			fmt.Sprintf("struct type %q is not defined", eff.Name),
 			fmt.Sprintf("declare it: type %s struct { ... }", eff.Name))
 		tc.ok = false
 		e.Typ = TypAny
@@ -1446,23 +1899,57 @@ func (tc *TypeChecker) inferField(e *FieldExpr) *ZXType {
 			return f.Type
 		}
 	}
-	errCode("E50", e.Sp, fmt.Sprintf("struct %q has no field %q", eff.Name, e.Field),
-		fmt.Sprintf("available fields: %s", listFields(sd.Fields)))
+	// suggest similar field names
+	suggestion := tc.suggestField(sd, e.Field)
+	hint := fmt.Sprintf("available fields: %s", listFields(sd.Fields))
+	if suggestion != "" {
+		hint = fmt.Sprintf("did you mean %q?", suggestion)
+	}
+	errCode("E50", e.Sp,
+		fmt.Sprintf("struct %q has no field %q", eff.Name, e.Field),
+		hint)
 	tc.ok = false
 	e.Typ = TypAny
 	return TypAny
 }
 
+// suggestField returns the closest field name in the struct.
+func (tc *TypeChecker) suggestField(sd *StructDecl, name string) string {
+	best := ""
+	bestDist := 3
+	for _, f := range sd.Fields {
+		if d := editDistance(name, f.Name); d < bestDist {
+			bestDist = d
+			best = f.Name
+		}
+	}
+	return best
+}
+
 func (tc *TypeChecker) inferStructInit(e *StructInit) *ZXType {
 	sd, ok := tc.structs[e.Name]
 	if !ok {
-		errCode("E51", e.Sp, fmt.Sprintf("undefined struct %q in initializer", e.Name),
-			fmt.Sprintf("declare it first: type %s struct { ... }", e.Name))
+		// suggest similar struct name
+		best := ""
+		bestDist := 3
+		for sName := range tc.structs {
+			if d := editDistance(e.Name, sName); d < bestDist {
+				bestDist = d
+				best = sName
+			}
+		}
+		hint := fmt.Sprintf("declare it first: type %s struct { ... }", e.Name)
+		if best != "" {
+			hint = fmt.Sprintf("did you mean %q?", best)
+		}
+		errCode("E51", e.Sp,
+			fmt.Sprintf("undefined struct %q in struct literal", e.Name),
+			hint)
 		tc.ok = false
 		e.Typ = TypUnknown
 		return TypUnknown
 	}
-	provided := map[string]bool{}
+	provided := map[string]Span{}
 	for _, fi := range e.Fields {
 		found := false
 		for _, sf := range sd.Fields {
@@ -1472,27 +1959,46 @@ func (tc *TypeChecker) inferStructInit(e *StructInit) *ZXType {
 			}
 		}
 		if !found {
-			errCode("E52", fi.Sp, fmt.Sprintf("struct %q has no field %q", e.Name, fi.Name),
-				fmt.Sprintf("valid fields: %s", listFields(sd.Fields)))
+			suggestion := tc.suggestField(sd, fi.Name)
+			hint := fmt.Sprintf("valid fields: %s", listFields(sd.Fields))
+			if suggestion != "" {
+				hint = fmt.Sprintf("did you mean %q?", suggestion)
+			}
+			errCode("E52", fi.Sp,
+				fmt.Sprintf("struct %q has no field %q", e.Name, fi.Name),
+				hint)
 			tc.ok = false
 		}
-		if provided[fi.Name] {
-			errCode("E53", fi.Sp, fmt.Sprintf("field %q set more than once in struct literal", fi.Name),
-				"remove the duplicate field assignment")
+		if prev, dup := provided[fi.Name]; dup {
+			errCodeSecondary("E53", fi.Sp,
+				fmt.Sprintf("field %q is set more than once in struct literal for %q", fi.Name, e.Name),
+				"remove the duplicate field assignment",
+				[]SecondarySpan{{Span: prev, Label: "first set here"}})
 			tc.ok = false
 		}
-		provided[fi.Name] = true
+		provided[fi.Name] = fi.Sp
 		got := tc.inferExpr(fi.Value)
 		for _, sf := range sd.Fields {
 			if sf.Name == fi.Name && sf.Type != nil && sf.Type.Kind != TyAny &&
 				got.Kind != TyAny && got.Kind != TyUnknown && !coercible(got, sf.Type) {
-				errCode("E54", fi.Sp, fmt.Sprintf("field %q expects %s but got %s", fi.Name, sf.Type, got),
+				errCode("E54", fi.Sp,
+					fmt.Sprintf("field %q expects type %s but got %s", fi.Name, sf.Type, got),
 					fmt.Sprintf("cast with: %s(value)", sf.Type))
 				tc.ok = false
 				break
 			}
 		}
 	}
+
+	// ── NEW: warn on struct fields that are left uninitialized ───────────────
+	for _, sf := range sd.Fields {
+		if _, set := provided[sf.Name]; !set {
+			warnCode("W70", e.Sp,
+				fmt.Sprintf("field %q of struct %q is not set — it will be zero-initialized", sf.Name, e.Name),
+				fmt.Sprintf("add: %s: <value>", sf.Name))
+		}
+	}
+
 	if e.HeapAlloc {
 		e.Typ = RefOf(StructType(e.Name))
 	} else {
@@ -1509,8 +2015,22 @@ func (tc *TypeChecker) validateTypeExists(t *ZXType, sp Span) {
 	}
 	if t.Kind == TyStruct {
 		if _, ok := tc.structs[t.Name]; !ok {
-			errCode("E56", sp, fmt.Sprintf("unknown type %q — no struct with this name is defined", t.Name),
-				fmt.Sprintf("declare it: type %s struct { ... }", t.Name))
+			// suggest similar type
+			best := ""
+			bestDist := 3
+			for sName := range tc.structs {
+				if d := editDistance(t.Name, sName); d < bestDist {
+					bestDist = d
+					best = sName
+				}
+			}
+			hint := fmt.Sprintf("declare it: type %s struct { ... }", t.Name)
+			if best != "" {
+				hint = fmt.Sprintf("did you mean %q?", best)
+			}
+			errCode("E56", sp,
+				fmt.Sprintf("unknown type %q — no struct with this name is defined", t.Name),
+				hint)
 			tc.ok = false
 		}
 	}
@@ -1618,6 +2138,7 @@ func editDistance(a, b string) int {
 	}
 	return prev[lb]
 }
+
 func min3(a, b, c int) int {
 	if a < b {
 		if a < c {
@@ -1630,6 +2151,7 @@ func min3(a, b, c int) int {
 	}
 	return c
 }
+
 func listFields(params []Param) string {
 	parts := make([]string, len(params))
 	for i, p := range params {
@@ -1641,6 +2163,7 @@ func listFields(params []Param) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
 func listParamTypes(params []Param) string {
 	parts := make([]string, len(params))
 	for i, p := range params {
@@ -1682,49 +2205,63 @@ func isCReservedFnTC(name string) bool {
 	return false
 }
 
-// resolveFileImport reads a local .zx file, parses it, and merges its
-// declarations into prog. If (ModName) was given, only that mod block
-// (and its exported functions/structs) is merged. If import * (no alias),
-// everything is merged — functions, structs, methods, mods, globals.
-//
-// This runs during TypeCheck, before any scope registration, so merged
-// symbols are visible to the rest of the type-checking pass.
+// ── Utility: AST helpers ──────────────────────────────────────────────────────
+
+// blockHasBreak returns true if the block contains a BreakStmt at the top level.
+func blockHasBreak(b *Block) bool {
+	if b == nil {
+		return false
+	}
+	for _, s := range b.Stmts {
+		if _, ok := s.(*BreakStmt); ok {
+			return true
+		}
+		// also check nested if/match for break
+		if is, ok := s.(*IfStmt); ok {
+			if blockHasBreak(is.Then) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isSameIdent returns true if both nodes are Ident nodes with the same name.
+func isSameIdent(a, b Node) bool {
+	ia, oka := a.(*Ident)
+	ib, okb := b.(*Ident)
+	return oka && okb && ia.Name == ib.Name
+}
+
+// ── File import resolution ────────────────────────────────────────────────────
+
 func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
 	sp := imp.Sp
-
-	// Resolve the file path. For local imports, LocalFile was built by the parser
-	// relative to the source file's directory.
 	filePath := imp.LocalFile
 	if filePath == "" {
-		errCode("EI20", sp, "import has no resolved file path",
-			"this is a compiler bug — report it")
+		errCode("EI20", sp,
+			"import has no resolved file path — this is a compiler bug",
+			"report this issue")
 		tc.ok = false
 		return
 	}
-
-	// Read the file
 	raw, err := os.ReadFile(filePath)
 	if err != nil {
 		errCode("EI21", sp,
 			fmt.Sprintf("cannot read imported file %q: %v", filePath, err),
-			fmt.Sprintf("check that the file exists relative to the source directory"))
+			"check that the file exists at the expected path")
 		tc.ok = false
 		return
 	}
-
 	src := string(raw)
-
-	// Tokenize
 	tokens := Tokenize(src, filePath)
 	if tokens == nil {
 		errCode("EI22", sp,
-			fmt.Sprintf("syntax errors in imported file %q", filePath),
-			"fix the errors in the imported file first")
+			fmt.Sprintf("tokenization failed for imported file %q", filePath),
+			"fix the syntax errors in the imported file first")
 		tc.ok = false
 		return
 	}
-
-	// Parse
 	imported := Parse(tokens, src, filePath)
 	if imported == nil {
 		errCode("EI23", sp,
@@ -1733,11 +2270,8 @@ func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
 		tc.ok = false
 		return
 	}
-
-	alias := imp.Alias // "" means import all
-
+	alias := imp.Alias
 	if alias != "" {
-		// (ModName) form — import only the named mod block
 		var found *ModBlock
 		for _, mb := range imported.ModBlocks {
 			if mb.Name == alias {
@@ -1746,7 +2280,6 @@ func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
 			}
 		}
 		if found == nil {
-			// collect available mods for a helpful error message
 			var avail []string
 			for _, mb := range imported.ModBlocks {
 				avail = append(avail, mb.Name)
@@ -1755,106 +2288,99 @@ func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
 			if len(avail) > 0 {
 				hint += fmt.Sprintf(" — available mods: %s", strings.Join(avail, ", "))
 			} else {
-				hint += " — the file has no mod blocks at all"
+				hint += " — the file contains no mod blocks"
 			}
 			errCode("EI24", sp, hint,
 				"remove the (ModName) selector to import everything, or fix the mod name")
 			tc.ok = false
 			return
 		}
-		// merge only this mod block
 		prog.ModBlocks = append(prog.ModBlocks, found)
-		// also merge any structs defined inside the mod
 		prog.Structs = append(prog.Structs, found.Structs...)
 		return
 	}
-
-	// Import all — merge everything from the imported file into prog.
-	// Functions
 	for _, stmt := range imported.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok {
-			// check for duplicate function names
 			if _, exists := tc.fns[fn.Name]; exists {
-				warnAt(sp, fmt.Sprintf("imported function %q shadows an existing function", fn.Name),
-					fmt.Sprintf("rename one of them to avoid confusion"))
+				warnAt(sp,
+					fmt.Sprintf("imported function %q shadows an existing function — rename one to avoid confusion", fn.Name),
+					"")
 			}
 			prog.TopStmts = append(prog.TopStmts, fn)
 		}
-		// global vars from imported file
 		if vd, ok := stmt.(*VarDecl); ok && vd.IsGlobal {
 			prog.GlobalVars = append(prog.GlobalVars, vd)
 			prog.TopStmts = append(prog.TopStmts, vd)
 		}
 	}
-	// Structs
 	prog.Structs = append(prog.Structs, imported.Structs...)
-	// Methods
 	prog.Methods = append(prog.Methods, imported.Methods...)
-	// Mod blocks
 	prog.ModBlocks = append(prog.ModBlocks, imported.ModBlocks...)
-	// Externs
 	prog.Externs = append(prog.Externs, imported.Externs...)
-	// Macros
 	prog.Macros = append(prog.Macros, imported.Macros...)
 }
 
-// validateImport checks an ImportDecl for errors not caught by the parser.
-// It fires after all imports are parsed, giving us full context.
+// ── Import validation ─────────────────────────────────────────────────────────
+
 func (tc *TypeChecker) validateImport(imp *ImportDecl) {
 	sp := imp.Sp
-
 	switch {
 	case imp.IsCHeader:
-		// raw C header — no further validation possible at compile time
 		if imp.Path == "" {
-			errCode("EI01", sp, "import path is empty", `provide a header: use "stdio.h"`)
+			errCode("EI01", sp,
+				"import path is empty",
+				`provide a header name: use "stdio.h"`)
 			tc.ok = false
 		}
-
+		// ── NEW: warn on redundant imports ────────────────────────────────────
+		if tc.importPaths[imp.Path] {
+			warnCode("W80", sp,
+				fmt.Sprintf("header %q is imported more than once", imp.Path),
+				"remove the duplicate import")
+		}
 	case imp.IsStdModule:
-		// use std::str — must be a known module
 		if LookupStdModule(imp.Module) == nil {
 			errCode("EI02", sp,
 				fmt.Sprintf("unknown stdlib module %q", imp.Module),
-				"available: std::str std::io std::math std::sys std::fs std::cmd std::mem std::conv std::time std::net")
+				"available modules: std::str  std::io  std::math  std::sys  std::fs  std::cmd  std::mem  std::conv  std::time  std::net")
 			tc.ok = false
 		}
-
+		if tc.importMods[imp.Module] {
+			warnCode("W80", sp,
+				fmt.Sprintf("module %q is imported more than once", imp.Module),
+				"remove the duplicate import")
+		}
 	case imp.IsFileImport && imp.IsStd:
-		// import std/x/y — validate structure
 		if imp.EnvPrefix == "" {
-			errCode("EI03", sp, "stdlib file import missing env prefix",
-				"this is a compiler bug — report it")
+			errCode("EI03", sp,
+				"stdlib file import is missing an env prefix — this is a compiler bug",
+				"report this issue")
 			tc.ok = false
 			return
 		}
 		if len(imp.Segments) == 0 {
 			errCode("EI04", sp,
-				fmt.Sprintf("import requires at least one path segment after the prefix — got nothing"),
+				"import requires at least one path segment after the prefix",
 				"example: import std/net/socket")
 			tc.ok = false
 			return
 		}
-		// validate each segment is a valid identifier
 		for _, seg := range imp.Segments {
 			if seg == "" || !isValidIdent(seg) {
 				errCode("EI05", sp,
-					fmt.Sprintf("invalid path segment %q in import — must be a plain identifier", seg),
+					fmt.Sprintf("invalid path segment %q in import — segments must be valid identifiers", seg),
 					"path segments can only contain letters, digits, and underscores")
 				tc.ok = false
 				return
 			}
 		}
-		// if (ModName) given, validate it's a valid identifier
 		if !imp.ImportAll && imp.Alias != "" && !isValidIdent(imp.Alias) {
 			errCode("EI06", sp,
 				fmt.Sprintf("invalid mod name %q in import selector", imp.Alias),
 				"mod names must be valid identifiers: letters, digits, underscores")
 			tc.ok = false
 		}
-
 	case imp.IsFileImport && imp.IsLocal:
-		// import _/a or __/b — validate structure
 		if len(imp.Segments) == 0 {
 			errCode("EI07", sp,
 				"local import requires at least one path segment",
@@ -1877,9 +2403,6 @@ func (tc *TypeChecker) validateImport(imp *ImportDecl) {
 				"mod names must be valid identifiers")
 			tc.ok = false
 		}
-		// Note: we cannot check if the file exists here since that requires
-		// filesystem access. The import resolver (in main.go) handles that.
-		// But we can warn if the LocalFile path looks suspicious.
 		if imp.LocalFile == "" {
 			errCode("EI10", sp,
 				"could not resolve local import path",
@@ -1889,7 +2412,6 @@ func (tc *TypeChecker) validateImport(imp *ImportDecl) {
 	}
 }
 
-// isValidIdent returns true if s is a valid ZX/C identifier.
 func isValidIdent(s string) bool {
 	if s == "" {
 		return false
@@ -1908,16 +2430,13 @@ func isValidIdent(s string) bool {
 	return true
 }
 
-// registerModFns registers mod block functions ONLY under namespace keys
-// "modName::fnName". They are NOT added to global scope by plain name.
-// This enforces that mod->fn() or mod::fn() is required to call them.
+// ── Mod block registration ────────────────────────────────────────────────────
+
 func (tc *TypeChecker) registerModFns(mb *ModBlock) {
 	tc.modNames[mb.Name] = true
 	for _, fn := range mb.Fns {
 		key := mb.Name + "::" + fn.Name
 		tc.modFns[key] = fn
-		// Also register in tc.fns with the qualified key for inferCall to skip it
-		// (we deliberately do NOT register by plain fn.Name)
 	}
 	for _, td := range mb.Tests {
 		fn := td.Fn
@@ -1934,7 +2453,6 @@ func (tc *TypeChecker) registerModFns(mb *ModBlock) {
 	}
 }
 
-// checkModFns type-checks all function bodies inside mod blocks.
 func (tc *TypeChecker) checkModFns(mb *ModBlock) {
 	for _, fn := range mb.Fns {
 		tc.checkFn(fn)
