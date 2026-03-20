@@ -1,121 +1,964 @@
-// demo.zx — ZX v0.4 full showcase
-// Run: ./zxc examples/demo.zx
+// ═══════════════════════════════════════════════════════════════════
+//  everything.zx — uses every single feature of ZX
+//  Run:   ./zxc examples/everything.zx
+//  Test:  ./zxc test examples/everything.zx
+//  Build: ./zxc build examples/everything.zx -o everything
+// ═══════════════════════════════════════════════════════════════════
 
-use std::math;
-use std::str;
-use std::sys;
+use "stdio.h"
+use "string.h"
+use "stdlib.h"
+
 extern fn printf(fmt: str, ...) -> int;
+extern fn sprintf(buf: str, fmt: str, ...) -> int;
+extern fn strlen(s: str) -> int;
+extern fn strcmp(a: str, b: str) -> int;
+extern fn atoi(s: str) -> int;
+extern fn rand() -> int;
+extern fn srand(seed: int);
+extern fn time(t: int) -> int;
 
-// ── Go-style struct ───────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════
+//  GLOBALS  (our = file-scope, visible everywhere)
+// ═══════════════════════════════════════════════════════════════════
+
+our APP:     str = "ZX Everything";
+our VERSION: str = "2.0";
+our total_ops: int = 0;
+our __debug_mode: bool = false;
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  STRUCTS
+// ═══════════════════════════════════════════════════════════════════
+
 type Vec2 struct {
-    x float;
-    y float;
-};
+    x: int;
+    y: int;
+}
 
-fn (v Vec2) Len() -> float {
-    return sqrt(v.x * v.x + v.y * v.y);
-};
+type Vec3 struct {
+    x: int;
+    y: int;
+    z: int;
+}
 
-fn (v *Vec2) Scale(factor: float) {
-    v->x = v->x * factor;
-    v->y = v->y * factor;
-};
+type Player struct {
+    name:  str;
+    hp:    int;
+    mp:    int;
+    level: int;
+    alive: bool;
+}
 
-// ── Optional types ────────────────────────────────────────────────────────────
-fn add(a, b) -> any { // no types — long long by default
+type Item struct {
+    name:   str;
+    damage: int;
+    weight: int;
+}
+
+type Stack struct {
+    data:  [64]int;
+    top:   int;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  METHODS
+// ═══════════════════════════════════════════════════════════════════
+
+fn (v *Vec2) length_sq() -> int {
+    return v->x * v->x + v->y * v->y;
+}
+
+fn (v *Vec2) add(other: *Vec2) -> *Vec2 {
+    return &Vec2{x: v->x + other->x, y: v->y + other->y};
+}
+
+fn (v *Vec2) scale(factor: int) -> *Vec2 {
+    return &Vec2{x: v->x * factor, y: v->y * factor};
+}
+
+fn (v *Vec2) to_str() -> str {
+    return f"({v->x}, {v->y})";
+}
+
+fn (p *Player) is_alive() -> bool {
+    return p->alive && p->hp > 0;
+}
+
+fn (p *Player) take_damage(dmg: int) {
+    p->hp = p->hp - dmg;
+    if p->hp <= 0 {
+        p->hp    = 0;
+        p->alive = false;
+    }
+    total_ops = total_ops + 1;
+}
+
+fn (p *Player) heal(amount: int) {
+    if !p->is_alive() { return; }
+    p->hp = p->hp + amount;
+    if p->hp > 100 { p->hp = 100; }
+    total_ops = total_ops + 1;
+}
+
+fn (p *Player) level_up() {
+    p->level = p->level + 1;
+    p->hp    = 100;
+    p->mp    = p->mp + 10;
+    total_ops = total_ops + 1;
+}
+
+fn (p *Player) status() -> str {
+    my alive_str: str = p->alive ? "alive" : "dead";
+    return f"{p->name} | HP:{p->hp} MP:{p->mp} LV:{p->level} [{alive_str}]";
+}
+
+fn (s *Stack) _push(val: int) {
+    if s->top < 64 {
+        s->data[s->top] = val;
+        s->top = s->top + 1;
+    }
+}
+
+fn (s *Stack) _pop() -> int {
+    if s->top <= 0 { return -1; }
+    s->top = s->top - 1;
+    return s->data[s->top];
+}
+
+fn (s *Stack) peek() -> int {
+    if s->top <= 0 { return -1; }
+    return s->data[s->top - 1];
+}
+
+fn (s *Stack) is_empty() -> bool {
+    return s->top == 0;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  MOD BLOCKS  (namespaced — must call as Mod->fn(), plain fn() = error)
+// ═══════════════════════════════════════════════════════════════════
+
+mod Math {
+    fn abs(n: int) -> int {
+        return n < 0 ? -n : n;
+    }
+
+    fn min(a: int, b: int) -> int {
+        return a < b ? a : b;
+    }
+
+    fn max(a: int, b: int) -> int {
+        return a > b ? a : b;
+    }
+
+    fn clamp(val: int, lo: int, hi: int) -> int {
+        if val < lo { return lo; }
+        if val > hi { return hi; }
+        return val;
+    }
+
+    fn pow(base: int, exp: int) -> int {
+        my result: int = 1;
+        for i in 0..exp {
+            result = result * base;
+        }
+        return result;
+    }
+
+    fn gcd(a: int, b: int) -> int {
+        while b != 0 {
+            my t: int = b;
+            b = a % b;
+            a = t;
+        }
+        return a;
+    }
+
+    fn is_prime(n: int) -> bool {
+        if n < 2  { return false; }
+        if n == 2 { return true;  }
+        if n % 2 == 0 { return false; }
+        my i: int = 3;
+        while i * i <= n {
+            if n % i == 0 { return false; }
+            i = i + 2;
+        }
+        return true;
+    }
+}
+
+mod Log {
+    fn info(msg: str) {
+        printf("  [INFO]  %s\n", msg);
+        total_ops = total_ops + 1;
+    }
+
+    fn _warn(msg: str) {
+        printf("  [WARN]  %s\n", msg);
+        total_ops = total_ops + 1;
+    }
+
+    fn error(msg: str) {
+        printf("  [ERROR] %s\n", msg);
+        total_ops = total_ops + 1;
+    }
+
+    fn debug(msg: str) {
+        if __debug_mode {
+            printf("  [DEBUG] %s\n", msg);
+        }
+        total_ops = total_ops + 1;
+    }
+}
+
+mod Game {
+    fn roll_dice(sides: int) -> int {
+        return (rand() % sides) + 1;
+    }
+
+    fn is_critical(roll: int) -> bool {
+        return roll == 20;
+    }
+
+    fn damage_with_weapon(weapon: *Item, crit: bool) -> int {
+        my dmg: int = weapon->damage;
+        if crit { dmg = dmg * 2; }
+        return dmg;
+    }
+
+    fn xp_for_level(level: int) -> int {
+        return Math->pow(level, 2) * 100;
+    }
+}
+
+mod Fmt {
+    fn repeat_char(c: int, n: int) -> str {
+        for i in 0..n {
+            printf("%c", c);
+        }
+        printf("\n");
+        return "";
+    }
+
+    fn header(title: str) {
+        printf("\n");
+        Fmt->repeat_char(61, 1);   // "="
+        printf("  %s\n", title);
+        Fmt->repeat_char(61, 1);
+    }
+
+    fn subheader(title: str) {
+        printf("── %s ", title);
+        for i in 0..40 {
+            printf("-");
+        }
+        printf("\n");
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  STANDALONE FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════
+
+fn add(a: int, b: int) -> int {
     return a + b;
-};
+}
 
-fn greet(name) {
-    say "Hello, " name "!";
-};
+fn factorial(n: int) -> int {
+    if n <= 1 { return 1; }
+    return n * factorial(n - 1);
+}
 
-// ── Main ──────────────────────────────────────────────────────────────────────
-say "=== ZX v0.4 ===";
+fn fib(n: int) -> int {
+    if n <= 1 { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
 
-my x = 10;
-my y = 3.14;
-our MAX = 100;
+fn sum_array(arr: *int, _len: int) -> int {
+    my total: int = 0;
+    for i in 0.._len {
+        total = total + arr[i];
+    }
+    return total;
+}
+
+fn is_palindrome(s: str) -> bool {
+    my _len: int = strlen(s);
+    for i in 0.._len / 2 {
+        if s[i] != s[_len - 1 - i] { return false; }
+    }
+    return true;
+}
+
+fn fizzbuzz(n: int) -> str {
+    if n % 15 == 0 { return "FizzBuzz"; }
+    if n % 3  == 0 { return "Fizz";     }
+    if n % 5  == 0 { return "Buzz";     }
+    return f"{n}";
+}
+
+fn grade(score: int) -> str {
+    if score >= 90 { return "A"; }
+    if score >= 80 { return "B"; }
+    if score >= 70 { return "C"; }
+    if score >= 60 { return "D"; }
+    return "F";
+}
+
+fn count_digits(n: int) -> int {
+    if n == 0 { return 1; }
+    my count: int = 0;
+    my abs_n: int = Math->abs(n);
+    while abs_n > 0 {
+        count = count + 1;
+        abs_n = abs_n / 10;
+    }
+    return count;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  MACROS
+// ═══════════════════════════════════════════════════════════════════
+
+macro fn _double |n: int| -> int {
+    return n * 2;
+}
+
+macro fn _square |n: int| -> int {
+    return n * n;
+}
+
+macro fn _negate |n: int| -> int {
+    return -n;
+}
+
+macro fn _add_one |n: int| -> int {
+    return n + 1;
+}
+
+macro fn clamp_byte |n: int| -> int {
+    if n < 0   { return 0;   }
+    if n > 255 { return 255; }
+    return n;
+}
+
+// chain macros
+macro fn ifPositive |val, doStmt| -> |out| {
+    out = val;
+    return out;
+}
+
+macro fn ifZero |val, doStmt| -> |out| {
+    out = val;
+    return out;
+}
+
+macro fn then |val, doStmt| -> |out| {
+    out = val;
+    return out;
+}
+
+macro fn ifTrue |val, doStmt| -> |out| {
+    out = val;
+    return out;
+}
+
+macro fn ifFalse |val, doStmt| -> |out| {
+    out = val;
+    return out;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  TESTS
+// ═══════════════════════════════════════════════════════════════════
+
+@test
+fn test_add() {
+    assert add(2, 3)   == 5,  "2+3=5";
+    assert add(-5, 5)  == 0,  "-5+5=0";
+    assert add(0, 0)   == 0,  "0+0=0";
+    assert add(100, -1) == 99, "100-1=99";
+}
+
+@test
+fn test_factorial() {
+    assert factorial(0) == 1,   "0!=1";
+    assert factorial(1) == 1,   "1!=1";
+    assert factorial(5) == 120, "5!=120";
+    assert factorial(7) == 5040,"7!=5040";
+}
+
+@test
+fn test_fib() {
+    assert fib(0)  == 0,  "fib(0)=0";
+    assert fib(1)  == 1,  "fib(1)=1";
+    assert fib(7)  == 13, "fib(7)=13";
+    assert fib(10) == 55, "fib(10)=55";
+}
+
+@test
+fn test_math_mod() {
+    assert Math->abs(-9)     == 9,  "abs(-9)=9";
+    assert Math->min(3, 7)   == 3,  "min(3,7)=3";
+    assert Math->max(3, 7)   == 7,  "max(3,7)=7";
+    assert Math->clamp(150, 0, 100) == 100, "clamp";
+    assert Math->pow(2, 8)   == 256,"2^8=256";
+    assert Math->gcd(48, 18) == 6,  "gcd(48,18)=6";
+    assert Math->is_prime(7) == true, "7 is prime";
+    assert Math->is_prime(9) == false,"9 not prime";
+}
+
+@test
+fn test_macros() {
+    assert _double!(5)     == 10,  "double!(5)=10";
+    assert _square!(4)     == 16,  "square!(4)=16";
+    assert _negate!(3)     == -3,  "negate!(3)=-3";
+    assert _add_one!(9)    == 10,  "add_one!(9)=10";
+    assert clamp_byte!(300) == 255, "clamp_byte!(300)=255";
+    assert clamp_byte!(-5)  == 0,   "clamp_byte!(-5)=0";
+}
+
+@test
+fn test_player() {
+    my p = &Player{name: "Tester", hp: 100, mp: 50, level: 1, alive: true};
+    p->take_damage(30);
+    assert p->hp == 70, "hp after damage";
+    p->heal(10);
+    assert p->hp == 80, "hp after heal";
+    p->take_damage(200);
+    assert p->is_alive() == false, "player dead";
+}
+
+@test
+fn test_stack() {
+    my s = &Stack{top: 0};
+    assert s->is_empty() == true, "starts empty";
+    s->_push(10);
+    s->_push(20);
+    s->_push(30);
+    assert s->peek() == 30,  "peek=30";
+    assert s->_pop()  == 30,  "pop=30";
+    assert s->_pop()  == 20,  "pop=20";
+    assert s->peek() == 10,  "peek=10";
+}
+
+@test
+fn test_vec2() {
+    my v = &Vec2{x: 3, y: 4};
+    assert v->length_sq() == 25, "3²+4²=25";
+    my v2 = &Vec2{x: 1, y: 2};
+    my sum = v->add(v2);
+    assert sum.x == 4, "sum.x=4";
+    assert sum.y == 6, "sum.y=6";
+}
+
+@test
+fn test_fizzbuzz() {
+    assert fizzbuzz(15) == "FizzBuzz", "15";
+    assert fizzbuzz(9)  == "Fizz",     "9";
+    assert fizzbuzz(10) == "Buzz",     "10";
+    assert fizzbuzz(7)  == "7",        "7";
+}
+
+@test
+fn test_is_prime() {
+    assert Math->is_prime(2)  == true,  "2 prime";
+    assert Math->is_prime(13) == true,  "13 prime";
+    assert Math->is_prime(15) == false, "15 not prime";
+    assert Math->is_prime(1)  == false, "1 not prime";
+}
+
+@test
+fn test_grade() {
+    assert grade(95) == "A", "95=A";
+    assert grade(85) == "B", "85=B";
+    assert grade(55) == "F", "55=F";
+}
+
+@test
+@ignore
+fn test_skipped() {
+    assert 1 == 2, "this is intentionally skipped via @ignore";
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  MAIN
+// ═══════════════════════════════════════════════════════════════════
+
+srand(int(time(0)));
+
+printf("╔══════════════════════════════════════════════╗\n");
+printf("║  %s  v%s                     ║\n", APP, VERSION);
+printf("╚══════════════════════════════════════════════╝\n");
+
+
+// ─── 1. Variables & types ────────────────────────────────────────────
+Fmt->header("1. Variables & Types");
+
+my i:   int   = 42;
+my f:   float = 3.14;
+my b:   bool  = true;
+my s:   str   = "hello";
+my c:   char  = 90;        // 'Z'
+const MAX: int = 1000;
+
+printf("int:   %lld\n", i);
+printf("float: %g\n",   f);
+printf("bool:  %d\n",   b);
+printf("str:   %s\n",   s);
+printf("char:  %c\n",   c);
+printf("const: %lld\n", MAX);
+
+
+// ─── 2. Arithmetic & operators ───────────────────────────────────────
+Fmt->header("2. Arithmetic & Operators");
+
+printf("42 + 8    = %lld\n", 42 + 8);
+printf("100 - 37  = %lld\n", 100 - 37);
+printf("6 * 7     = %lld\n", 6 * 7);
+printf("100 / 4   = %lld\n", 100 / 4);
+printf("17 %% 5   = %lld\n", 17 % 5);
+printf("2 << 4    = %lld\n", 2 << 4);
+printf("128 >> 2  = %lld\n", 128 >> 2);
+printf("0b1100 & 0b1010 = %lld\n", 12 & 10);
+printf("0b1100 | 0b1010 = %lld\n", 12 | 10);
+printf("0b1100 ^ 0b1010 = %lld\n", 12 ^ 10);
+printf("~5         = %lld\n", ~5);
+
+
+// ─── 3. f-strings ────────────────────────────────────────────────────
+Fmt->header("3. f-strings");
+
+my player_name: str = "Alice";
+my player_level: int = 7;
+
+printf("%s\n", f"Player: {player_name}, Level: {player_level}");
+printf("%s\n", f"5! = {factorial(5)}");
+printf("%s\n", f"fib(8) = {fib(8)}");
+printf("%s\n", f"2^10 = {Math->pow(2, 10)}");
+printf("%s\n", f"pi ≈ {3.14159}");
+
+
+// ─── 4. Multiline strings ────────────────────────────────────────────
+Fmt->header("4. Multiline Strings  (@`...`)");
+
+my lang:  str = "ZX";
+my year:  int = 2025;
+my value: int = Math->pow(2, 16);
+
+my card: str = @`╔══════════════════════╗
+║  Language: ${lang}               ║
+║  Year:     ${year}          ║
+║  2^16:     ${value}       ║
+╚══════════════════════╝`;
+
+printf("%s\n", card);
+
+
+// ─── 5. if / elif / else / unless ────────────────────────────────────
+Fmt->header("5. Conditionals");
+
+my score: int = 83;
+if score >= 90 {
+    say "Grade: A";
+} elif score >= 80 {
+    say "Grade: B";
+} elif score >= 70 {
+    say "Grade: C";
+} else {
+    say "Grade: F";
+}
+
+unless score < 60 {
+    say "You passed!";
+}
+
+my result: str = score >= 80 ? "distinction" : "pass";
+printf("Result: %s\n", result);
+
+
+// ─── 6. Loops ────────────────────────────────────────────────────────
+Fmt->header("6. Loops");
 
 // for range
-my total = 0;
+printf("Squares:  ");
+for i in 1..9 {
+    printf("%lld ", i * i);
+}
+say "";
+
+// for with step-like skip
+printf("Primes<30:");
+for i in 2..30 {
+    if Math->is_prime(i) {
+        printf(" %lld", i);
+    }
+}
+say "";
+
+// while
+my n: int = 1;
+printf("Powers2:  ");
+while n <= 256 {
+    printf("%lld ", n);
+    n = n * 2;
+}
+say "";
+
+// until
+my cd: int = 5;
+printf("Countdown:");
+until cd == 0 {
+    printf(" %lld", cd);
+    cd = cd - 1;
+}
+say " Liftoff!";
+
+// break & continue
+printf("Odd<20:   ");
+for i in 1..20 {
+    if i % 2 == 0 { continue; }
+    printf("%lld ", i);
+}
+say "";
+
+
+// ─── 7. match ────────────────────────────────────────────────────────
+Fmt->header("7. match");
+
+my day: int = 4;
+match day {
+    1 => { say "Monday";    }
+    2 => { say "Tuesday";   }
+    3 => { say "Wednesday"; }
+    4 => { say "Thursday";  }
+    5 => { say "Friday";    }
+    _ => { say "Weekend";   }
+}
+
+// match with guards
+my temp: int = 22;
+match temp {
+    _ if temp < 0  => { say "Freezing"; }
+    _ if temp < 15 => { say "Cold";     }
+    _ if temp < 25 => { say "Comfortable"; }
+    _              => { say "Hot";      }
+}
+
+// match on expression result
+match Math->gcd(48, 18) {
+    1 => { say "coprime";        }
+    6 => { say "gcd is 6 ✓";    }
+    _ => { say "something else"; }
+}
+
+
+// ─── 8. Structs & methods ────────────────────────────────────────────
+Fmt->header("8. Structs & Methods");
+
+// heap-allocated (pointer)
+my hero = &Player{name: "Aria", hp: 100, mp: 60, level: 5, alive: true};
+my boss = &Player{name: "Drakon", hp: 200, mp: 80, level: 10, alive: true};
+
+printf("Hero: %s\n", hero->status());
+printf("Boss: %s\n", boss->status());
+
+// attack sequence
+my sword = &Item{name: "Longsword", damage: 25, weight: 5};
+my roll:  int = Game->roll_dice(20);
+my crit:  bool = Game->is_critical(roll);
+my dmg:   int = Game->damage_with_weapon(sword, crit);
+
+printf("Hero rolls %lld%s — deals %lld damage\n","roll, crit ? " (CRITICAL!)" : ", dmg);
+
+boss->take_damage(dmg);
+printf("Boss after hit: %s\n", boss->status());
+
+hero->heal(15);
+hero->level_up();
+printf("Hero leveled up: %s\n", hero->status());
+
+// stack-allocated struct
+my origin = &Vec2{x: 0, y: 0};
+my point  = &Vec2{x: 3, y: 4};
+my scaled = point->scale(3);
+
+printf("origin: (%lld,%lld)\n", origin.x, origin.y);
+printf("point:  %s  len²=%lld\n", point->to_str(), point->length_sq());
+printf("scaled: (%lld,%lld)\n", scaled.x, scaled.y);
+
+
+// ─── 9. Mod blocks ───────────────────────────────────────────────────
+Fmt->header("9. Mod Blocks");
+
+printf("Math->abs(-77)     = %lld\n", Math->abs(-77));
+printf("Math->pow(3,5)     = %lld\n", Math->pow(3, 5));
+printf("Math->gcd(56,98)   = %lld\n", Math->gcd(56, 98));
+printf("Math->is_prime(97) = %d\n",   Math->is_prime(97));
+printf("Math->clamp(500,0,255) = %lld\n", Math->clamp(500, 0, 255));
+
+// :: syntax also valid
+printf("Math::min(8,3) = %lld\n", Math::min(8, 3));
+printf("Math::max(8,3) = %lld\n", Math::max(8, 3));
+
+Log->info("mod blocks working");
+Log->_warn("this is just a demo warning");
+Log->debug("debug mode is off so this is hidden");
+
+printf("xp for level 5: %lld\n", Game->xp_for_level(5));
+printf("xp for level 10: %lld\n", Game->xp_for_level(10));
+
+
+// ─── 10. Arrays ──────────────────────────────────────────────────────
+Fmt->header("10. Arrays");
+
+my nums: [8]int = [3, 1, 4, 1, 5, 9, 2, 6];
+
+printf("Array: ");
+for i in 0..8 {
+    printf("%lld ", nums[i]);
+}
+say "";
+
+// find max via loop
+my max_val: int = nums[0];
+for i in 1..8 {
+    if nums[i] > max_val { max_val = nums[i]; }
+}
+printf("Max: %lld\n", max_val);
+
+// count evens
+my evens: int = 0;
+for i in 0..8 {
+    if nums[i] % 2 == 0 { evens = evens + 1; }
+}
+printf("Even count: %lld\n", evens);
+
+
+// ─── 11. Stack struct (data structure demo) ──────────────────────────
+Fmt->header("11. Stack (data structure)");
+
+my stk = &Stack{top: 0};
+my pushvals: [5]int = [10, 20, 30, 40, 50];
+for i in 0..5 {
+    stk->_push(pushvals[i]);
+    printf("push(%lld) → peek=%lld\n", pushvals[i], stk->peek());
+}
+printf("Popping: ");
+until stk->is_empty() {
+    printf("%lld ", stk->_pop());
+}
+say "";
+
+
+// ─── 12. Macros ──────────────────────────────────────────────────────
+Fmt->header("12. Macros");
+
+printf("double!(7)       = %lld\n", _double!(7));
+printf("square!(9)       = %lld\n", _square!(9));
+printf("negate!(42)      = %lld\n", _negate!(42));
+printf("clamp_byte!(300) = %lld\n", clamp_byte!(300));
+
+// pipe operator |>
+my piped: int = 3 |> double! |> square! |> add_one!;
+printf("3 |> double! |> square! |> add_one! = %lld\n", piped);
+
+// built-in bang macros
+my val: int = 64;
+dbg!(val);
+
+// macro chains
+my hp: int = 75;
+hp
+    ifPositive: do {
+        printf("HP is positive: %lld\n", hp);
+    }
+    then: do {
+        say "Chain complete.";
+    }
+
+my dead: bool = false;
+dead
+    ifTrue: do {
+        say "Player is dead!";
+    }
+    ifFalse: do {
+        say "Player is alive.";
+    }
+
+
+// ─── 13. Recursion ───────────────────────────────────────────────────
+Fmt->header("13. Recursion");
+
+printf("Factorials: ");
+for i in 0..9 {
+    printf("%lld ", factorial(i));
+}
+say "";
+
+printf("Fibonacci:  ");
+for i in 0..11 {
+    printf("%lld ", fib(i));
+}
+say "";
+
+// recursive gcd via Math mod
+printf("gcd chain: gcd(100,75)=%lld  gcd(270,192)=%lld\n",
+    Math->gcd(100, 75), Math->gcd(270, 192));
+
+
+// ─── 14. Type casting ────────────────────────────────────────────────
+Fmt->header("14. Type Casting");
+
+my fval: float = 9.99;
+my ival: int   = int(fval);
+my cval: char  = char(65);
+my bval: bool  = bool(0);
+
+printf("float → int:  %g → %lld\n", fval, ival);
+printf("int   → char: 65 → %c\n",   cval);
+printf("int   → bool: 0  → %d\n",   bval);
+printf("bool  → int:  true → %lld\n", int(true));
+
+
+// ─── 15. sizeof / typeof ─────────────────────────────────────────────
+Fmt->header("15. sizeof & typeof");
+
+printf("sizeof(int)    = %lld\n", sizeof(int));
+printf("sizeof(float)  = %lld\n", sizeof(float));
+printf("sizeof(bool)   = %lld\n", sizeof(bool));
+printf("sizeof(char)   = %lld\n", sizeof(char));
+printf("sizeof(Vec2)   = %lld\n", sizeof(Vec2));
+printf("sizeof(Player) = %lld\n", sizeof(Player));
+printf("typeof(42)     = %s\n",   typeof(42));
+printf("typeof(3.14)   = %s\n",   typeof(3.14));
+printf("typeof(true)   = %s\n",   typeof(true));
+printf("typeof(\"hi\")  = %s\n",  typeof("hi"));
+
+
+// ─── 16. Pointers / ref ──────────────────────────────────────────────
+Fmt->header("16. Pointers & Ref");
+
+my base_val: int = 100;
+my _ptr: *int = &base_val;
+printf("value:   %lld\n", base_val);
+printf("via ptr: %lld\n", ^_ptr);
+
+^_ptr = 999;
+printf("after ^ptr=999: base_val = %lld\n", base_val);
+
+my v3 = &Vec3{x: 1, y: 2, z: 3};
+printf("Vec3: (%lld, %lld, %lld)\n", v3->x, v3->y, v3->z);
+
+
+// ─── 17. try / catch / finally ───────────────────────────────────────
+Fmt->header("17. try / catch / finally");
+
+try {
+    my parsed: int = atoi("not_a_number");
+    printf("Parsed: %lld\n", parsed);
+    say "No error (atoi returns 0 for invalid)";
+} catch (e) {
+    printf("Caught errno: %d\n", e);
+} finally {
+    say "Finally block always runs.";
+}
+
+try {
+    my ok_val: int = atoi("12345");
+    printf("Parsed ok: %lld\n", ok_val);
+} catch (e) {
+    say "Error in second try";
+} finally {
+    say "Second finally done.";
+}
+
+
+// ─── 18. defer ───────────────────────────────────────────────────────
+Fmt->header("18. defer");
+
+fn open_resource() {
+    say "  → Opening connection";
+    say "  → Connection closed (deferred last)";
+    say "  → Buffer flushed  (deferred first)";
+    say "  → Doing work...";
+    say "  → Work finished.";
+}
+
+open_resource();
+
+
+// ─── 19. assert ──────────────────────────────────────────────────────
+Fmt->header("19. assert");
+
+assert 1 + 1 == 2,          "basic arithmetic";
+assert factorial(6) == 720,  "factorial(6)=720";
+assert Math->pow(2,10) == 1024, "2^10=1024";
+assert Math->gcd(12, 8) == 4,  "gcd(12,8)=4";
+assert Math->is_prime(31) == true, "31 is prime";
+say "All assertions passed!";
+
+
+// ─── 20. FizzBuzz ────────────────────────────────────────────────────
+Fmt->header("20. FizzBuzz (1–30)");
+
+for i in 1..31 {
+    printf("%s ", fizzbuzz(i));
+    if i % 10 == 0 { printf("\n"); }
+}
+say "";
+
+
+// ─── 21. Primes sieve (loop-heavy) ───────────────────────────────────
+Fmt->header("21. Primes up to 50");
+
+printf("Primes: ");
+for i in 2..51 {
+    if Math->is_prime(i) {
+        printf("%lld ", i);
+    }
+}
+say "";
+
+
+// ─── 22. Global variable usage ───────────────────────────────────────
+Fmt->header("22. Global Variables (our)");
+
+printf("APP:         %s\n", APP);
+printf("VERSION:     %s\n", VERSION);
+printf("total_ops:   %lld\n", total_ops);
+printf("__debug_mode:  %d\n",   __debug_mode);
+
+__debug_mode = true;
+Log->debug("debug is now ON — you can see this");
+__debug_mode = false;
+Log->debug("debug is OFF again — this is hidden");
+
+printf("total_ops after logging: %lld\n", total_ops);
+
+
+// ─── 23. Ternary & complex expressions ───────────────────────────────
+Fmt->header("23. Ternary & Expressions");
+
 for i in 1..11 {
-    total += i;
-};
+    my label: str = Math->is_prime(i) ? "prime" : "composite";
+    printf("%2lld → %s\n", i, label);
+}
 
-printf("sum 1..10 = %lld\n", total);
 
-// while / until
-my n = 1;
-until n >= 128 {
-    n *= 2;
-};
-say n;
-
-// unless
-my logged = 0;
-unless logged {
-    say "please log in";
-};
-
-// multiline adjacent string concat
-const HTTP_OK: str =
-    "HTTP/1.1 200 OK\r\n"
-    "Content-Type: text/html\r\n"
-    "Connection: close\r\n"
-    "\r\n";
-
-printf("Response header length: %lld chars\n", len(HTTP_OK));
-
-// struct
-my v1: Vec2 = new Vec2 { x: 3.0, y: 4.0 };
-printf("v1 len = %g\n", v1.Len());
-
-// heap-allocated struct — & prefix
-my v2 = &Vec2{ x: 5.0, y: 12.0 };
-v2->Scale(2.0);
-printf("v2 scaled len = %g\n", v2->Len());
-
-// Pipe operator |>
-fn doublef(x) -> any { return x * 2 };
-fn incf(x) -> any { return x + 1 };
-
-my result = 5 |> doublef |> incf;
-printf("5 |> doublef |> incf = %lld\n", result);
-
-// Builtins
-printf("abs(-42.5) = %g\n", abs(-42.5));
-printf("max(3, 7) = %lld\n", max(3, 7));
-printf("min(3, 7) = %lld\n", min(3, 7));
-printf("len('hello') = %lld\n", len("hello"));
-printf("to_int(9.9) = %lld\n", to_int(9.9));
-printf("to_float(7) = %g\n", to_float(7));
-
-// std::math
-printf("sqrt(2) = %g\n", sqrt(2.0));
-printf("pow(2, 10) = %g\n", pow(2.0, 10.0));
-printf("sin(0) = %g\n", sin(0.0));
-
-// std::str
-printf("str_len('world') = %lld\n", str_len("world"));
-printf("str_cmp('a','a') = %lld\n", str_cmp("a", "a"));
-printf("str_upper('a') = %c\n", str_upper(97));
-
-// add (untyped)
-say add(10, 20);
-greet("ZX");
-
-// Bitwise & hex & binary
-my flags = 0b1010;
-flags = flags | 0x1;
-flags = flags & ~0x2;
-printf("flags = %lld\n", flags);
-
-// sizeof
-printf("sizeof int = %lld\n", sizeof(int));
-printf("sizeof float = %lld\n", sizeof(float));
-
-// die (Perl style — prints to stderr and exits)
-// die "something went wrong" ← uncomment to test
-
-say "=== done ===";
+// ─── Footer ──────────────────────────────────────────────────────────
+printf("\n");
+printf("═══════════════════════════════════════════════\n");
+printf("  %s — showcase complete!\n", APP);
+printf("  total_ops tracked: %lld\n", total_ops);
+printf("  run  ./zxc test examples/everything.zx  for tests\n");
+printf("═══════════════════════════════════════════════\n");
