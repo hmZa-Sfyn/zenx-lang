@@ -13,7 +13,7 @@ extern fn printf(fmt: str, ...) -> int;
 //
 //  Inside the body:
 //    input   → the value piped into the chain
-//    doStmt  → writing  doStmt;  inlines the user's  do { }  block
+//    doStmt  → writing  doStmt();  inlines the user's  do { }  block
 //    output  → the result value passed to the next chain step
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -21,7 +21,7 @@ extern fn printf(fmt: str, ...) -> int;
 macro fn ifTrue |input, doStmt| -> |output| {
     output = input;
     if input {
-        doStmt;
+        doStmt();
     }
 }
 
@@ -29,21 +29,21 @@ macro fn ifTrue |input, doStmt| -> |output| {
 macro fn ifFalse |input, doStmt| -> |output| {
     output = input;
     if !input {
-        doStmt;
+        doStmt();
     }
 }
 
 // Always run the block, pass value through
 macro fn then |input, doStmt| -> |output| {
     output = input;
-    doStmt;
+    doStmt();
 }
 
 // Run block if input > 0
 macro fn ifPositive |input, doStmt| -> |output| {
     output = input;
     if input > 0 {
-        doStmt;
+        doStmt();
     }
 }
 
@@ -51,7 +51,7 @@ macro fn ifPositive |input, doStmt| -> |output| {
 macro fn ifZero |input, doStmt| -> |output| {
     output = input;
     if input == 0 {
-        doStmt;
+        doStmt();
     }
 }
 
@@ -59,14 +59,14 @@ macro fn ifZero |input, doStmt| -> |output| {
 macro fn tap |input, doStmt| -> |output| {
     output = input;
     printf("[tap] value = %lld\n", input);
-    doStmt;
+    doStmt();
 }
 
 // Run block N times where N = input
 macro fn repeat |input, doStmt| -> |output| {
     output = input;
     for i in 0..input {
-        doStmt;
+        doStmt();
     }
 }
 
@@ -74,7 +74,7 @@ macro fn repeat |input, doStmt| -> |output| {
 macro fn countdown |input, doStmt| -> |output| {
     output = input;
     while output > 0 {
-        doStmt;
+        doStmt();
         output = output - 1;
     }
 }
@@ -82,7 +82,7 @@ macro fn countdown |input, doStmt| -> |output| {
 // Double the value, then run the block with the new value
 macro fn doubled |input, doStmt| -> |output| {
     output = input * 2;
-    doStmt;
+    doStmt();
 }
 
 // Run block only if input is in range [lo, hi]
@@ -90,7 +90,7 @@ macro fn doubled |input, doStmt| -> |output| {
 macro fn inRange |input, lo: int, hi: int, doStmt| -> |output| {
     output = input;
     if input >= lo && input <= hi {
-        doStmt;
+        doStmt();
     }
 }
 
