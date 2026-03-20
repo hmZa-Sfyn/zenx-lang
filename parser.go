@@ -341,7 +341,7 @@ func (p *Parser) parseImport() *ImportDecl {
 
 	default:
 		errAt(sp, fmt.Sprintf("unexpected token %q after import/use", p.peek().Value),
-`valid forms:
+			`valid forms:
   import std/net/socket
   import std/net/socket (socServ)
   import _/a
@@ -431,7 +431,8 @@ func (p *Parser) parseLocalImport(sp Span, imp *ImportDecl) {
 }
 
 // parseEnvImport handles:  std/net/socket   std/net/socket (socServ)
-//                          usr/mylib/util   usr/mylib/util (Helper)
+//
+//	usr/mylib/util   usr/mylib/util (Helper)
 func (p *Parser) parseEnvImport(sp Span, imp *ImportDecl) {
 	prefix := p.advance().Value // "std" or "usr"
 
@@ -467,7 +468,7 @@ func (p *Parser) parseEnvImport(sp Span, imp *ImportDecl) {
 	}
 
 	imp.IsFileImport = true
-	imp.IsLocal = true   // legacy compat
+	imp.IsLocal = true // legacy compat
 	imp.IsStd = (prefix == "std")
 	imp.IsUser = (prefix != "std")
 	imp.EnvPrefix = envVar
@@ -788,28 +789,67 @@ func (p *Parser) parseBangMacroCall() Node {
 
 // tryParseMacroChain attempts to parse a macro chain expression:
 //
-//   value macroName: do { body }
-//   value macroName: { body }          // do is optional
-//   value macroName(arg1, arg2): do { body }   // explicit args + block
+//	value macroName: do { body }
+//	value macroName: { body }          // do is optional
+//	value macroName(arg1, arg2): do { body }   // explicit args + block
 //
 // Multiple steps chain naturally:
-//   value
-//       ifTrue: do { say "yes"; }
-//       ifFalse: do { say "no"; }
-//       then: do { say "done"; }
+//
+//	value
+//	    ifTrue: do { say "yes"; }
+//	    ifFalse: do { say "no"; }
+//	    then: do { say "done"; }
+//
+// isChainStepStart returns true if the current token position looks like
+// the start of a macro chain step:
+//
+//	ident :          e.g.  ifTrue: { }
+//	ident ( ... ) :  e.g.  inRange(0, 100): { }
+func (p *Parser) isChainStepStart() bool {
+	if !p.at(TK_IDENT) {
+		return false
+	}
+	// Simple form: ident :
+	if p.peekN(1).Kind == TK_COLON {
+		return true
+	}
+	// Args form: ident ( ... ) :
+	// Scan ahead past balanced parens to find the colon
+	if p.peekN(1).Kind == TK_LPAREN {
+		depth := 0
+		for i := 1; p.pos+i < len(p.tokens); i++ {
+			k := p.tokens[p.pos+i].Kind
+			if k == TK_LPAREN {
+				depth++
+			} else if k == TK_RPAREN {
+				depth--
+				if depth == 0 {
+					// next token after the closing ) should be :
+					if p.pos+i+1 < len(p.tokens) && p.tokens[p.pos+i+1].Kind == TK_COLON {
+						return true
+					}
+					return false
+				}
+			} else if k == TK_EOF || k == TK_SEMI || k == TK_LBRACE {
+				return false
+			}
+		}
+	}
+	return false
+}
+
 func (p *Parser) tryParseMacroChain(recv Node) Node {
-	if !p.at(TK_IDENT) || p.peekN(1).Kind != TK_COLON {
+	if !p.isChainStepStart() {
 		return nil
 	}
 	sp := p.peek().Span
 	chain := &MacroCallChain{Sp: sp, Recv: recv}
 
-	for p.at(TK_IDENT) && p.peekN(1).Kind == TK_COLON && p.ok {
+	for p.isChainStepStart() && p.ok {
 		stepSp := p.peek().Span
 		macroName := p.advance().Value
-		p.expect(TK_COLON)
 
-		// optional explicit args: macroName(a, b): do { }
+		// optional explicit args before the colon: macroName(a, b): { }
 		var args []Node
 		if p.at(TK_LPAREN) {
 			p.advance()
@@ -820,18 +860,17 @@ func (p *Parser) tryParseMacroChain(recv Node) Node {
 				}
 			}
 			p.expect(TK_RPAREN)
-			// after args, require another colon before do { }
-			if p.at(TK_COLON) {
-				p.advance()
-			}
 		}
+
+		// consume the colon
+		p.expect(TK_COLON)
 
 		// consume optional 'do' keyword
 		if p.at(TK_DO) {
 			p.advance()
 		}
 
-		// now parse the block body { ... }
+		// parse the block body { ... }
 		if !p.at(TK_LBRACE) {
 			errAt(p.peek().Span,
 				fmt.Sprintf("expected a block '{ }' after '%s:'", macroName),

@@ -1559,54 +1559,58 @@ func (e *Emitter) emitUserMacroChainStep(mc *MacroDecl, step MacroChainStep, rec
 	e.ln("{")
 	e.indent++
 
-	// Bind non-block params as local C variables
-	// First non-block param = input (receiver)
-	// Remaining non-block params = explicit args from step.Args
-	explicitArgIdx := 0
-	var blockParamName string // name of the doStmt param
-	var outputVarName string  // name of the output variable (|output| form)
+	// ── Pass 1: classify params ────────────────────────────────────────────
+	// Separate params into:
+	//   - blockParam: the single doStmt/body/block param (at most one)
+	//   - valueParams: all other params in order
+	//     valueParams[0] = input (bound to receiver)
+	//     valueParams[1..] = explicit args from step.Args
+	var blockParamName string
+	var valueParams []Param
+	for _, p := range mc.Params {
+		pt := p.Type
+		if pt == nil {
+			pt = TypAny
+		}
+		if isBlockParam(p.Name, pt) {
+			blockParamName = p.Name // record, don't emit as C var
+		} else {
+			valueParams = append(valueParams, p)
+		}
+	}
 
-	// Declare output variables from |output| form
+	// ── Pass 2: emit output variables (|output| form) ─────────────────────
 	for _, out := range mc.Outputs {
 		retT := mc.RetType
 		if retT == nil || retT.Kind == TyVoid {
 			retT = recvType
 		}
-		e.ln("%s %s = (%s)(%s); /* output var */", cType(retT), out, cType(retT), recvTmp)
-		outputVarName = out
+		e.ln("%s %s = (%s)(%s); /* output */", cType(retT), out, cType(retT), recvTmp)
 	}
-	_ = outputVarName
 
-	for i, p := range mc.Params {
-		pname := p.Name
+	// ── Pass 3: emit value param bindings ─────────────────────────────────
+	for i, p := range valueParams {
 		pt := p.Type
 		if pt == nil {
 			pt = TypAny
 		}
-		if isBlockParam(pname, pt) {
-			// This is the doStmt param — record its name, don't declare as variable
-			blockParamName = pname
-			continue
-		}
-		if i == 0 || (i > 0 && explicitArgIdx == 0 && blockParamName == "") {
-			// First value param = input = receiver
-			e.ln("%s %s = (%s)(%s); /* input */", cType(pt), pname, cType(pt), recvTmp)
+		if i == 0 {
+			// First value param = input = bound to the chain receiver
+			e.ln("%s %s = (%s)(%s); /* input */", cType(pt), p.Name, cType(pt), recvTmp)
 		} else {
-			// Explicit arg
-			if explicitArgIdx < len(step.Args) {
-				e.ln("%s %s = (%s)(%s); /* arg %d */", cType(pt), pname, cType(pt),
-					e.emitExpr(step.Args[explicitArgIdx]), explicitArgIdx+1)
-				explicitArgIdx++
+			// Remaining value params = explicit args from step.Args
+			argIdx := i - 1 // step.Args[0] corresponds to valueParams[1]
+			if argIdx < len(step.Args) {
+				e.ln("%s %s = (%s)(%s); /* arg %d */", cType(pt), p.Name, cType(pt),
+					e.emitExpr(step.Args[argIdx]), argIdx+1)
 			} else {
-				// No arg provided — default to zero
-				e.ln("%s %s = 0; /* arg %d — no value provided */", cType(pt), pname, explicitArgIdx+1)
-				explicitArgIdx++
+				e.ln("%s %s = 0; /* arg %d — not provided, defaulting to 0 */",
+					cType(pt), p.Name, argIdx+1)
 			}
 		}
 	}
 
-	// Emit the macro body, but intercept any ExprStmt/VarDecl that references
-	// the blockParamName ident — replace it with the inlined do{} block.
+	// ── Pass 4: inline the macro body, substituting doStmt → user block ───
 	e.emitMacroBodyWithBlockSubst(mc.Body, blockParamName, step.Body)
 
 	e.indent--
