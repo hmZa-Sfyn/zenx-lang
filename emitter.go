@@ -11,10 +11,11 @@ type Emitter struct {
 	indent     int
 	deferBuf   []string
 	tmpCounter int
+	prog       *Program // reference to program for macro lookup
 }
 
 func Emit(prog *Program) string {
-	e := &Emitter{}
+	e := &Emitter{prog: prog}
 	e.emitProgram(prog)
 	return e.sb.String()
 }
@@ -114,6 +115,9 @@ func (e *Emitter) emitProgram(prog *Program) {
 	}
 
 	for _, mc := range prog.Macros {
+		if isChainMacro(mc) {
+			continue // chain macros are inlined — no C function declaration needed
+		}
 		e.ln("%s %s(%s);", cType(mc.RetType), macroFnName(mc.Name), macroParamStr(mc))
 	}
 	for _, stmt := range prog.TopStmts {
@@ -127,6 +131,9 @@ func (e *Emitter) emitProgram(prog *Program) {
 	e.ln("")
 
 	for _, mc := range prog.Macros {
+		if isChainMacro(mc) {
+			continue // chain macros are inlined at call site — no C function body
+		}
 		e.emitMacroFull(mc)
 		e.ln("")
 	}
@@ -1067,6 +1074,18 @@ func cEscapeString(s string) string {
 
 // ── Macro emission ────────────────────────────────────────────────────────────
 
+// isChainMacro returns true if a macro declaration is a chain macro —
+// i.e. it has at least one block-style param (doStmt, body, block, etc).
+// Chain macros are inlined at call sites and do not get emitted as C functions.
+func isChainMacro(mc *MacroDecl) bool {
+	for _, p := range mc.Params {
+		if isBlockParam(p.Name, p.Type) {
+			return true
+		}
+	}
+	return len(mc.Outputs) > 0 // |output| form is also always a chain macro
+}
+
 func macroFnName(name string) string { return "__zx_macro_" + name }
 
 func macroParamStr(mc *MacroDecl) string {
@@ -1186,14 +1205,18 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 		}
 	case "time":
 		// time!(expr) — measure wall-clock time to evaluate expr, print to stderr, return result
-		tmp := e.tmp()
-		result := e.tmp()
-		t := exprType(b.Args[0])
-		_ = result
-		return fmt.Sprintf(
-			"({ clock_t %s = clock(); %s __r = (%s); fprintf(stderr, \"[time] %%s = %s  (%%ldms)\n\", \"%s\", __r, (long)(clock()-%s)*1000/CLOCKS_PER_SEC); __r; })",
-			tmp, cType(t), arg0, fmtFor(t), arg0, tmp,
-		)
+		if len(b.Args) == 1 {
+			tmp := e.tmp()
+			t := exprType(b.Args[0])
+			ct := cType(t)
+			fmt_spec := fmtFor(t)
+			// Build the C statement-expression carefully
+			inner := fmt.Sprintf(
+				"{ clock_t %s = clock(); %s __r = (%s); fprintf(stderr, \"[time] %s = %s  (%%ldms)\n\", %s, (long)(clock()-%s)*1000/CLOCKS_PER_SEC); __r; }",
+				tmp, ct, arg0, arg0, fmt_spec, "__r", tmp,
+			)
+			return "(" + inner + ")"
+		}
 
 	// ── Type inspection ──────────────────────────────────────────────────────
 
@@ -1465,67 +1488,259 @@ func (e *Emitter) emitTypeof(t *TypeofExpr) string {
 	return cEscapeString(typeName)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Macro chain emission — fully user-defined, no hardcoded names
+//
+//  Given:
+//    macro fn ifTrue |input, doStmt| -> |output| {
+//        output = input;
+//        if input { doStmt; }
+//    }
+//
+//  And call:
+//    score ifTrue: { say "yes!"; }
+//
+//  We inline the macro body as a C block, substituting:
+//    input   → the receiver value (score)
+//    doStmt  → runs the do{} block inline wherever doStmt appears in the body
+//    output  → a fresh tmp variable that receives the result
+//
+//  Special built-in "doStmt" semantics:
+//    In the macro body, writing  doStmt;  runs the user's block inline.
+//    The macro body controls WHEN (and whether) the block runs.
+// ─────────────────────────────────────────────────────────────────────────────
+
 func (e *Emitter) emitMacroChainStmt(chain *MacroCallChain) {
 	recvType := exprType(chain.Recv)
 	if recvType == nil {
 		recvType = TypAny
 	}
-	tmp := e.tmp()
-	e.ln("%s %s = (%s)(%s); /* macro chain receiver */", cType(recvType), tmp, cType(recvType), e.emitExpr(chain.Recv))
+	// Evaluate the receiver once into a tmp variable
+	recvTmp := e.tmp()
+	e.ln("%s %s = (%s)(%s);", cType(recvType), recvTmp, cType(recvType), e.emitExpr(chain.Recv))
 
 	for _, step := range chain.Steps {
-		e.ln("/* chain: %s */", step.Macro)
-		switch step.Macro {
-		case "ifTrue", "if_true", "ifNonZero", "ifOk", "if_non_zero":
-			e.ln("if (%s) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		case "ifFalse", "if_false", "ifZero", "if_zero":
-			e.ln("if (!(%s)) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		case "then", "always", "do_always":
-			e.ln("{")
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		case "ifNil", "if_nil":
-			e.ln("if ((void*)(%s) == NULL) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		case "ifNotNil", "if_not_nil", "ifExists":
-			e.ln("if ((void*)(%s) != NULL) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		case "unless":
-			e.ln("if (!(%s)) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		case "while_true":
-			e.ln("while (%s) {", tmp)
-			e.indent++
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
-		default:
-			e.ln("{")
-			e.indent++
-			e.ln("%s = (%s)%s(%s);", tmp, cType(recvType), macroFnName(step.Macro), tmp)
-			e.emitBlockStmts(step.Body)
-			e.indent--
-			e.ln("}")
+		e.ln("/* macro chain: %s */", step.Macro)
+		// Try to find a user-defined macro with this name
+		mc := e.findMacro(step.Macro)
+		if mc != nil {
+			e.emitUserMacroChainStep(mc, step, recvTmp, recvType)
+		} else {
+			// No user macro found — use the built-in fallback behaviours
+			e.emitBuiltinChainStep(step, recvTmp)
 		}
+	}
+}
+
+// findMacro searches the program's macro list for a macro by name.
+func (e *Emitter) findMacro(name string) *MacroDecl {
+	if e.prog == nil {
+		return nil
+	}
+	for _, mc := range e.prog.Macros {
+		if mc.Name == name {
+			return mc
+		}
+	}
+	return nil
+}
+
+// emitUserMacroChainStep inlines a user-defined macro body at a chain call site.
+//
+// It identifies which params are:
+//   - the "input" param  (first non-block param)  → bound to recvTmp
+//   - a "doStmt" param   (block param by name heuristic) → runs the do{} body inline
+//   - "output" variable (from the |output| form) → fresh tmp, becomes new recvTmp
+//   - explicit args (passed as macroName(a,b): { })
+//
+// The macro body is emitted inside a C scope block, with param names replaced
+// by their bound values via a local variable alias at the top of the block.
+func (e *Emitter) emitUserMacroChainStep(mc *MacroDecl, step MacroChainStep, recvTmp string, recvType *ZXType) {
+	e.ln("{")
+	e.indent++
+
+	// Bind non-block params as local C variables
+	// First non-block param = input (receiver)
+	// Remaining non-block params = explicit args from step.Args
+	explicitArgIdx := 0
+	var blockParamName string // name of the doStmt param
+	var outputVarName string  // name of the output variable (|output| form)
+
+	// Declare output variables from |output| form
+	for _, out := range mc.Outputs {
+		retT := mc.RetType
+		if retT == nil || retT.Kind == TyVoid {
+			retT = recvType
+		}
+		e.ln("%s %s = (%s)(%s); /* output var */", cType(retT), out, cType(retT), recvTmp)
+		outputVarName = out
+	}
+	_ = outputVarName
+
+	for i, p := range mc.Params {
+		pname := p.Name
+		pt := p.Type
+		if pt == nil {
+			pt = TypAny
+		}
+		if isBlockParam(pname, pt) {
+			// This is the doStmt param — record its name, don't declare as variable
+			blockParamName = pname
+			continue
+		}
+		if i == 0 || (i > 0 && explicitArgIdx == 0 && blockParamName == "") {
+			// First value param = input = receiver
+			e.ln("%s %s = (%s)(%s); /* input */", cType(pt), pname, cType(pt), recvTmp)
+		} else {
+			// Explicit arg
+			if explicitArgIdx < len(step.Args) {
+				e.ln("%s %s = (%s)(%s); /* arg %d */", cType(pt), pname, cType(pt),
+					e.emitExpr(step.Args[explicitArgIdx]), explicitArgIdx+1)
+				explicitArgIdx++
+			} else {
+				// No arg provided — default to zero
+				e.ln("%s %s = 0; /* arg %d — no value provided */", cType(pt), pname, explicitArgIdx+1)
+				explicitArgIdx++
+			}
+		}
+	}
+
+	// Emit the macro body, but intercept any ExprStmt/VarDecl that references
+	// the blockParamName ident — replace it with the inlined do{} block.
+	e.emitMacroBodyWithBlockSubst(mc.Body, blockParamName, step.Body)
+
+	e.indent--
+	e.ln("}")
+}
+
+// emitMacroBodyWithBlockSubst emits a macro's body stmts, and whenever it
+// encounters an ExprStmt whose expression is just an Ident named blockParam,
+// it inlines the doBlock's statements there instead.
+//
+// This is how  doStmt;  in the macro body becomes the user's { } block.
+func (e *Emitter) emitMacroBodyWithBlockSubst(body *Block, blockParam string, doBlock *Block) {
+	if body == nil {
+		return
+	}
+	for _, stmt := range body.Stmts {
+		// Check: is this  doStmt;  — the block substitution point?
+		if blockParam != "" {
+			if es, ok := stmt.(*ExprStmt); ok {
+				if id, ok2 := es.Expr.(*Ident); ok2 && id.Name == blockParam {
+					// Inline the user's do{} block here
+					e.ln("/* inline doStmt block */")
+					if doBlock != nil {
+						e.emitBlockStmts(doBlock)
+					}
+					continue
+				}
+				// Also handle: calling the block param as a function call — doStmt()
+				if ce, ok2 := es.Expr.(*CallExpr); ok2 {
+					if id, ok3 := ce.Func.(*Ident); ok3 && id.Name == blockParam {
+						e.ln("/* inline doStmt() block */")
+						if doBlock != nil {
+							e.emitBlockStmts(doBlock)
+						}
+						continue
+					}
+				}
+			}
+		}
+		e.emitStmt(stmt)
+	}
+}
+
+// emitBuiltinChainStep handles macro chain steps with NO user macro definition.
+// These are the fallback built-ins — useful even without an explicit macro fn.
+//
+// Users can OVERRIDE any of these by defining their own macro fn with the same name.
+func (e *Emitter) emitBuiltinChainStep(step MacroChainStep, recvTmp string) {
+	runBlock := func() {
+		if step.Body != nil {
+			e.emitBlockStmts(step.Body)
+		}
+	}
+	switch step.Macro {
+	// ── Conditional ────────────────────────────────────────────────────────
+	case "ifTrue", "if_true", "whenTrue", "onTrue":
+		e.ln("if (%s) {", recvTmp)
+		e.indent++
+		runBlock()
+		e.indent--
+		e.ln("}")
+	case "ifFalse", "if_false", "whenFalse", "onFalse", "unless":
+		e.ln("if (!(%s)) {", recvTmp)
+		e.indent++
+		runBlock()
+		e.indent--
+		e.ln("}")
+	case "ifNil", "if_nil", "whenNil", "onNil":
+		e.ln("if ((void*)(%s) == NULL) {", recvTmp)
+		e.indent++
+		runBlock()
+		e.indent--
+		e.ln("}")
+	case "ifNotNil", "if_not_nil", "whenNotNil", "onNotNil", "ifExists":
+		e.ln("if ((void*)(%s) != NULL) {", recvTmp)
+		e.indent++
+		runBlock()
+		e.indent--
+		e.ln("}")
+	case "ifZero", "if_zero", "whenZero":
+		e.ln("if ((%s) == 0) {", recvTmp)
+		e.indent++
+		runBlock()
+		e.indent--
+		e.ln("}")
+	case "ifNotZero", "if_not_zero", "whenNotZero":
+		e.ln("if ((%s) != 0) {", recvTmp)
+		e.indent++
+		runBlock()
+		e.indent--
+		e.ln("}")
+	case "ifPositive", "if_positive":
+		e.ln("if ((%s) > 0) {", recvTmp)
+		e.indent++
+		runBlock()
+		e.indent--
+		e.ln("}")
+	case "ifNegative", "if_negative":
+		e.ln("if ((%s) < 0) {", recvTmp)
+		e.indent++
+		runBlock()
+		e.indent--
+		e.ln("}")
+	// ── Unconditional ──────────────────────────────────────────────────────
+	case "then", "always", "do_always", "andThen":
+		e.ln("{")
+		e.indent++
+		runBlock()
+		e.indent--
+		e.ln("}")
+	// ── Loops ─────────────────────────────────────────────────────────────
+	case "whileTrue", "while_true":
+		e.ln("while (%s) {", recvTmp)
+		e.indent++
+		runBlock()
+		e.indent--
+		e.ln("}")
+	case "repeat", "times":
+		// recvTmp is the count — run block that many times
+		i := e.tmp()
+		e.ln("for (long long %s = 0; %s < (long long)(%s); %s++) {", i, i, recvTmp, i)
+		e.indent++
+		runBlock()
+		e.indent--
+		e.ln("}")
+	default:
+		// Unknown macro name — call it as a regular function passing the receiver,
+		// then run the block
+		e.ln("{")
+		e.indent++
+		e.ln("%s = %s(%s);", recvTmp, macroFnName(step.Macro), recvTmp)
+		runBlock()
+		e.indent--
+		e.ln("}")
 	}
 }
 

@@ -1046,29 +1046,64 @@ func (tc *TypeChecker) inferMacroChain(e *MacroCallChain) *ZXType {
 	lastType := recvType
 
 	for _, step := range e.Steps {
+		// type-check explicit args if any
+		for _, a := range step.Args {
+			tc.inferExpr(a)
+		}
+
 		mc, ok := tc.macros[step.Macro]
 		if !ok {
-			hint := fmt.Sprintf("declare: macro fn %s |input, doStmt| -> |output| { }", step.Macro)
+			// Not a user-defined macro — check if it's a built-in chain macro.
+			// Built-in chain macros don't need a declaration: ifTrue, ifFalse,
+			// then, unless, repeat, times, whileTrue, etc.
+			if isBuiltinChainMacro(step.Macro) {
+				tc.checkBlock(step.Body)
+				// built-ins don't change the type — pass-through
+				continue
+			}
+			// Unknown — warn but don't hard-error so user can still run
+			hint := fmt.Sprintf("declare it: macro fn %s |input, doStmt| -> |output| { output = input; if input { doStmt; } }", step.Macro)
 			errCode("EM07", step.Sp, fmt.Sprintf("undefined macro %q in chain", step.Macro), hint)
 			tc.ok = false
 			tc.checkBlock(step.Body)
 			continue
 		}
-		if len(mc.Params) == 0 {
-			errCode("EM10", step.Sp,
-				fmt.Sprintf("macro %q used in chain must accept at least one parameter (the piped value)", step.Macro),
-				fmt.Sprintf("add a param: macro fn %s |input| { }", step.Macro))
-			tc.ok = false
-		}
+
+		// User macro found — typecheck the do{} block body
 		tc.checkBlock(step.Body)
-		lastType = mc.RetType
-		if lastType == nil {
-			lastType = TypVoid
+
+		// Determine output type: if macro has outputs, use RetType; otherwise pass-through
+		if mc.RetType != nil && mc.RetType.Kind != TyVoid {
+			lastType = mc.RetType
+		}
+		// If outputs are declared, the macro produces a value of RetType
+		if len(mc.Outputs) > 0 && mc.RetType != nil {
+			lastType = mc.RetType
 		}
 	}
 
 	e.Typ = lastType
 	return lastType
+}
+
+// isBuiltinChainMacro returns true for the built-in chain macro names that
+// the emitter handles without a user macro declaration.
+func isBuiltinChainMacro(name string) bool {
+	switch name {
+	case "ifTrue", "if_true", "whenTrue", "onTrue",
+		"ifFalse", "if_false", "whenFalse", "onFalse", "unless",
+		"ifNil", "if_nil", "whenNil", "onNil",
+		"ifNotNil", "if_not_nil", "whenNotNil", "onNotNil", "ifExists",
+		"ifZero", "if_zero", "whenZero",
+		"ifNotZero", "if_not_zero", "whenNotZero",
+		"ifPositive", "if_positive",
+		"ifNegative", "if_negative",
+		"then", "always", "do_always", "andThen",
+		"whileTrue", "while_true",
+		"repeat", "times":
+		return true
+	}
+	return false
 }
 
 func (tc *TypeChecker) inferBin(e *BinExpr) *ZXType {

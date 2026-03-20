@@ -317,7 +317,7 @@ func (p *Parser) parseImport() *ImportDecl {
 	case p.at(TK_STRING):
 		raw := p.advance().Value
 		if raw == "" {
-			errAt(sp, "import path cannot be empty", "provide a header name: use \"stdio.h\"")
+			errAt(sp, "import path cannot be empty", `provide a header name: use "stdio.h"`)
 			p.ok = false
 			return imp
 		}
@@ -341,7 +341,14 @@ func (p *Parser) parseImport() *ImportDecl {
 
 	default:
 		errAt(sp, fmt.Sprintf("unexpected token %q after import/use", p.peek().Value),
-			"valid forms:\n"+"  import std/net/socket\n"+"  import std/net/socket (socServ)\n"+"  import _/a\n"+"  import _/a (ModName)\n"+"  import __/a\n"+"  use std::str\n"+"  use \"stdio.h\"\n")
+`valid forms:
+  import std/net/socket
+  import std/net/socket (socServ)
+  import _/a
+  import _/a (ModName)
+  import __/a
+  use std::str
+  use "stdio.h"`)
 		p.ok = false
 	}
 
@@ -424,8 +431,7 @@ func (p *Parser) parseLocalImport(sp Span, imp *ImportDecl) {
 }
 
 // parseEnvImport handles:  std/net/socket   std/net/socket (socServ)
-//
-//	usr/mylib/util   usr/mylib/util (Helper)
+//                          usr/mylib/util   usr/mylib/util (Helper)
 func (p *Parser) parseEnvImport(sp Span, imp *ImportDecl) {
 	prefix := p.advance().Value // "std" or "usr"
 
@@ -461,7 +467,7 @@ func (p *Parser) parseEnvImport(sp Span, imp *ImportDecl) {
 	}
 
 	imp.IsFileImport = true
-	imp.IsLocal = true // legacy compat
+	imp.IsLocal = true   // legacy compat
 	imp.IsStd = (prefix == "std")
 	imp.IsUser = (prefix != "std")
 	imp.EnvPrefix = envVar
@@ -780,28 +786,64 @@ func (p *Parser) parseBangMacroCall() Node {
 	}
 }
 
+// tryParseMacroChain attempts to parse a macro chain expression:
+//
+//   value macroName: do { body }
+//   value macroName: { body }          // do is optional
+//   value macroName(arg1, arg2): do { body }   // explicit args + block
+//
+// Multiple steps chain naturally:
+//   value
+//       ifTrue: do { say "yes"; }
+//       ifFalse: do { say "no"; }
+//       then: do { say "done"; }
 func (p *Parser) tryParseMacroChain(recv Node) Node {
 	if !p.at(TK_IDENT) || p.peekN(1).Kind != TK_COLON {
 		return nil
 	}
 	sp := p.peek().Span
 	chain := &MacroCallChain{Sp: sp, Recv: recv}
+
 	for p.at(TK_IDENT) && p.peekN(1).Kind == TK_COLON && p.ok {
 		stepSp := p.peek().Span
 		macroName := p.advance().Value
 		p.expect(TK_COLON)
-		if !p.at(TK_DO) {
+
+		// optional explicit args: macroName(a, b): do { }
+		var args []Node
+		if p.at(TK_LPAREN) {
+			p.advance()
+			for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
+				args = append(args, p.parseExpr())
+				if p.at(TK_COMMA) {
+					p.advance()
+				}
+			}
+			p.expect(TK_RPAREN)
+			// after args, require another colon before do { }
+			if p.at(TK_COLON) {
+				p.advance()
+			}
+		}
+
+		// consume optional 'do' keyword
+		if p.at(TK_DO) {
+			p.advance()
+		}
+
+		// now parse the block body { ... }
+		if !p.at(TK_LBRACE) {
 			errAt(p.peek().Span,
-				fmt.Sprintf("expected 'do { }' after '%s:'", macroName),
-				fmt.Sprintf("write: %s: do { /* your code */ }", macroName))
+				fmt.Sprintf("expected a block '{ }' after '%s:'", macroName),
+				fmt.Sprintf("write: %s: { /* your code */ }  or  %s: do { }", macroName, macroName))
 			p.ok = false
 			break
 		}
-		p.advance()
 		body := p.parseBlock()
 		chain.Steps = append(chain.Steps, MacroChainStep{
 			Sp:    stepSp,
 			Macro: macroName,
+			Args:  args,
 			Body:  body,
 		})
 	}

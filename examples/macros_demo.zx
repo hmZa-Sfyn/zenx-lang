@@ -1,0 +1,237 @@
+// macros_demo.zx — fully user-defined chain macros
+// Run: ./zxc examples/macros_demo.zx
+
+import "stdio.h"
+extern fn printf(fmt: str, ...) -> int;
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Define your own chain macros.
+//
+//  Syntax:
+//    macro fn NAME |input, doStmt| -> |output| { body }
+//
+//  Inside the body:
+//    input   → the value piped into the chain
+//    doStmt  → writing  doStmt;  inlines the user's  do { }  block
+//    output  → the result value passed to the next chain step
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Run the block if input is truthy (non-zero)
+macro fn ifTrue |input, doStmt| -> |output| {
+    output = input;
+    if input {
+        doStmt;
+    }
+}
+
+// Run the block if input is falsy (zero / false)
+macro fn ifFalse |input, doStmt| -> |output| {
+    output = input;
+    if !input {
+        doStmt;
+    }
+}
+
+// Always run the block, pass value through
+macro fn then |input, doStmt| -> |output| {
+    output = input;
+    doStmt;
+}
+
+// Run block if input > 0
+macro fn ifPositive |input, doStmt| -> |output| {
+    output = input;
+    if input > 0 {
+        doStmt;
+    }
+}
+
+// Run block if input == 0
+macro fn ifZero |input, doStmt| -> |output| {
+    output = input;
+    if input == 0 {
+        doStmt;
+    }
+}
+
+// Print the value with a label, pass through unchanged
+macro fn tap |input, doStmt| -> |output| {
+    output = input;
+    printf("[tap] value = %lld\n", input);
+    doStmt;
+}
+
+// Run block N times where N = input
+macro fn repeat |input, doStmt| -> |output| {
+    output = input;
+    for i in 0..input {
+        doStmt;
+    }
+}
+
+// Run block while input > 0, decrement each iteration
+macro fn countdown |input, doStmt| -> |output| {
+    output = input;
+    while output > 0 {
+        doStmt;
+        output = output - 1;
+    }
+}
+
+// Double the value, then run the block with the new value
+macro fn doubled |input, doStmt| -> |output| {
+    output = input * 2;
+    doStmt;
+}
+
+// Run block only if input is in range [lo, hi]
+// Uses explicit args:  inRange(lo, hi): { body }
+macro fn inRange |input, lo: int, hi: int, doStmt| -> |output| {
+    output = input;
+    if input >= lo && input <= hi {
+        doStmt;
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Main — show every macro in action
+// ─────────────────────────────────────────────────────────────────────────────
+
+say "── ifTrue / ifFalse ────────────────────────";
+my score: int = 85;
+
+score
+    ifTrue: {
+        printf("score %lld is truthy\n", score);
+    }
+    ifFalse: {
+        say "this won't print";
+    }
+    then: {
+        say "always runs after";
+    }
+
+
+say "";
+say "── ifPositive / ifZero ─────────────────────";
+my balance: int = 42;
+
+balance
+    ifPositive: {
+        printf("account balance: %lld\n", balance);
+    }
+    ifZero: {
+        say "account is empty";
+    }
+
+my zero_val: int = 0;
+zero_val
+    ifZero: {
+        say "zero_val is zero!";
+    }
+    ifPositive: {
+        say "this won't print";
+    }
+
+
+say "";
+say "── tap ─────────────────────────────────────";
+my x: int = 7;
+
+x
+    tap: {
+        // just observing — tap already printed the value
+        say "inspected x";
+    }
+    doubled: {
+        say "and now it's doubled";
+    }
+    tap: {
+        say "inspected after doubling";
+    }
+
+
+say "";
+say "── repeat ──────────────────────────────────";
+my count: int = 4;
+
+count
+    repeat: {
+        say "hello!";
+    }
+
+
+say "";
+say "── countdown ───────────────────────────────";
+my n: int = 3;
+
+n
+    countdown: {
+        printf("counting... %lld\n", n);
+    }
+
+
+say "";
+say "── doubled ─────────────────────────────────";
+my val: int = 5;
+
+val
+    doubled: {
+        printf("doubled: %lld\n", val);
+    }
+    doubled: {
+        printf("doubled again: %lld\n", val);
+    }
+
+
+say "";
+say "── inRange (explicit args) ──────────────────";
+my temp: int = 25;
+
+// inRange takes explicit args:  inRange(lo, hi): { }
+temp
+    inRange(0, 100): {
+        printf("temp %lld is in [0, 100]\n", temp);
+    }
+    inRange(30, 100): {
+        say "this won't print — 25 not in [30,100]";
+    }
+    then: {
+        say "range check complete";
+    }
+
+
+say "";
+say "── chaining many steps ─────────────────────";
+my level: int = 10;
+
+level
+    tap: { say "starting chain"; }
+    ifPositive: { say "level is positive"; }
+    doubled: { printf("after doubling: %lld\n", level); }
+    ifTrue: { say "still truthy"; }
+    then: { say "chain done!"; }
+
+
+say "";
+say "── built-in chain macros (no declaration needed) ───";
+// These work without any macro fn declaration:
+// ifTrue, ifFalse, then, unless, repeat, times, whileTrue,
+// ifNil, ifNotNil, ifZero, ifNotZero, ifPositive, ifNegative, etc.
+
+my flag: bool = true;
+
+flag
+    ifTrue: { say "built-in ifTrue works!"; }
+    then: { say "built-in then works!"; }
+
+my ptr: any = 0;
+ptr
+    ifNil: { say "ptr is null (ifNil)"; }
+    ifNotNil: { say "this won't print"; }
+
+
+say "";
+say "── All macros work! ────────────────────────";
