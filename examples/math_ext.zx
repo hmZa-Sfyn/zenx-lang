@@ -1,26 +1,28 @@
-// mylib/math_ext.zx — extra math utilities
-// Import with: import _/mylib/math_ext
+mod math_stuff {
+    // Import with: import _/math_ext (math_stuff)
 
-fn gcd(a: int, b: int) -> int {
-    while b != 0 {
-        let t = b;
-        b = a % b;
-        a = t;
+    fn gcd(a: int, b: int) -> int {
+        while b != 0 {
+            let t = b;
+            b = a % b;
+            a = t;
+        }
+        return a;
     }
-    return a;
-}
 
-fn lcm(a: int, b: int) -> int {
-    return a / gcd(a, b) * b;
-}
+    fn lcm(a: int, b: int) -> int {
+        return a / math_stuff->gcd(a, b) * b;
+    }
 
-fn abs_val(x: int) -> int {
-    if x < 0 { return -x; }
-    return x;
-}
+    fn abs_val(x: int) -> int {
+        if x < 0 { return -x; }
+        return x;
+    }
 
-fn sum_range(from: int, to: int) -> int {
-    let s = 0;
-    for i in from..to+1 { s += i; }
-    return s;
+    fn sum_range(from: int, to: int) -> int {
+        let s = 0;
+        for i in from..to+1 { s += i; }
+        return s;
+    }
+
 }

@@ -18,39 +18,6 @@ use "string.h"      // use and import are interchangeable for C headers
 //   __ = parent directory  (../file.zx)
 //   ___ = grandparent      (../../file.zx)
 
-import _/math_ext    // imports ALL functions from ./mylib/math_ext.zx
-import _/logger      // imports ALL (including mod Logger + plain fns)
+import _/math_ext (math_stuff)
 
-// ── 4. Import a specific named mod from a file ───────────────────────────────
-//   import _/path/file (ModName)   → only pulls in mod ModName { }
-// (already imported above, shown for clarity — would be a duplicate here)
-// import _/mylib/logger (Logger)
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Main program — uses everything imported above
-// ─────────────────────────────────────────────────────────────────────────────
-
-log_info("ZX imports demo starting");
-
-// From std::math
-printf("sqrt(144) = %g\n", sqrt(144.0));
-printf("pow(2, 10) = %g\n", pow(2.0, 10.0));
-
-// From std::str
-printf("str_len('hello') = %lld\n", str_len("hello"));
-printf("str_cmp('a','b') = %lld\n", str_cmp("a", "b"));
-
-// From std::conv
-printf("int_to_str(42) = %s\n", int_to_str(42));
-
-// From ./mylib/math_ext.zx
-printf("gcd(48, 18)     = %lld\n", gcd(48, 18));
-printf("lcm(4, 6)       = %lld\n", lcm(4, 6));
-printf("abs_val(-99)    = %lld\n", abs_val(-99));
-printf("sum_range(1,10) = %lld\n", sum_range(1, 10));
-
-// From ./mylib/logger.zx (plain functions)
-log_warn("this is a warning");
-log_error("something failed");
-
-log_info("done!");
+say math_stuff->lcm(234,7770);
