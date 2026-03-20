@@ -1617,40 +1617,164 @@ func (e *Emitter) emitUserMacroChainStep(mc *MacroDecl, step MacroChainStep, rec
 	e.ln("}")
 }
 
-// emitMacroBodyWithBlockSubst emits a macro's body stmts, and whenever it
-// encounters an ExprStmt whose expression is just an Ident named blockParam,
-// it inlines the doBlock's statements there instead.
+// emitMacroBodyWithBlockSubst emits a macro body with doStmt substitution.
 //
-// This is how  doStmt;  in the macro body becomes the user's { } block.
+// It walks every statement recursively. Wherever it encounters:
+//
+//	doStmt;       (ExprStmt with bare Ident)
+//	doStmt();     (ExprStmt with CallExpr of that ident)
+//
+// it inlines the user's do{} block in place.
+// All compound statements (if/while/for/unless/match/try/block) are
+// recursed into so substitution works at any nesting depth.
 func (e *Emitter) emitMacroBodyWithBlockSubst(body *Block, blockParam string, doBlock *Block) {
 	if body == nil {
 		return
 	}
 	for _, stmt := range body.Stmts {
-		// Check: is this  doStmt;  — the block substitution point?
-		if blockParam != "" {
-			if es, ok := stmt.(*ExprStmt); ok {
-				if id, ok2 := es.Expr.(*Ident); ok2 && id.Name == blockParam {
-					// Inline the user's do{} block here
-					e.ln("/* inline doStmt block */")
+		e.emitStmtWithSubst(stmt, blockParam, doBlock)
+	}
+}
+
+// emitStmtWithSubst emits one statement, substituting blockParam→doBlock
+// everywhere — including inside nested control flow blocks.
+func (e *Emitter) emitStmtWithSubst(stmt Node, bp string, doBlock *Block) {
+	if stmt == nil {
+		return
+	}
+
+	// ── Substitution point: doStmt; or doStmt(); ─────────────────────────
+	if bp != "" {
+		if es, ok := stmt.(*ExprStmt); ok {
+			// bare: doStmt;
+			if id, ok2 := es.Expr.(*Ident); ok2 && id.Name == bp {
+				if doBlock != nil {
+					e.emitBlockStmts(doBlock)
+				}
+				return
+			}
+			// call: doStmt();
+			if ce, ok2 := es.Expr.(*CallExpr); ok2 {
+				if id, ok3 := ce.Func.(*Ident); ok3 && id.Name == bp {
 					if doBlock != nil {
 						e.emitBlockStmts(doBlock)
 					}
-					continue
-				}
-				// Also handle: calling the block param as a function call — doStmt()
-				if ce, ok2 := es.Expr.(*CallExpr); ok2 {
-					if id, ok3 := ce.Func.(*Ident); ok3 && id.Name == blockParam {
-						e.ln("/* inline doStmt() block */")
-						if doBlock != nil {
-							e.emitBlockStmts(doBlock)
-						}
-						continue
-					}
+					return
 				}
 			}
 		}
+	}
+
+	// ── Compound statements — recurse into their blocks ───────────────────
+	switch s := stmt.(type) {
+
+	case *IfStmt:
+		e.ln("if (%s) {", e.emitExpr(s.Cond))
+		e.indent++
+		e.emitBlockWithSubst(s.Then, bp, doBlock)
+		e.indent--
+		for _, el := range s.Elifs {
+			e.ln("} else if (%s) {", e.emitExpr(el.Cond))
+			e.indent++
+			e.emitBlockWithSubst(el.Body, bp, doBlock)
+			e.indent--
+		}
+		if s.Else != nil {
+			e.ln("} else {")
+			e.indent++
+			e.emitBlockWithSubst(s.Else, bp, doBlock)
+			e.indent--
+		}
+		e.ln("}")
+
+	case *UnlessStmt:
+		e.ln("if (!(%s)) {", e.emitExpr(s.Cond))
+		e.indent++
+		e.emitBlockWithSubst(s.Body, bp, doBlock)
+		e.indent--
+		if s.Else != nil {
+			e.ln("} else {")
+			e.indent++
+			e.emitBlockWithSubst(s.Else, bp, doBlock)
+			e.indent--
+		}
+		e.ln("}")
+
+	case *WhileStmt:
+		e.ln("while (%s) {", e.emitExpr(s.Cond))
+		e.indent++
+		e.emitBlockWithSubst(s.Body, bp, doBlock)
+		e.indent--
+		e.ln("}")
+
+	case *UntilStmt:
+		e.ln("while (!(%s)) {", e.emitExpr(s.Cond))
+		e.indent++
+		e.emitBlockWithSubst(s.Body, bp, doBlock)
+		e.indent--
+		e.ln("}")
+
+	case *ForRangeStmt:
+		from := e.emitExpr(s.From)
+		to := e.emitExpr(s.To)
+		step := "1"
+		if s.Step != nil {
+			step = e.emitExpr(s.Step)
+		}
+		e.ln("for (long long %s = %s; %s < %s; %s += %s) {",
+			s.Var, from, s.Var, to, s.Var, step)
+		e.indent++
+		e.emitBlockWithSubst(s.Body, bp, doBlock)
+		e.indent--
+		e.ln("}")
+
+	case *Block:
+		e.ln("{")
+		e.indent++
+		e.emitBlockWithSubst(s, bp, doBlock)
+		e.indent--
+		e.ln("}")
+
+	case *TryCatchStmt:
+		e.ln("{ /* try */")
+		e.indent++
+		e.ln("errno = 0;")
+		if s.Try != nil {
+			e.emitBlockWithSubst(s.Try, bp, doBlock)
+		}
+		e.indent--
+		if s.Catch != nil {
+			e.ln("if (errno != 0) { /* catch */")
+			e.indent++
+			if s.ErrVar != "" {
+				e.ln("int %s = errno;", s.ErrVar)
+			}
+			e.emitBlockWithSubst(s.Catch, bp, doBlock)
+			e.indent--
+			e.ln("}")
+		}
+		if s.Finally != nil {
+			e.ln("{ /* finally */")
+			e.indent++
+			e.emitBlockWithSubst(s.Finally, bp, doBlock)
+			e.indent--
+			e.ln("}")
+		}
+		e.ln("}")
+
+	default:
+		// Leaf statement — no nested blocks, emit normally
 		e.emitStmt(stmt)
+	}
+}
+
+// emitBlockWithSubst emits a block's statements with doStmt substitution.
+func (e *Emitter) emitBlockWithSubst(b *Block, bp string, doBlock *Block) {
+	if b == nil {
+		return
+	}
+	for _, stmt := range b.Stmts {
+		e.emitStmtWithSubst(stmt, bp, doBlock)
 	}
 }
 
