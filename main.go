@@ -28,15 +28,23 @@ func printUsage() {
   zxc <file.zx>              compile and run
   zxc build <file.zx>        compile to binary
   zxc build <file.zx> -o x   compile to a named binary
+  zxc build <file.zx> -O2    compile with optimizations
   zxc emit  <file.zx>        print the generated C source
   zxc check <file.zx>        type-check only, no output
   zxc test  <file.zx>        run all @test-annotated functions
+  zxc repl                   start the interactive REPL
   zxc -c "code"              run a one-liner snippet
   zxc mods                   list all stdlib modules
   zxc version                print version
 
 %sOPTIONS:%s
-  -o <n>    output binary name (used with build)
+  -o <name>   output binary name (used with build)
+  -O0         no optimization (default)
+  -O1         basic optimizations
+  -O2         full optimizations (recommended for release)
+  -O3         aggressive optimizations (may increase binary size)
+  -Os         optimize for binary size
+  -Oz         optimize aggressively for binary size (clang only)
   -v          verbose: print generated C before compiling
   -c "code"   execute a one-liner ZX snippet
 `,
@@ -69,8 +77,9 @@ func main() {
 	args := os.Args[1:]
 
 	if len(args) == 0 {
-		printUsage()
-		os.Exit(0)
+		// no arguments → drop into the REPL
+		RunREPL()
+		return
 	}
 
 	switch args[0] {
@@ -83,6 +92,9 @@ func main() {
 	case "mods", "modules", "stdlib":
 		printMods()
 		return
+	case "repl", "--repl", "-i":
+		RunREPL()
+		return
 	}
 
 	// ── parse subcommand + flags ───────────────────────────────────────────────
@@ -90,6 +102,7 @@ func main() {
 	outBin := ""
 	verbose := false
 	oneLiner := ""
+	optLevel := "" // "" = no -O flag passed → gcc defaults to -O0
 	var sourceFile string
 
 	i := 0
@@ -108,6 +121,12 @@ func main() {
 			} else {
 				fmt.Fprintln(os.Stderr, colorRed+"zxc: -o requires a filename"+colorReset)
 				os.Exit(1)
+			}
+		case "-O", "-O0", "-O1", "-O2", "-O3", "-Os", "-Oz":
+			optLevel = args[i]
+			// -O alone means -O1 (same as gcc convention)
+			if optLevel == "-O" {
+				optLevel = "-O1"
 			}
 		case "-v", "--verbose":
 			verbose = true
@@ -177,7 +196,6 @@ func main() {
 	// ── check only ────────────────────────────────────────────────────────────
 	if cmd == "check" {
 		fmt.Printf("\n%s%s✓%s  %s — no errors found\n\n", colorBold, colorGreen, colorReset, sourceFile)
-		// also list discovered tests as info
 		tests := CollectTests(program)
 		if len(tests) > 0 {
 			fmt.Printf("  %s%d @test function(s) found — run 'zxc test %s' to execute them%s\n\n",
@@ -228,6 +246,45 @@ func main() {
 		"-Wno-unused-function",
 	}
 
+	// ── optimization level ────────────────────────────────────────────────────
+	// Default: -O0 (no optimizations, fast compile, best for debug)
+	// The user chooses via -O0 / -O1 / -O2 / -O3 / -Os / -Oz
+	if optLevel == "" {
+		gccArgs = append(gccArgs, "-O0")
+	} else {
+		gccArgs = append(gccArgs, optLevel)
+	}
+
+	// For release-level optimization, add extra flags that consistently help:
+	//   -fomit-frame-pointer  — frees a register in hot code
+	//   -fstrict-aliasing     — enables alias-based optimizations (safe: our
+	//                           generated C never violates strict aliasing)
+	//   -funroll-loops        — unroll small counted loops (good for -O3)
+	switch optLevel {
+	case "-O2":
+		gccArgs = append(gccArgs,
+			"-fomit-frame-pointer",
+			"-fstrict-aliasing",
+		)
+	case "-O3":
+		gccArgs = append(gccArgs,
+			"-fomit-frame-pointer",
+			"-fstrict-aliasing",
+			"-funroll-loops",
+		)
+	case "-Os", "-Oz":
+		gccArgs = append(gccArgs,
+			"-ffunction-sections",
+			"-fdata-sections",
+			"-Wl,--gc-sections",
+		)
+	}
+
+	// In verbose mode, tell the user what optimization is active
+	if verbose && optLevel != "" {
+		fmt.Printf("%s  optimization:%s %s\n", colorDim, colorReset, optLevel)
+	}
+
 	gccOut, err := exec.Command("gcc", gccArgs...).CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n%s%s gcc compilation error%s — the generated C has a problem:\n\n",
@@ -241,8 +298,12 @@ func main() {
 	}
 
 	if cmd == "build" {
-		fmt.Printf("\n%s%s✓%s  built → %s%s%s\n\n",
-			colorBold, colorGreen, colorReset, colorCyan, outBin, colorReset)
+		optTag := ""
+		if optLevel != "" {
+			optTag = fmt.Sprintf(" %s(%s)%s", colorDim, optLevel, colorReset)
+		}
+		fmt.Printf("\n%s%s✓%s  built → %s%s%s%s\n\n",
+			colorBold, colorGreen, colorReset, colorCyan, outBin, colorReset, optTag)
 		return
 	}
 
