@@ -278,180 +278,302 @@ func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 	return mb
 }
 
-// parseImport handles all import forms:
-//   import _/logger (Logger)    → local path with slash separator
-//   import _::logger (Logger)   → local path with :: separator
-//   import __/sibling           → one level up
-//   import std/net/soc          → env-var based path
-//   use std::str                → stdlib module
-//   use "stdio.h"               → raw C header
+// ─────────────────────────────────────────────────────────────────────────────
+//  Import parsing
+//
+//  Supported syntax (complete):
+//
+//  use "stdio.h"                     → raw C header include
+//  use std::str                      → built-in ZX stdlib module (inline, no file)
+//
+//  import std/net/socket             → $ZENX_STD_PATH/net/socket.zx, import all
+//  import std/net/socket (socServ)   → same file, import only mod socServ
+//  import usr/mylib/util             → $ZENX_USR_PATH/mylib/util.zx, import all
+//  import usr/mylib/util (Helper)    → same file, import only mod Helper
+//
+//  import _/a                        → ./a.zx, import all
+//  import _/a/b                      → ./a/b.zx, import all
+//  import _/a (Mod)                  → ./a.zx, import only mod Mod
+//  import __/a                       → ../a.zx, import all
+//  import __/a (Mod)                 → ../a.zx, import only mod Mod
+//  import ___/a                      → ../../a.zx, import all
+// ─────────────────────────────────────────────────────────────────────────────
+
 func (p *Parser) parseImport() *ImportDecl {
 	sp := p.peek().Span
-	p.advance() // import or use
-	var imp ImportDecl
-	imp.Sp = sp
+	kw := p.advance() // consume 'import' or 'use'
+	_ = kw
+	imp := &ImportDecl{Sp: sp}
 
-	if p.at(TK_STRING) {
-		rawPath := p.advance().Value
-		if strings.HasPrefix(rawPath, "./") || strings.HasPrefix(rawPath, "../") {
-			if p.at(TK_DCOLON) {
-				p.advance()
-				modName := p.expect(TK_IDENT).Value
-				localPath := filepath.Join(p.srcDir, strings.TrimSuffix(rawPath, "/"), modName+".zx")
-				imp.IsLocal = true
-				imp.LocalFile = localPath
-				imp.Module = modName
-			} else {
-				imp.Path = rawPath
-			}
-		} else {
-			imp.Path = rawPath
-		}
-	} else if p.at(TK_IDENT) || p.at(TK_TYPE_STR) {
-		first := p.peek().Value
+	if p.at(TK_EOF) {
+		errAt(sp, "unexpected end of file after import/use",
+			"expected a module name, path, or string literal")
+		p.ok = false
+		return imp
+	}
 
-		// FIX: detect _/path or __/path local imports.
-		// The _ ident is followed by TK_SLASH (/) or TK_DCOLON (::).
-		// We dispatch to parseLocalPathImport which handles both separators.
-		if len(first) > 0 && first[0] == '_' {
-			imp = p.parseLocalPathImport(sp)
-			return &imp
+	switch {
+	// ── use "stdio.h" — raw C header ─────────────────────────────────────────
+	case p.at(TK_STRING):
+		raw := p.advance().Value
+		if raw == "" {
+			errAt(sp, "import path cannot be empty", "provide a header name: use \"stdio.h\"")
+			p.ok = false
+			return imp
 		}
+		imp.Path = raw
+		imp.IsCHeader = true
+		// legacy compat
+		imp.IsLocal = false
 
-		// std/net/soc or usr/mylib/util — env-var based path
-		if (first == "std" || first == "usr") && p.peekN(1).Kind == TK_SLASH {
-			imp = p.parseEnvPathImport(sp)
-			return &imp
-		}
+	// ── underscore-prefix: _/a  __/a  ___/a ─────────────────────────────────
+	case p.at(TK_IDENT) && len(p.peek().Value) > 0 && p.peek().Value[0] == '_':
+		p.parseLocalImport(sp, imp)
 
-		// std::module or plain module name
-		name := p.advance().Value
-		for p.at(TK_DCOLON) {
-			p.advance()
-			next := p.peek()
-			if next.Kind == TK_IDENT || (next.Kind >= TK_TYPE_INT && next.Kind <= TK_TYPE_ANY) {
-				name += "::" + p.advance().Value
-			} else {
-				break
-			}
-		}
-		imp.Module = name
-		imp.IsStd = strings.HasPrefix(name, "std::")
-		imp.IsUser = !imp.IsStd
+	// ── env-var prefix: std/x/y  usr/x/y ────────────────────────────────────
+	case p.at(TK_IDENT) && (p.peek().Value == "std" || p.peek().Value == "usr") &&
+		p.peekN(1).Kind == TK_SLASH:
+		p.parseEnvImport(sp, imp)
 
-		if imp.IsStd && LookupStdModule(name) == nil {
-			warnAt(sp, fmt.Sprintf("unknown stdlib module %q", name),
-				"known: std::str std::io std::math std::sys std::fs std::cmd std::mem std::conv std::time std::net")
-		}
-	} else {
-		errAt(sp, "expected a string path or module name after import/use",
-			"examples: \n use std::str \n use \"stdio.h\" \n import _/utils/logger \n import std/net/soc (socServer)")
+	// ── use std::str — built-in ZX stdlib modules ────────────────────────────
+	case p.at(TK_IDENT) || p.at(TK_TYPE_STR):
+		p.parseStdModuleImport(sp, imp)
+
+	default:
+		errAt(sp, fmt.Sprintf("unexpected token %q after import/use", p.peek().Value),
+			"valid forms:\n"+"  import std/net/socket\n"+"  import std/net/socket (socServ)\n"+"  import _/a\n"+"  import _/a (ModName)\n"+"  import __/a\n"+"  use std::str\n"+"  use \"stdio.h\"")
 		p.ok = false
 	}
 
-	if p.at(TK_LPAREN) {
-		p.advance()
-		imp.Alias = p.expect(TK_IDENT).Value
-		imp.ImportAll = false
-		p.expect(TK_RPAREN)
-	} else if p.at(TK_AS) {
-		p.advance()
-		imp.Alias = p.expect(TK_IDENT).Value
-	} else if imp.IsLocal {
-		imp.ImportAll = true
-	}
-	p.eatSemi()
-	return &imp
-}
-
-func (p *Parser) parseEnvPathImport(sp Span) ImportDecl {
-	var imp ImportDecl
-	imp.Sp = sp
-	prefix := p.advance().Value // "std" or "usr"
-	var segments []string
-	for p.at(TK_SLASH) {
-		p.advance()
-		if p.at(TK_IDENT) {
-			segments = append(segments, p.advance().Value)
-		} else {
-			break
-		}
-	}
-	baseEnv := ""
-	switch prefix {
-	case "std":
-		baseEnv = "ZX_STD"
-	case "usr":
-		baseEnv = "ZX_USR"
-	default:
-		baseEnv = "ZX_" + strings.ToUpper(prefix)
-	}
-	imp.IsLocal = true
-	imp.IsUser = (prefix != "std")
-	if len(segments) > 0 {
-		imp.LocalFile = filepath.Join(append([]string{"$" + baseEnv}, segments...)...) + ".zx"
-		imp.Module = segments[len(segments)-1]
-	}
-	if p.at(TK_LPAREN) {
-		p.advance()
-		imp.Alias = p.expect(TK_IDENT).Value
-		imp.ImportAll = false
-		p.expect(TK_RPAREN)
-	} else {
-		imp.ImportAll = true
-	}
-	imp.Path = baseEnv
 	p.eatSemi()
 	return imp
 }
 
-// parseLocalPathImport handles  _/a/b  __/a  ___/a  with / or :: as separator.
-// A single _ = current dir, __ = one level up, ___ = two levels up, etc.
-func (p *Parser) parseLocalPathImport(sp Span) ImportDecl {
-	var imp ImportDecl
-	imp.Sp = sp
+// parseLocalImport handles:  _/a   __/a/b   ___/c
+// _ = current dir (0 ups), __ = 1 up, ___ = 2 ups, etc.
+// Separators: / (TK_SLASH) or :: (TK_DCOLON) — both accepted.
+func (p *Parser) parseLocalImport(sp Span, imp *ImportDecl) {
+	seg := p.advance().Value // "_", "__", "___", ...
 
-	seg := p.advance().Value // e.g. "_", "__", "___"
+	// count underscores; subtract 1 because single _ = current dir (0 ups)
 	ups := 0
 	for _, c := range seg {
 		if c == '_' {
 			ups++
 		}
 	}
-	ups-- // one underscore = current dir (0 ups)
+	ups--
 
-	var segments []string
-	for i := 0; i < ups; i++ {
-		segments = append(segments, "..")
+	if ups < 0 {
+		errAt(sp, "import path must start with _ (current dir) or __ (parent), ___  (grandparent), etc.",
+			"example: import _/utils  or  import __/shared")
+		p.ok = false
+		return
 	}
 
-	// Accept both / (TK_SLASH) and :: (TK_DCOLON) as path separators
+	// must be followed by a separator then at least one path segment
+	if !p.at(TK_SLASH) && !p.at(TK_DCOLON) {
+		errAt(sp, fmt.Sprintf("expected '/' or '::' after %q in import path", seg),
+			fmt.Sprintf("example: import %s/modulename", seg))
+		p.ok = false
+		return
+	}
+
+	var segments []string
 	for (p.at(TK_SLASH) || p.at(TK_DCOLON)) && p.ok {
+		sepSp := p.peek().Span
+		p.advance() // consume / or ::
+		if !p.at(TK_IDENT) {
+			errAt(sepSp, "expected a module/directory name after '/'",
+				"example: import _/utils  or  import __/net/socket")
+			p.ok = false
+			return
+		}
+		seg := p.advance().Value
+		if seg == "" {
+			errAt(sepSp, "path segment cannot be empty", "")
+			p.ok = false
+			return
+		}
+		segments = append(segments, seg)
+	}
+
+	if len(segments) == 0 {
+		errAt(sp, "import path must have at least one segment after the prefix",
+			"example: import _/mymodule  or  import __/shared/utils")
+		p.ok = false
+		return
+	}
+
+	// build the ".." prefix for ups, then join with segments
+	var pathParts []string
+	for i := 0; i < ups; i++ {
+		pathParts = append(pathParts, "..")
+	}
+	pathParts = append(pathParts, segments...)
+
+	imp.IsFileImport = true
+	imp.IsLocal = true // legacy compat
+	imp.UpsCount = ups
+	imp.Segments = segments
+	imp.LocalFile = filepath.Join(append([]string{p.srcDir}, pathParts...)...) + ".zx"
+	imp.Module = segments[len(segments)-1]
+
+	// optional: (ModName) to import a specific mod from the file
+	p.parseImportModSelector(sp, imp, imp.LocalFile)
+}
+
+// parseEnvImport handles:  std/net/socket   std/net/socket (socServ)
+//
+//	usr/mylib/util   usr/mylib/util (Helper)
+func (p *Parser) parseEnvImport(sp Span, imp *ImportDecl) {
+	prefix := p.advance().Value // "std" or "usr"
+
+	var segments []string
+	for p.at(TK_SLASH) && p.ok {
+		sepSp := p.peek().Span
+		p.advance() // consume /
+		if !p.at(TK_IDENT) {
+			errAt(sepSp, "expected a path segment after '/' in import",
+				fmt.Sprintf("example: import %s/net/socket", prefix))
+			p.ok = false
+			return
+		}
+		segments = append(segments, p.advance().Value)
+	}
+
+	if len(segments) == 0 {
+		errAt(sp, fmt.Sprintf("import %q requires at least one path segment", prefix),
+			fmt.Sprintf("example: import %s/net/socket", prefix))
+		p.ok = false
+		return
+	}
+
+	// determine env var name
+	var envVar string
+	switch prefix {
+	case "std":
+		envVar = "ZENX_STD_PATH"
+	case "usr":
+		envVar = "ZENX_USR_PATH"
+	default:
+		envVar = "ZENX_" + strings.ToUpper(prefix) + "_PATH"
+	}
+
+	imp.IsFileImport = true
+	imp.IsLocal = true // legacy compat
+	imp.IsStd = (prefix == "std")
+	imp.IsUser = (prefix != "std")
+	imp.EnvPrefix = envVar
+	imp.Segments = segments
+	imp.Module = segments[len(segments)-1]
+	// LocalFile uses $ENV_VAR prefix — resolved at runtime/typechecking
+	imp.LocalFile = filepath.Join(append([]string{"$" + envVar}, segments...)...) + ".zx"
+
+	// optional: (ModName) to import a specific mod
+	p.parseImportModSelector(sp, imp, imp.LocalFile)
+}
+
+// parseStdModuleImport handles:  use std::str   use std::net   (built-in inline modules)
+func (p *Parser) parseStdModuleImport(sp Span, imp *ImportDecl) {
+	name := p.advance().Value
+	for p.at(TK_DCOLON) {
 		p.advance()
-		if p.at(TK_IDENT) {
-			segments = append(segments, p.advance().Value)
+		next := p.peek()
+		if next.Kind == TK_IDENT || (next.Kind >= TK_TYPE_INT && next.Kind <= TK_TYPE_ANY) {
+			name += "::" + p.advance().Value
 		} else {
-			break
+			errAt(p.peek().Span, "expected a module name after '::'",
+				"example: use std::str  or  use std::math")
+			p.ok = false
+			return
 		}
 	}
 
-	if len(segments) > 0 {
-		localPath := filepath.Join(append([]string{p.srcDir}, segments...)...) + ".zx"
-		imp.IsLocal = true
-		imp.LocalFile = localPath
-		imp.Module = segments[len(segments)-1]
+	if name == "std" || name == "usr" {
+		errAt(sp, fmt.Sprintf("%q alone is not a valid module — add a submodule name", name),
+			fmt.Sprintf("example: use %s::str  or  import %s/net/socket", name, name))
+		p.ok = false
+		return
 	}
 
+	imp.Module = name
+	imp.IsStdModule = strings.HasPrefix(name, "std::")
+	imp.IsStd = imp.IsStdModule // legacy compat
+
+	if imp.IsStdModule && LookupStdModule(name) == nil {
+		errAt(sp, fmt.Sprintf("unknown stdlib module %q", name),
+			"available modules: std::str std::io std::math std::sys std::fs std::cmd std::mem std::conv std::time std::net")
+		p.ok = false
+		return
+	}
+
+	imp.ImportAll = true // std modules always import all their symbols
+}
+
+// parseImportModSelector parses the optional  (ModName)  at the end of
+// a file-path import. Sets imp.Alias and imp.ImportAll appropriately.
+// filePath is the resolved path string — used in error messages only.
+func (p *Parser) parseImportModSelector(sp Span, imp *ImportDecl, filePath string) {
 	if p.at(TK_LPAREN) {
 		p.advance()
-		imp.Alias = p.expect(TK_IDENT).Value
-		p.expect(TK_RPAREN)
+
+		if p.at(TK_RPAREN) {
+			errAt(sp, "expected a mod name inside parentheses",
+				fmt.Sprintf("example: import _/%s (ModName) — where ModName is the mod block to import",
+					imp.Module))
+			p.ok = false
+			p.advance() // consume )
+			return
+		}
+
+		if !p.at(TK_IDENT) {
+			errAt(p.peek().Span,
+				fmt.Sprintf("expected an identifier (mod name) inside parentheses, got %q", p.peek().Value),
+				"the name in parentheses must match a mod block in the imported file")
+			p.ok = false
+			// try to recover
+			for !p.at(TK_RPAREN) && !p.at(TK_EOF) && !p.at(TK_SEMI) {
+				p.advance()
+			}
+			if p.at(TK_RPAREN) {
+				p.advance()
+			}
+			return
+		}
+
+		modName := p.advance().Value
+
+		// check for common mistake: lowercase mod names
+		if len(modName) > 0 && modName[0] >= 'a' && modName[0] <= 'z' {
+			warnAt(p.peek().Span,
+				fmt.Sprintf("imported mod name %q starts with lowercase — mod blocks are usually PascalCase or UPPER_CASE", modName),
+				"example: import _/logger (Logger)  not  import _/logger (logger)")
+		}
+
+		if !p.at(TK_RPAREN) {
+			errAt(p.peek().Span,
+				fmt.Sprintf("expected ')' to close the mod selector, got %q", p.peek().Value),
+				"only one mod name can be imported per import statement — use multiple import lines for multiple mods")
+			p.ok = false
+			// recover
+			for !p.at(TK_RPAREN) && !p.at(TK_EOF) && !p.at(TK_SEMI) {
+				p.advance()
+			}
+			if p.at(TK_RPAREN) {
+				p.advance()
+			}
+			return
+		}
+		p.advance() // consume )
+
+		imp.Alias = modName
 		imp.ImportAll = false
 	} else {
+		// no (ModName) — import everything from the file
 		imp.ImportAll = true
+		imp.Alias = ""
 	}
-	p.eatSemi()
-	return imp
 }
 
 func (p *Parser) parseExtern() *ExternDecl {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -95,7 +96,7 @@ type TypeChecker struct {
 
 	// modFns maps "modName::fnName" → *FnDecl for namespace-qualified lookup.
 	// Plain name lookup (e.g. just "def") will NOT find these — only ModCallExpr will.
-	modFns  map[string]*FnDecl
+	modFns map[string]*FnDecl
 	// modNames is the set of known mod block names, for error messages.
 	modNames map[string]bool
 }
@@ -113,10 +114,14 @@ func TypeCheck(prog *Program, src, file string) bool {
 	tc.scope = newScope(nil, "global")
 
 	for _, imp := range prog.Imports {
-		if imp.IsStd {
+		tc.validateImport(imp)
+		if imp.IsStdModule {
 			tc.importMods[imp.Module] = true
-		} else {
+		} else if imp.IsCHeader {
 			tc.importPaths[imp.Path] = true
+		} else if imp.IsFileImport && imp.IsLocal {
+			// Resolve the local file import: read, parse, and merge into prog.
+			tc.resolveFileImport(imp, prog)
 		}
 	}
 	tc.stdFns = prog.AllStdFns()
@@ -1640,6 +1645,232 @@ func isCReservedFnTC(name string) bool {
 		return true
 	}
 	return false
+}
+
+// resolveFileImport reads a local .zx file, parses it, and merges its
+// declarations into prog. If (ModName) was given, only that mod block
+// (and its exported functions/structs) is merged. If import * (no alias),
+// everything is merged — functions, structs, methods, mods, globals.
+//
+// This runs during TypeCheck, before any scope registration, so merged
+// symbols are visible to the rest of the type-checking pass.
+func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
+	sp := imp.Sp
+
+	// Resolve the file path. For local imports, LocalFile was built by the parser
+	// relative to the source file's directory.
+	filePath := imp.LocalFile
+	if filePath == "" {
+		errCode("EI20", sp, "import has no resolved file path",
+			"this is a compiler bug — report it")
+		tc.ok = false
+		return
+	}
+
+	// Read the file
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		errCode("EI21", sp,
+			fmt.Sprintf("cannot read imported file %q: %v", filePath, err),
+			fmt.Sprintf("check that the file exists relative to the source directory"))
+		tc.ok = false
+		return
+	}
+
+	src := string(raw)
+
+	// Tokenize
+	tokens := Tokenize(src, filePath)
+	if tokens == nil {
+		errCode("EI22", sp,
+			fmt.Sprintf("syntax errors in imported file %q", filePath),
+			"fix the errors in the imported file first")
+		tc.ok = false
+		return
+	}
+
+	// Parse
+	imported := Parse(tokens, src, filePath)
+	if imported == nil {
+		errCode("EI23", sp,
+			fmt.Sprintf("parse errors in imported file %q", filePath),
+			"fix the errors in the imported file first")
+		tc.ok = false
+		return
+	}
+
+	alias := imp.Alias // "" means import all
+
+	if alias != "" {
+		// (ModName) form — import only the named mod block
+		var found *ModBlock
+		for _, mb := range imported.ModBlocks {
+			if mb.Name == alias {
+				found = mb
+				break
+			}
+		}
+		if found == nil {
+			// collect available mods for a helpful error message
+			var avail []string
+			for _, mb := range imported.ModBlocks {
+				avail = append(avail, mb.Name)
+			}
+			hint := fmt.Sprintf("file %q has no mod named %q", filePath, alias)
+			if len(avail) > 0 {
+				hint += fmt.Sprintf(" — available mods: %s", strings.Join(avail, ", "))
+			} else {
+				hint += " — the file has no mod blocks at all"
+			}
+			errCode("EI24", sp, hint,
+				"remove the (ModName) selector to import everything, or fix the mod name")
+			tc.ok = false
+			return
+		}
+		// merge only this mod block
+		prog.ModBlocks = append(prog.ModBlocks, found)
+		// also merge any structs defined inside the mod
+		prog.Structs = append(prog.Structs, found.Structs...)
+		return
+	}
+
+	// Import all — merge everything from the imported file into prog.
+	// Functions
+	for _, stmt := range imported.TopStmts {
+		if fn, ok := stmt.(*FnDecl); ok {
+			// check for duplicate function names
+			if _, exists := tc.fns[fn.Name]; exists {
+				warnAt(sp, fmt.Sprintf("imported function %q shadows an existing function", fn.Name),
+					fmt.Sprintf("rename one of them to avoid confusion"))
+			}
+			prog.TopStmts = append(prog.TopStmts, fn)
+		}
+		// global vars from imported file
+		if vd, ok := stmt.(*VarDecl); ok && vd.IsGlobal {
+			prog.GlobalVars = append(prog.GlobalVars, vd)
+			prog.TopStmts = append(prog.TopStmts, vd)
+		}
+	}
+	// Structs
+	prog.Structs = append(prog.Structs, imported.Structs...)
+	// Methods
+	prog.Methods = append(prog.Methods, imported.Methods...)
+	// Mod blocks
+	prog.ModBlocks = append(prog.ModBlocks, imported.ModBlocks...)
+	// Externs
+	prog.Externs = append(prog.Externs, imported.Externs...)
+	// Macros
+	prog.Macros = append(prog.Macros, imported.Macros...)
+}
+
+// validateImport checks an ImportDecl for errors not caught by the parser.
+// It fires after all imports are parsed, giving us full context.
+func (tc *TypeChecker) validateImport(imp *ImportDecl) {
+	sp := imp.Sp
+
+	switch {
+	case imp.IsCHeader:
+		// raw C header — no further validation possible at compile time
+		if imp.Path == "" {
+			errCode("EI01", sp, "import path is empty", `provide a header: use "stdio.h"`)
+			tc.ok = false
+		}
+
+	case imp.IsStdModule:
+		// use std::str — must be a known module
+		if LookupStdModule(imp.Module) == nil {
+			errCode("EI02", sp,
+				fmt.Sprintf("unknown stdlib module %q", imp.Module),
+				"available: std::str std::io std::math std::sys std::fs std::cmd std::mem std::conv std::time std::net")
+			tc.ok = false
+		}
+
+	case imp.IsFileImport && imp.IsStd:
+		// import std/x/y — validate structure
+		if imp.EnvPrefix == "" {
+			errCode("EI03", sp, "stdlib file import missing env prefix",
+				"this is a compiler bug — report it")
+			tc.ok = false
+			return
+		}
+		if len(imp.Segments) == 0 {
+			errCode("EI04", sp,
+				fmt.Sprintf("import requires at least one path segment after the prefix — got nothing"),
+				"example: import std/net/socket")
+			tc.ok = false
+			return
+		}
+		// validate each segment is a valid identifier
+		for _, seg := range imp.Segments {
+			if seg == "" || !isValidIdent(seg) {
+				errCode("EI05", sp,
+					fmt.Sprintf("invalid path segment %q in import — must be a plain identifier", seg),
+					"path segments can only contain letters, digits, and underscores")
+				tc.ok = false
+				return
+			}
+		}
+		// if (ModName) given, validate it's a valid identifier
+		if !imp.ImportAll && imp.Alias != "" && !isValidIdent(imp.Alias) {
+			errCode("EI06", sp,
+				fmt.Sprintf("invalid mod name %q in import selector", imp.Alias),
+				"mod names must be valid identifiers: letters, digits, underscores")
+			tc.ok = false
+		}
+
+	case imp.IsFileImport && imp.IsLocal:
+		// import _/a or __/b — validate structure
+		if len(imp.Segments) == 0 {
+			errCode("EI07", sp,
+				"local import requires at least one path segment",
+				"example: import _/utils  or  import __/shared/types")
+			tc.ok = false
+			return
+		}
+		for _, seg := range imp.Segments {
+			if seg == "" || !isValidIdent(seg) {
+				errCode("EI08", sp,
+					fmt.Sprintf("invalid path segment %q in local import", seg),
+					"path segments can only contain letters, digits, and underscores")
+				tc.ok = false
+				return
+			}
+		}
+		if !imp.ImportAll && imp.Alias != "" && !isValidIdent(imp.Alias) {
+			errCode("EI09", sp,
+				fmt.Sprintf("invalid mod name %q in import selector", imp.Alias),
+				"mod names must be valid identifiers")
+			tc.ok = false
+		}
+		// Note: we cannot check if the file exists here since that requires
+		// filesystem access. The import resolver (in main.go) handles that.
+		// But we can warn if the LocalFile path looks suspicious.
+		if imp.LocalFile == "" {
+			errCode("EI10", sp,
+				"could not resolve local import path",
+				"check that the path segments are correct relative to the source file")
+			tc.ok = false
+		}
+	}
+}
+
+// isValidIdent returns true if s is a valid ZX/C identifier.
+func isValidIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, c := range s {
+		if i == 0 {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+				return false
+			}
+		} else {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // registerModFns registers mod block functions ONLY under namespace keys

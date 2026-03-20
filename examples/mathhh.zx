@@ -1,3 +1,9 @@
 fn sum_of_this(x: int, y: int, z: int) -> int {
    return x + y + z;
 }
+
+fn do_add(x: int, y:int) -> int {
+   say x + y;
+
+   return x + y;
+}

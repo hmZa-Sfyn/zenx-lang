@@ -303,16 +303,39 @@ type Program struct {
 
 // ── Import ────────────────────────────────────────────────────────────────────
 
+// ImportDecl represents a single import/use statement.
+//
+// Forms and their fields:
+//   use "stdio.h"                   → Path="stdio.h", IsCHeader=true
+//   use std::str                    → Module="std::str", IsStdModule=true
+//   import std/net/socket           → EnvPrefix="ZENX_STD_PATH", Segments=["net","socket"], ImportAll=true
+//   import std/net/socket (socServ) → EnvPrefix="ZENX_STD_PATH", Segments=["net","socket"], Alias="socServ"
+//   import _/a                      → UpsCount=0, Segments=["a"], ImportAll=true
+//   import __/a (Mod)              → UpsCount=1, Segments=["a"], Alias="Mod"
 type ImportDecl struct {
-	Sp        Span
+	Sp   Span
+	// Raw C header path — set only for: use "stdio.h"
 	Path      string
-	Module    string
-	Alias     string
+	IsCHeader bool
+
+	// ZX stdlib module — set only for: use std::str
+	Module      string
+	IsStdModule bool
+
+	// File-path import — set for std/x/y and _/x forms
+	IsFileImport bool
+	EnvPrefix    string // e.g. "ZENX_STD_PATH" or "ZENX_USR_PATH" or "" for local
+	UpsCount     int    // how many levels up (0=same dir, 1=.., 2=../..)
+	Segments     []string // path components after the prefix/ups
+	ResolvedFile string   // populated by typechecker/resolver: absolute .zx path
+	Alias        string   // (ModName) — specific mod to import; empty = import all
+	ImportAll    bool     // true when no (ModName) specified
+
+	// Legacy fields kept for compatibility with emitter/typechecker that read them
 	IsStd     bool
 	IsUser    bool
 	IsLocal   bool
 	LocalFile string
-	ImportAll bool
 }
 
 func (n *ImportDecl) nodeSpan() Span  { return n.Sp }
