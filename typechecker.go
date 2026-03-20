@@ -1678,8 +1678,45 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 	}
 
 	if sf, ok := tc.stdFns[fnName]; ok {
-		for _, a := range e.Args {
-			tc.inferExpr(a)
+		// ── arity check ──────────────────────────────────────────────────────
+		if !sf.Variadic {
+			minArgs := len(sf.Params)
+			if len(e.Args) != minArgs {
+				errCode("E41", e.Sp,
+					fmt.Sprintf("std function %q expects %d argument(s) but got %d",
+						fnName, minArgs, len(e.Args)),
+					fmt.Sprintf("signature: %s(%s)", fnName, listParamTypes(sf.Params)))
+				tc.ok = false
+			}
+		} else {
+			// variadic: must supply at least the fixed params
+			minArgs := len(sf.Params)
+			if len(e.Args) < minArgs {
+				errCode("E41", e.Sp,
+					fmt.Sprintf("std function %q expects at least %d argument(s) but got %d",
+						fnName, minArgs, len(e.Args)),
+					fmt.Sprintf("signature: %s(%s, ...)", fnName, listParamTypes(sf.Params)))
+				tc.ok = false
+			}
+		}
+		// ── per-argument type check ───────────────────────────────────────────
+		for i, a := range e.Args {
+			got := tc.inferExpr(a)
+			if i < len(sf.Params) {
+				expected := sf.Params[i].Type
+				if expected != nil && expected.Kind != TyAny &&
+					got.Kind != TyAny && got.Kind != TyUnknown &&
+					!coercible(got, expected) {
+					errCode("E43", a.nodeSpan(),
+						fmt.Sprintf("std function %q argument %d: expected %s but got %s",
+							fnName, i+1, expected, got),
+						fmt.Sprintf("cast with: %s(value)", expected))
+					tc.ok = false
+				}
+			}
+		}
+		if id, ok := e.Func.(*Ident); ok {
+			id.Typ = sf.Ret
 		}
 		e.Typ = sf.Ret
 		return sf.Ret

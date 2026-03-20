@@ -13,6 +13,11 @@ Simple syntax. Full C interop. Rust-style error messages.
 
 ---
 
+```sh
+$ ./zxc -c 'my abc = "ayo wat dat dawg doin?"; say len(abc);'
+22
+```
+
 ## Build
 
 ```bash
