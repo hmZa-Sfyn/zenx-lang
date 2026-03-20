@@ -2,6 +2,12 @@ mod a {
     fn b(x: int) -> int {
         return int(2.55 * x)
     }
+
+    fn something(x: int, y:int) -> int {
+        return x * y;
+    }
 }
 
 say a->b(2);
+
+say a->something(345,34);

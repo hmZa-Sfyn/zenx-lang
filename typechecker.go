@@ -1310,6 +1310,23 @@ func (tc *TypeChecker) inferBuiltin(e *BuiltinExpr) *ZXType {
 }
 
 func (tc *TypeChecker) inferMethodCall(e *MethodCallExpr) *ZXType {
+	// FIX: if the receiver is a plain ident that names a mod block,
+	// treat this as a namespaced mod call (mod->fn() or mod::fn()).
+	// We set id.Typ = TypUnknown as a sentinel so the emitter knows
+	// to emit  modName_fnName(args)  instead of a struct method call.
+	if id, ok := e.Recv.(*Ident); ok && tc.modNames[id.Name] {
+		modCall := &ModCallExpr{
+			Sp:   e.Sp,
+			Mod:  id.Name,
+			Fn:   e.Method,
+			Args: e.Args,
+		}
+		t := tc.inferModCall(modCall)
+		e.Typ = t
+		id.Typ = TypUnknown // sentinel: receiver is a mod name, not a variable
+		return t
+	}
+
 	recvType := tc.inferExpr(e.Recv)
 	for _, a := range e.Args {
 		tc.inferExpr(a)
