@@ -39,60 +39,12 @@ func printUsage() {
   -o <n>    output binary name (used with build)
   -v          verbose: print generated C before compiling
   -c "code"   execute a one-liner ZX snippet
-
-%sTEST ANNOTATIONS:%s
-  @test              mark a function as a test case
-  @ignore            skip this test (also: @skip)
-  @args={"n":42}     inject arguments when running the test
-  @expect=84         assert the return value equals 84
-  @timeout=1000      set test timeout in milliseconds (planned)
-  @benchmark         mark as a benchmark (planned)
-
-%sEXAMPLE TEST FILE:%s
-  @test
-  fn test_addition() {
-      assert 1 + 1 == 2, "math is broken";
-  }
-
-  @test
-  @args={"n": 5}
-  @expect=10
-  fn test_double(n: int) -> int {
-      return n * 2;
-  }
-
-  @test
-  @ignore
-  fn test_ignored() {
-      // this test is skipped
-  }
-
-  mod mymod {
-      mod tests {
-          @test
-          @args={"a": 10, "b": 20}
-          @expect=30
-          fn test_add(a, b) -> int {
-              return a + b;
-          }
-      }
-  }
-
-%sONE-LINER EXAMPLES:%s
-  zxc -c "say \"Hello!\""
-  zxc -c "say max(3, 9)"
-  zxc -c "say cmd!(\"uname -a\")"
-  zxc -c "say readfile!(\"/etc/hostname\")"
-  zxc -c "let s = input(\"name: \"); say \"hello, \" s \"\!\""
 `,
 		colorCyan, colorReset,
 		colorBold+colorYellow, version, colorReset,
 		colorBold+colorCyan, colorReset,
 		colorBold, colorReset,
 		colorBold, colorReset,
-		colorBold+colorGreen, colorReset,
-		colorBold+colorGreen, colorReset,
-		colorBold+colorGreen, colorReset,
 	)
 }
 
