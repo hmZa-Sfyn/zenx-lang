@@ -1,0 +1,267 @@
+// test_chain_macros.zx — tests for new built-in chain macro steps
+// All macros used are defined in this file.
+// Run: ./zxc examples/tests/test_chain_macros.zx
+
+import "stdio.h"
+extern fn printf(fmt: str, ...) -> int;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Chain macro definitions
+//  Syntax: macro fn NAME |input, [args...,] doStmt| -> |output| { body }
+//
+//  Inside body:
+//    input    — the value piped into this step
+//    doStmt() — placeholder; the emitter inlines the user's { } block here
+//    output   — the result forwarded to the next step
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Run block if input is truthy (non-zero)
+macro fn ifTrue |input, doStmt| -> |output| {
+    output = input;
+    if input {
+        doStmt();
+    }
+}
+
+// Run block if input is falsy (zero / false)
+macro fn ifFalse |input, doStmt| -> |output| {
+    output = input;
+    if !input {
+        doStmt();
+    }
+}
+
+// Run block if input is even
+macro fn ifEven |input, doStmt| -> |output| {
+    output = input;
+    if input % 2 == 0 {
+        doStmt();
+    }
+}
+
+// Run block if input is odd
+macro fn ifOdd |input, doStmt| -> |output| {
+    output = input;
+    if input % 2 != 0 {
+        doStmt();
+    }
+}
+
+// Run block if input > threshold
+macro fn ifGt |input, threshold: int, doStmt| -> |output| {
+    output = input;
+    if input > threshold {
+        doStmt();
+    }
+}
+
+// Run block if input < threshold
+macro fn ifLt |input, threshold: int, doStmt| -> |output| {
+    output = input;
+    if input < threshold {
+        doStmt();
+    }
+}
+
+// Run block if input >= threshold
+macro fn ifGte |input, threshold: int, doStmt| -> |output| {
+    output = input;
+    if input >= threshold {
+        doStmt();
+    }
+}
+
+// Run block if input <= threshold
+macro fn ifLte |input, threshold: int, doStmt| -> |output| {
+    output = input;
+    if input <= threshold {
+        doStmt();
+    }
+}
+
+// Run block if input == value
+macro fn ifEq |input, value: int, doStmt| -> |output| {
+    output = input;
+    if input == value {
+        doStmt();
+    }
+}
+
+// Run block if input != value  (the "not equal" counterpart to ifEq)
+macro fn ifnEq |input, value: int, doStmt| -> |output| {
+    output = input;
+    if input != value {
+        doStmt();
+    }
+}
+
+// Run block unconditionally, pass value through unchanged
+macro fn then |input, doStmt| -> |output| {
+    output = input;
+    doStmt();
+}
+
+// Side-effect block: print current value, then run block, keep value unchanged
+macro fn tap |input, doStmt| -> |output| {
+    output = input;
+    printf("[tap] value = %lld\n", input);
+    doStmt();
+}
+
+// Print the current value on its own line (no extra block needed)
+macro fn printVal |input, doStmt| -> |output| {
+    output = input;
+    printf("%lld\n", input);
+}
+
+// If input is zero/nil, replace it with the given default
+macro fn orDefault |input, default_val: int, doStmt| -> |output| {
+    output = input;
+    if !input {
+        output = default_val;
+    }
+    doStmt();
+}
+
+// Clamp input to [lo, hi] in-place
+macro fn clampTo |input, lo: int, hi: int, doStmt| -> |output| {
+    output = input;
+    if output < lo {
+        output = lo;
+    }
+    if output > hi {
+        output = hi;
+    }
+    doStmt();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+say "=== Chain Macro Step Tests ===";
+say "";
+
+// ─── Parity checks ───────────────────────────────────────────────────────────
+say "--- ifEven / ifOdd ---";
+my x: int = 10;
+
+x
+    ifEven: {
+        say "10 is even (correct)";
+    }
+    ifOdd: {
+        say "ERROR: 10 should be even";
+    }
+
+my y: int = 7;
+y
+    ifOdd: {
+        say "7 is odd (correct)";
+    }
+    ifEven: {
+        say "ERROR: 7 should be odd";
+    }
+
+say "";
+
+// ─── Threshold comparisons ────────────────────────────────────────────────────
+say "--- ifGt / ifLt / ifGte / ifLte ---";
+my score: int = 85;
+
+score
+    ifGt(80): {
+        say "score > 80 (correct)";
+    }
+    ifLt(90): {
+        say "score < 90 (correct)";
+    }
+    ifGte(85): {
+        say "score >= 85 (correct)";
+    }
+    ifLte(85): {
+        say "score <= 85 (correct)";
+    }
+
+say "";
+
+// ─── Equality check ───────────────────────────────────────────────────────────
+say "--- ifEq / ifnEq ---";
+my code: int = 200;
+
+code
+    ifEq(200): {
+        say "code == 200: OK (correct)";
+    }
+    ifnEq(200): {
+        say "ERROR: expected 200";
+    }
+
+code
+    ifEq(404): {
+        say "ERROR: should not print";
+    }
+    ifnEq(404): {
+        say "code != 404 (correct)";
+    }
+
+say "";
+
+// ─── tap / printVal ──────────────────────────────────────────────────────────
+say "--- tap / printVal ---";
+my n: int = 42;
+
+n
+    tap: {
+        say "side effect in tap";
+    }
+    printVal: {}
+
+say "";
+
+// ─── orDefault ────────────────────────────────────────────────────────────────
+say "--- orDefault ---";
+my zero_val: int = 0;
+zero_val
+    orDefault(99): {}
+
+printf("after orDefault: %lld\n", zero_val);  // expect: 99
+
+my nonzero: int = 5;
+nonzero
+    orDefault(99): {}
+
+printf("nonzero unchanged: %lld\n", nonzero);  // expect: 5
+
+say "";
+
+// ─── clampTo ──────────────────────────────────────────────────────────────────
+say "--- clampTo ---";
+my too_big: int = 200;
+too_big
+    clampTo(0, 100): {}
+
+printf("200 clamped to [0,100]: %lld\n", too_big);  // expect: 100
+
+my too_small: int = -5;
+too_small
+    clampTo(0, 100): {}
+
+printf("-5 clamped to [0,100]: %lld\n", too_small);  // expect: 0
+
+say "";
+
+// ─── Chaining ifEven/ifOdd as if/else equivalents ────────────────────────────
+say "--- ifEven / ifOdd as if-else ---";
+my val: int = 3;
+
+val
+    ifEven: {
+        say "val is even";
+    }
+    ifOdd: {
+        say "val is odd (correct — 3 is odd)";
+    }
+
+say "";
+say "=== All chain step tests done ===";

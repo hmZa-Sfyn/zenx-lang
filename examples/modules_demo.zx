@@ -1,97 +1,19 @@
-// modules_demo.zx — how to use mod blocks in ZX
-// Run: ./zxc examples/modules_demo.zx
-
-extern fn printf(fmt: str, ...) -> int;
-
-// ── Modules with nested mods ──────────────────────────────────────────────────
-
-mod math_utils {
-    fn add(a: int, b: int) -> int {
-        return a + b;
+mod a {
+    fn b(x: int) -> int {
+        return int(2.55 * x)
     }
 
-    fn multiply(a: int, b: int) -> int {
-        return a * b;
+    fn something(x: int, y:int) -> int {
+        return x * y;
     }
 
-    fn factorial(n: int) -> int {
-        if n <= 1 { return 1; }
-        return n * math_utils->factorial(n - 1);
-    }
-
-    mod advanced {
-        fn power(base: int, exp: int) -> int {
-            if exp == 0 { return 1; }
-            let result = 1;
-            for i in 0..exp {
-                result = result * base;
-            }
-            return result;
-        }
-
-        fn is_prime(n: int) -> bool {
-            if n < 2 { return false; }
-            for i in 2..n {
-                if n % i == 0 { return false; }
-            }
-            return true;
-        }
+    @test
+    @expect=1900
+    fn test_demo() -> int {
+        return 1900;
     }
 }
 
-mod string_utils {
-    fn repeat_char(c: char, n: int) {
-        for i in 0..n {
-            printf("%c", int(c));
-        }
-    }
+say a->b(2);
 
-    fn print_banner(title: str) {
-        printf("\n");
-        string_utils->repeat_char('=', 40);
-        printf("\n  %s\n", title);
-        string_utils->repeat_char('=', 40);
-        printf("\n\n");
-    }
-}
-
-// consts live at top level, not inside mod blocks
-my VERSION: str = "1.0.0";
-my MAX_RETRIES: int = 3;
-
-mod app {
-    mod tests {
-        @test
-        fn test_add() {
-            assert add(2, 3) == 5, "add(2,3) should be 5";
-            assert add(-1, 1) == 0, "add(-1,1) should be 0";
-        }
-
-        @test
-        @args={"n": 5}
-        @expect=120
-        fn test_factorial(n: int) -> int {
-            return math_utils->factorial(n);
-        }
-    }
-}
-
-// ── Use module functions directly (names are global) ─────────────────────────
-
-string_utils->print_banner("ZX Module Demo");
-
-printf("add(10, 20)    = %d\n", math_utils->add(10, 20));
-printf("multiply(6, 7) = %d\n", math_utils->multiply(6, 7));
-printf("factorial(6)   = %d\n", math_utils->factorial(6));
-printf("power(2, 8)    = %d\n", math_utils->power(2, 8));
-
-say "Primes up to 20:";
-for i in 1..21 {
-    if math_utils->advanced->is_prime(i) {
-        printf("%lld ", i);
-    }
-}
-println "";
-
-printf("App version: %s\n", VERSION);
-printf("Max retries: %lld\n", MAX_RETRIES);
+say a->something(345,34);

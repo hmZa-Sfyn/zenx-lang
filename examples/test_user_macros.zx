@@ -1,0 +1,128 @@
+// test_user_macros.zx — tests for user-defined chain macros (regression for macros_demo.zx)
+// Run: ./zxc examples/tests/test_user_macros.zx
+
+import "stdio.h"
+extern fn printf(fmt: str, ...) -> int;
+
+// ─── User chain macro definitions ────────────────────────────────────────────
+
+macro fn myIfTrue |input, doStmt| -> |output| {
+    output = input;
+    if input {
+        doStmt();
+    }
+}
+
+macro fn myIfFalse |input, doStmt| -> |output| {
+    output = input;
+    if !input {
+        doStmt();
+    }
+}
+
+macro fn myThen |input, doStmt| -> |output| {
+    output = input;
+    doStmt();
+}
+
+macro fn myDouble |input, doStmt| -> |output| {
+    output = input * 2;
+    doStmt();
+}
+
+macro fn myRepeat |input, doStmt| -> |output| {
+    output = input;
+    for i in 0..input {
+        doStmt();
+    }
+}
+
+macro fn inRange |input, lo: int, hi: int, doStmt| -> |output| {
+    output = input;
+    if input >= lo && input <= hi {
+        doStmt();
+    }
+}
+
+macro fn myCountdown |input, doStmt| -> |output| {
+    output = input;
+    while output > 0 {
+        doStmt();
+        output = output - 1;
+    }
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+say "=== User-defined Chain Macro Tests ===";
+say "";
+
+say "--- myIfTrue / myIfFalse ---";
+my score: int = 85;
+
+score
+    myIfTrue: { say "score is truthy (correct)"; }
+    myIfFalse: { say "ERROR: should not run"; }
+    myThen:   { say "then always runs (correct)"; }
+
+say "";
+
+say "--- myDouble chained twice ---";
+my val: int = 5;
+val
+    myDouble: {
+        printf("after 1st double: %lld\n", val);  // 10
+    }
+    myDouble: {
+        printf("after 2nd double: %lld\n", val);  // 20
+    }
+
+say "";
+
+say "--- myRepeat ---";
+let rep_count: int = 0;
+my times: int = 4;
+times
+    myRepeat: {
+        rep_count = rep_count + 1;
+    }
+printf("repeated %lld times\n", rep_count);  // expect: 4
+
+say "";
+
+say "--- inRange with explicit args ---";
+my temp: int = 25;
+temp
+    inRange(0, 100): {
+        say "25 is in [0,100] (correct)";
+    }
+    inRange(30, 100): {
+        say "ERROR: 25 not in [30,100]";
+    }
+    myThen: {
+        say "range check complete";
+    }
+
+say "";
+
+say "--- myCountdown ---";
+my n: int = 3;
+n
+    myCountdown: {
+        printf("tick %lld\n", n);
+    }
+// after countdown n should be 0
+printf("n after countdown: %lld\n", n);  // expect: 0
+
+say "";
+
+say "--- long chain ---";
+my level: int = 10;
+level
+    myIfTrue: { say "level is truthy"; }
+    myDouble: { printf("after doubling: %lld\n", level); }  // 20
+    myIfTrue: { say "still truthy after double"; }
+    myThen:   { say "chain complete!"; }
+
+say "";
+say "=== All user macro tests done ===";

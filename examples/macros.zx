@@ -33,22 +33,26 @@ macro fn greet_name |name: str| -> str {
 // WHEN the block runs based on the input value.
 
 // these below are hard coded, user assigned comming soon!
-
+// Run the block if input is truthy (non-zero)
 macro fn ifTrue |input, doStmt| -> |output| {
     output = input;
-    // The do { } block is inlined here at compile time.
-    // Just return the value — the emitter handles the if check.
-    return output;
+    if input {
+        doStmt();
+    }
 }
 
+// Run the block if input is falsy (zero / false)
 macro fn ifFalse |input, doStmt| -> |output| {
     output = input;
-    return output;
+    if !input {
+        doStmt();
+    }
 }
 
+// Always run the block, pass value through
 macro fn then |input, doStmt| -> |output| {
     output = input;
-    return output;
+    doStmt();
 }
 
 type USER struct {
