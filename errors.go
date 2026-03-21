@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 )
@@ -98,12 +99,10 @@ func errCodeSecondary(code string, span Span, msg, hint string, secondary []Seco
 	emitDiag(Diagnostic{Sev: SevError, Code: code, Span: span, Message: msg, Hint: hint, Secondary: secondary})
 }
 
-// errCodeTrace emits an error with a full call-stack trace.
 func errCodeTrace(code string, span Span, msg, hint string, trace []CallFrame) {
 	emitDiag(Diagnostic{Sev: SevError, Code: code, Span: span, Message: msg, Hint: hint, Trace: trace})
 }
 
-// errFull emits an error with all fields.
 func errFull(code string, span Span, msg, hint, fix string, secondary []SecondarySpan, trace []CallFrame) {
 	emitDiag(Diagnostic{
 		Sev: SevError, Code: code, Span: span,
@@ -150,9 +149,12 @@ func printDiag(d Diagnostic) {
 	case SevFunny:
 		headerColor = colorOrange + colorBold
 		label = "style"
+	default:
+		headerColor = colorBold
+		label = "???"
 	}
 
-	// ── Header line ──────────────────────────────────────────────────────────
+	// Header line
 	codeStr := ""
 	if d.Code != "" {
 		codeStr = fmt.Sprintf("[%s%s%s%s]",
@@ -163,19 +165,19 @@ func printDiag(d Diagnostic) {
 		colorBold, d.Message, colorReset)
 
 	sp := d.Span
-	if sp.File == "" {
+	if sp.File == "" || sp.Line <= 0 {
 		fmt.Fprintf(w, "\n")
 		return
 	}
 
-	// ── Location arrow ───────────────────────────────────────────────────────
+	// Location arrow
 	fmt.Fprintf(w, "  %s-->%s %s%s%s:%s%d%s:%s%d%s\n",
 		colorBlue+colorBold, colorReset,
 		colorCyan, sp.File, colorReset,
 		colorYellow, sp.Line, colorReset,
 		colorYellow, sp.Col, colorReset)
 
-	// ── Source context ───────────────────────────────────────────────────────
+	// Source context
 	lines := getSourceLines(sp.File)
 	if lines == nil || sp.Line < 1 || sp.Line > len(lines) {
 		fmt.Fprintf(w, "\n")
@@ -198,38 +200,32 @@ func printDiag(d Diagnostic) {
 
 	fmt.Fprintf(w, "  %s\n", gutter(0, false))
 
-	// optional: line before
+	// line before
 	if sp.Line > 1 {
 		fmt.Fprintf(w, "  %s%s%s\n",
 			gutter(sp.Line-1, false),
 			colorDim, lines[sp.Line-2]+colorReset)
 	}
 
-	// the highlighted line
+	// highlighted line
 	lineText := lines[sp.Line-1]
 	fmt.Fprintf(w, "  %s%s\n", gutter(sp.Line, true), lineText)
 
 	// underline
-	underLen := sp.Len
-	if underLen <= 0 {
-		underLen = 1
-	}
-	col0 := sp.Col - 1
-	if col0 < 0 {
-		col0 = 0
-	}
+	underLen := maxInt(sp.Len, 1)
+	col0 := maxInt(sp.Col-1, 0)
 	visCol := visualWidth(lineText, col0)
 	under := buildUnderline(visCol, underLen, d.Sev)
 	fmt.Fprintf(w, "  %s%s\n", gutter(0, false), under)
 
-	// optional: line after (for context)
+	// line after
 	if sp.Line < len(lines) {
 		fmt.Fprintf(w, "  %s%s%s\n",
 			gutter(sp.Line+1, false),
 			colorDim, lines[sp.Line]+colorReset)
 	}
 
-	// ── Hint / suggestion ────────────────────────────────────────────────────
+	// Hint
 	if d.Hint != "" {
 		hColor := colorGreen + colorBold
 		hLabel := "help"
@@ -237,9 +233,6 @@ func printDiag(d Diagnostic) {
 		case SevWarn, SevFunny:
 			hColor = colorYellow + colorBold
 			hLabel = "suggestion"
-		case SevError:
-			hColor = colorGreen + colorBold
-			hLabel = "help"
 		}
 		fmt.Fprintf(w, "  %s%s%s%s: %s%s%s\n",
 			gutter(0, false),
@@ -247,7 +240,7 @@ func printDiag(d Diagnostic) {
 			colorGreen, d.Hint, colorReset)
 	}
 
-	// ── Fix snippet ───────────────────────────────────────────────────────────
+	// Fix
 	if d.Fix != "" {
 		fmt.Fprintf(w, "  %s%s= fix:%s %s%s%s\n",
 			gutter(0, false),
@@ -255,14 +248,14 @@ func printDiag(d Diagnostic) {
 			colorGreen, d.Fix, colorReset)
 	}
 
-	// ── Notes ────────────────────────────────────────────────────────────────
+	// Notes
 	for _, n := range d.Notes {
 		fmt.Fprintf(w, "  %s%s= note:%s %s\n",
 			gutter(0, false),
 			colorPurple+colorBold, colorReset, n)
 	}
 
-	// ── Doc URL ──────────────────────────────────────────────────────────────
+	// Doc URL
 	if d.DocURL != "" {
 		fmt.Fprintf(w, "  %s%s= docs:%s %s%s%s\n",
 			gutter(0, false),
@@ -270,23 +263,41 @@ func printDiag(d Diagnostic) {
 			colorCyan, d.DocURL, colorReset)
 	}
 
-	// ── Call-stack trace (NEW) ───────────────────────────────────────────────
+	// Trace — fixed version (no garbage, colors preserved)
 	if len(d.Trace) > 0 {
 		fmt.Fprintf(w, "  %s%s= trace:%s\n",
 			gutter(0, false),
 			colorPurple+colorBold, colorReset)
+
 		for i, frame := range d.Trace {
 			indent := strings.Repeat("  ", i+1)
-			fmt.Fprintf(w, "  %s  %s%s→%s %s%s %s(%s:%d:%d)%s\n",
+
+			// Safe location formatting — this prevents %!(EXTRA ...)
+			loc := ""
+			if frame.Span.Line > 0 {
+				fileDisplay := frame.Span.File
+				if fileDisplay != "" {
+					fileDisplay = filepath.Base(fileDisplay)
+				}
+				loc = fmt.Sprintf(" (%s%d", fileDisplay, frame.Span.Line)
+				if frame.Span.Col > 0 {
+					loc += fmt.Sprintf(":%d", frame.Span.Col)
+				}
+				loc += ")"
+			}
+
+			fmt.Fprintf(w, "  %s%s%s→%s %s%s%s%s\n",
 				gutter(0, false),
 				indent,
 				colorPurple+colorBold, colorReset,
 				colorBold, frame.Label, colorReset,
-				colorDim+colorCyan, frame.Span.File, frame.Span.Line, frame.Span.Col, colorReset)
-			// show source line for this frame
+				colorDim+loc+colorReset,
+			)
+
+			// frame source line
 			frameLines := getSourceLines(frame.Span.File)
 			if frameLines != nil && frame.Span.Line >= 1 && frame.Span.Line <= len(frameLines) {
-				fmt.Fprintf(w, "  %s  %s  %s%s%s\n",
+				fmt.Fprintf(w, "  %s%s  %s%s%s\n",
 					gutter(0, false),
 					indent,
 					colorDim, frameLines[frame.Span.Line-1], colorReset)
@@ -294,7 +305,7 @@ func printDiag(d Diagnostic) {
 		}
 	}
 
-	// ── Secondary spans ──────────────────────────────────────────────────────
+	// Secondary spans
 	for _, sec := range d.Secondary {
 		if sec.Span.File == "" {
 			continue
@@ -317,19 +328,14 @@ func printDiag(d Diagnostic) {
 			fmt.Fprintf(w, "  %s%s%s\n",
 				secGutter(sec.Span.Line),
 				colorDim, secLines[sec.Span.Line-1]+colorReset)
-			secCol0 := sec.Span.Col - 1
-			if secCol0 < 0 {
-				secCol0 = 0
-			}
-			secLen := sec.Span.Len
-			if secLen <= 0 {
-				secLen = 1
-			}
+
+			secCol0 := maxInt(sec.Span.Col-1, 0)
+			secLen := maxInt(sec.Span.Len, 1)
 			secVis := visualWidth(secLines[sec.Span.Line-1], secCol0)
 			secUnder := fmt.Sprintf("%s%s%s%s  %s%s%s",
 				colorBlue+colorBold,
-				strings.Repeat(" ", maxInt(secVis, 0)),
-				strings.Repeat("-", maxInt(secLen, 1)),
+				strings.Repeat(" ", secVis),
+				strings.Repeat("-", secLen),
 				colorReset,
 				colorDim+colorBold, sec.Label, colorReset)
 			fmt.Fprintf(w, "  %s%s\n", secGutter(0), secUnder)
@@ -339,25 +345,20 @@ func printDiag(d Diagnostic) {
 	fmt.Fprintf(w, "\n")
 }
 
-// buildUnderline creates the "^^^" or "~~~" indicator under a span.
 func buildUnderline(col0, length int, sev Severity) string {
-	if col0 < 0 {
-		col0 = 0
-	}
-	var ch, color string
+	col0 = maxInt(col0, 0)
+	var ch, col string
 	switch sev {
 	case SevError:
-		ch, color = "^", colorRed+colorBold
+		ch, col = "^", colorRed+colorBold
 	case SevWarn, SevFunny:
-		ch, color = "~", colorYellow+colorBold
-	case SevHelp:
-		ch, color = "-", colorGreen+colorBold
+		ch, col = "~", colorYellow+colorBold
 	default:
-		ch, color = "-", colorCyan+colorBold
+		ch, col = "-", colorCyan+colorBold
 	}
 	pad := strings.Repeat(" ", col0)
 	carets := strings.Repeat(ch, maxInt(length, 1))
-	return color + pad + carets + colorReset
+	return col + pad + carets + colorReset
 }
 
 // ── Source registry ───────────────────────────────────────────────────────────
@@ -367,7 +368,10 @@ var sourceCache = map[string][]string{}
 func registerSource(file, src string) {
 	sourceCache[file] = strings.Split(src, "\n")
 }
-func getSourceLines(file string) []string { return sourceCache[file] }
+
+func getSourceLines(file string) []string {
+	return sourceCache[file]
+}
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -437,7 +441,7 @@ func PrintDiagSummary() {
 		if errs != 1 {
 			noun = "errors"
 		}
-		parts = append(parts, fmt.Sprintf("%s%s%d %s%s", colorRed+colorBold, "", errs, noun, colorReset))
+		parts = append(parts, fmt.Sprintf("%s%d %s%s", colorRed+colorBold, errs, noun, colorReset))
 	}
 	if warns > 0 {
 		noun := "warning"
@@ -451,9 +455,8 @@ func PrintDiagSummary() {
 		strings.Join(parts, " and "))
 }
 
-// ── TraceBuilder — helper to accumulate call frames ──────────────────────────
+// ── TraceBuilder ──────────────────────────────────────────────────────────────
 
-// TraceBuilder is used by the typechecker to track which fn/mod we're in.
 type TraceBuilder struct {
 	frames []CallFrame
 }
@@ -468,7 +471,6 @@ func (tb *TraceBuilder) Pop() {
 	}
 }
 
-// Snapshot returns a copy of the current trace (safe to attach to a Diagnostic).
 func (tb *TraceBuilder) Snapshot() []CallFrame {
 	if len(tb.frames) == 0 {
 		return nil

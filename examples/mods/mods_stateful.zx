@@ -21,14 +21,14 @@ mod Stack {
                           0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
     our top = 0;
 
-    fn push(v: int) -> bool {
+    fn _push(v: int) -> bool {
         if top >= MAX { return false; }
         data[top] = v;
         top += 1;
         return true;
     }
 
-    fn pop() -> int {
+    fn _pop() -> int {
         if top <= 0 { return 0; }
         top -= 1;
         return data[top];
@@ -44,27 +44,27 @@ mod Stack {
     fn clear()         { top = 0; }
 
     @test
-    fn test_push_pop() {
+    fn test__push__pop() {
         clear();
-        push(10); push(20); push(30);
+        _push(10); _push(20); _push(30);
         assert size() == 3, "size should be 3";
-        assert pop() == 30, "top should be 30";
-        assert pop() == 20, "next should be 20";
+        assert _pop() == 30, "top should be 30";
+        assert _pop() == 20, "next should be 20";
         assert size() == 1, "size should be 1";
         say "Stack tests passed";
     }
 }
 
 fn demo_stack() {
-    Stack->push(1);
-    Stack->push(2);
-    Stack->push(3);
+    Stack->_push(1);
+    Stack->_push(2);
+    Stack->_push(3);
 
     say Stack->peek();    // 3
     say Stack->size();    // 3
 
     while !Stack->empty() {
-        say Stack->pop();   // 3, 2, 1
+        say Stack->_pop();   // 3, 2, 1
     }
 
     say Stack->size();    // 0
