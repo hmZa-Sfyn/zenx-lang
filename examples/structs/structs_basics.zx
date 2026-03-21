@@ -1,0 +1,282 @@
+// structs_basics.zx
+// Struct fundamentals: declaring, initialising, field access,
+// stack vs heap allocation, nested structs, and arrays of structs.
+//
+// Run: ./zxc examples/structs_basics.zx
+
+use std::math
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  DECLARING STRUCTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Two declaration syntaxes — identical semantics.
+struct Point {
+    x: float,
+    y: float
+}
+
+type Color struct {
+    r: int,
+    g: int,
+    b: int,
+    a: int      // alpha
+}
+
+struct Rect {
+    x: float,
+    y: float,
+    w: float,
+    h: float
+}
+
+struct Circle {
+    cx: float,   // centre x
+    cy: float,   // centre y
+    r:  float    // radius
+}
+
+struct Person {
+    name: str,
+    age:  int,
+    score: float,
+    active: bool
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CREATING STRUCTS  (new keyword)
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_creation() {
+    // Stack-allocated  — stays on the C stack
+    let p = new Point { x: 3.0, y: 4.0 };
+    say p.x;    // 3
+    say p.y;    // 4
+
+    // Heap-allocated  — use & prefix, gives ref<Point>
+    let q: ref Point = &Point { x: 10.0, y: 20.0 };
+    say q->x;   // 10
+    say q->y;   // 20
+
+    // Field mutation
+    let c = new Color { r: 255, g: 128, b: 0, a: 255 };
+    say c.r;
+    c.g = 64;
+    say c.g;    // 64
+
+    let person = new Person {
+        name:   "Alice",
+        age:    30,
+        score:  98.5,
+        active: true
+    };
+    say person.name;
+    say person.age;
+    say person.active;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  FIELD ACCESS — . for stack values, -> for pointers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn dot_vs_arrow() {
+    let s = new Point { x: 1.0, y: 2.0 };
+    let p: ref Point = &s;
+
+    // Both work — . on a ref auto-dereferences in ZX
+    say s.x;     // 1  (direct access)
+    say p->x;    // 1  (pointer access, preferred)
+    say p.x;     // 1  (also works, but style warning suggests ->)
+
+    // Write through a pointer
+    p->x = 99.0;
+    say s.x;     // 99  (s was modified through p)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PASSING STRUCTS — by value vs by pointer
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn distance(a: Point, b: Point) -> float {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    return sqrt(dx*dx + dy*dy);
+}
+
+// Takes a pointer so it can modify the caller's struct
+fn translate(p: ref Point, dx: float, dy: float) {
+    p->x += dx;
+    p->y += dy;
+}
+
+fn scale_from_origin(p: ref Point, factor: float) {
+    p->x *= factor;
+    p->y *= factor;
+}
+
+fn demo_pass_structs() {
+    let a = new Point { x: 0.0, y: 0.0 };
+    let b = new Point { x: 3.0, y: 4.0 };
+
+    say distance(a, b);    // 5
+
+    translate(&a, 1.0, 1.0);
+    say a.x;    // 1
+    say a.y;    // 1
+
+    scale_from_origin(&b, 2.0);
+    say b.x;    // 6
+    say b.y;    // 8
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  RETURNING STRUCTS FROM FUNCTIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn make_point(x: float, y: float) -> Point {
+    return new Point { x: x, y: y };
+}
+
+fn midpoint(a: Point, b: Point) -> Point {
+    return new Point {
+        x: (a.x + b.x) / 2.0,
+        y: (a.y + b.y) / 2.0
+    };
+}
+
+fn bounding_rect(points: ref Point, count: int) -> Rect {
+    let min_x = points[0].x;
+    let min_y = points[0].y;
+    let max_x = points[0].x;
+    let max_y = points[0].y;
+    for i in 1..count {
+        if points[i].x < min_x { min_x = points[i].x; }
+        if points[i].y < min_y { min_y = points[i].y; }
+        if points[i].x > max_x { max_x = points[i].x; }
+        if points[i].y > max_y { max_y = points[i].y; }
+    }
+    return new Rect {
+        x: min_x, y: min_y,
+        w: max_x - min_x,
+        h: max_y - min_y
+    };
+}
+
+fn demo_return_structs() {
+    let p = make_point(5.0, 10.0);
+    say p.x;    // 5
+    say p.y;    // 10
+
+    let a = make_point(0.0, 0.0);
+    let b = make_point(4.0, 6.0);
+    let m = midpoint(a, b);
+    say m.x;    // 2
+    say m.y;    // 3
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  NESTED STRUCTS — structs containing other structs
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct AABB {           // axis-aligned bounding box
+    min: Point,
+    max: Point
+}
+
+struct Particle {
+    pos: Point,
+    vel: Point,
+    mass: float,
+    alive: bool
+}
+
+fn particle(x: float, y: float, vx: float, vy: float, mass: float) -> Particle {
+    return new Particle {
+        pos:   new Point { x: x, y: y },
+        vel:   new Point { x: vx, y: vy },
+        mass:  mass,
+        alive: true
+    };
+}
+
+fn step_particle(p: ref Particle, dt: float) {
+    p->pos.x += p->vel.x * dt;
+    p->pos.y += p->vel.y * dt;
+}
+
+fn demo_nested_structs() {
+    let part = particle(0.0, 0.0, 1.5, 2.0, 1.0);
+    say part.pos.x;   // 0
+    say part.vel.x;   // 1.5
+
+    step_particle(&part, 0.5);
+    say part.pos.x;   // 0.75
+    say part.pos.y;   // 1.0
+
+    let box = new AABB {
+        min: new Point { x: -5.0, y: -5.0 },
+        max: new Point { x:  5.0, y:  5.0 }
+    };
+    say box.min.x;    // -5
+    say box.max.y;    //  5
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ARRAYS OF STRUCTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_struct_arrays() {
+    let points: [4]Point = [
+        new Point { x: 1.0, y: 0.0 },
+        new Point { x: 0.0, y: 1.0 },
+        new Point { x: -1.0, y: 0.0 },
+        new Point { x: 0.0, y: -1.0 }
+    ];
+
+    // Iterate and access fields
+    for i in 0..4 {
+        say points[i].x, points[i].y;
+    }
+
+    // Modify fields through the array
+    points[0].x = 10.0;
+    say points[0].x;    // 10
+
+    // Find the point furthest from origin
+    let max_dist: float = 0.0;
+    let max_idx = 0;
+    for i in 0..4 {
+        let d = sqrt(points[i].x*points[i].x + points[i].y*points[i].y);
+        if d > max_dist {
+            max_dist = d;
+            max_idx = i;
+        }
+    }
+    say "furthest point index:", max_idx;
+    say "distance:", max_dist;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  SIZEOF
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_sizeof() {
+    say sizeof(Point);     // 16  (2 floats = 2 × 8 bytes)
+    say sizeof(Color);     // 16  (4 ints = 4 × 4 bytes)
+    say sizeof(Rect);      // 32  (4 floats = 4 × 8 bytes)
+    say sizeof(int);       // 8
+    say sizeof(float);     // 8
+    say sizeof(char);      // 1
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MAIN
+// ─────────────────────────────────────────────────────────────────────────────
+
+say "=== creation ===";           demo_creation();
+say "=== dot vs arrow ===";       dot_vs_arrow();
+say "=== passing structs ===";    demo_pass_structs();
+say "=== returning structs ===";  demo_return_structs();
+say "=== nested structs ===";     demo_nested_structs();
+say "=== struct arrays ===";      demo_struct_arrays();
+say "=== sizeof ===";             demo_sizeof();

@@ -1,0 +1,253 @@
+// bang_macros.zx
+// Demonstrates every bang macro (name!) in ZX.
+// Run: ./zxc examples/bang_macros.zx
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  DEBUG & SAFETY
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_debug() {
+    let x = 42;
+    let name = "zx";
+
+    // dbg! — prints  [dbg] x = 42  to stderr, then returns the value
+    let y = dbg!(x);
+    say y;
+
+    // log! — like dbg but labelled [log], useful for tracing
+    log!(name);
+
+    // type_of! — returns the type of an expression as a str at compile time
+    let t = type_of!(x);
+    say t;          // "int"
+    say type_of!(name);   // "str"
+    say type_of!(3.14);   // "float"
+
+    // size_of! — sizeof the value's type, as int
+    say size_of!(x);      // 8  (long long)
+    say size_of!(name);   // 8  (pointer)
+
+    // assert! — aborts with message if condition is false
+    assert!(x == 42, "x must be 42");
+
+    // ok! — aborts if false (no custom message)
+    ok!(x > 0);
+
+    // panic! — always aborts with a message
+    // panic!("this is unreachable");
+
+    // unreachable! — marks a branch the compiler should never reach
+    // unreachable!();
+
+    // todo! — placeholder for unfinished code
+    // todo!("implement this later");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MATH
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_math() {
+    let a = -7;
+    let b = 3;
+
+    say min!(a, b);        // -7
+    say max!(a, b);        // 3
+    say abs!(a);           // 7
+    say clamp!(a, 0, 10);  // 0
+    say clamp!(15, 0, 10); // 10
+
+    // between! — true if lo <= val <= hi
+    say between!(5, 1, 10);   // 1  (true)
+    say between!(15, 1, 10);  // 0  (false)
+
+    // sign! — returns -1, 0, or 1
+    say sign!(-99);  // -1
+    say sign!(0);    // 0
+    say sign!(42);   // 1
+
+    // swap! — swaps two variables in place
+    let p = 10;
+    let q = 20;
+    swap!(p, q);
+    say p;   // 20
+    say q;   // 10
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  BITS
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_bits() {
+    let flags = 0b00001010;   // bits 1 and 3 set
+
+    // bit_set! — test if bit N is set (0-indexed from LSB)
+    say bit_set!(flags, 1);  // 1  (true)
+    say bit_set!(flags, 0);  // 0  (false)
+
+    // bit_on! — return value with bit N set
+    let f2 = bit_on!(flags, 0);
+    say f2;    // 0b00001011 = 11
+
+    // bit_off! — return value with bit N cleared
+    let f3 = bit_off!(flags, 1);
+    say f3;    // 0b00001000 = 8
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  STRINGS
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_strings() {
+    let s = "  Hello, World!  ";
+
+    say len!(s);                    // byte length including spaces
+    say str_trim!(s);               // "Hello, World!"
+    say str_upper!("hello");        // "HELLO"
+    say str_lower!("WORLD");        // "world"
+    say str_repeat!("ab", 3);       // "ababab"
+
+    say str_eq!("abc", "abc");      // 1  (true)
+    say str_ne!("abc", "xyz");      // 1  (true)
+    say str_contains!("foobar", "oba");   // 1
+    say str_starts!("foobar", "foo");     // 1
+    say str_ends!("foobar", "bar");       // 1
+
+    // conversions
+    say str_to_int!("123");         // 123
+    say str_to_float!("3.14");      // 3.14
+    say int_to_str!(42);            // "42"
+    say float_to_str!(2.718);       // "2.718"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ARRAYS
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_arrays() {
+    let arr: [5]int = [10, 30, 50, 20, 40];
+
+    // count_of! — number of elements (compile-time)
+    say count_of!(arr);    // 5
+
+    // arr_sum! — sum of first N elements
+    say arr_sum!(arr, 5);  // 150
+
+    // arr_min! / arr_max!
+    say arr_min!(arr, 5);  // 10
+    say arr_max!(arr, 5);  // 50
+
+    // arr_fill! — fill first N elements with a value
+    arr_fill!(arr, 0, 5);
+    say arr[0];            // 0
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MEMORY
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_memory() {
+    // alloc! — malloc(n bytes), returns ref void
+    let buf = alloc!(64);
+    ok!(not_nil!(buf));
+
+    // memset! — fill memory with a byte value
+    memset!(buf, 0, 64);
+
+    // zalloc! — calloc, zero-initialised  (n bytes, 1 elem)
+    let zbuf = zalloc!(32);
+    ok!(not_nil!(zbuf));
+
+    // is_nil! / not_nil!
+    let p: ref int = nil;
+    say is_nil!(p);    // 1
+    say not_nil!(buf); // 1
+
+    // free!
+    free!(buf);
+    free!(zbuf);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  I/O & PROCESS
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_io() {
+    // print! / eprint! — raw printf / fprintf(stderr)
+    print!("value: %d\n", 99);
+    eprint!("debug: %s\n", "ok");
+
+    // env! — getenv, returns str (NULL if unset)
+    let home = env!("HOME");
+    if not_nil!(home) {
+        say home;
+    }
+
+    // exit_ok! / exit_err! — clean exits
+    // exit_ok!();
+    // exit_err!("something went wrong");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MISC
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_misc() {
+    // cast! — raw C cast between any two types
+    let f: float = 9.9;
+    let i = cast!(int, f);
+    say i;   // 9
+
+    // likely! / unlikely! — branch prediction hints
+    let x = 5;
+    if likely!(x > 0) {
+        say "likely path";
+    }
+    if unlikely!(x < 0) {
+        say "cold path";
+    }
+
+    // once! — evaluates expr once, caches result in a static variable
+    // Useful inside hot loops for one-time setup.
+    for _ in 0..5 {
+        let cached = once!(42 + 1);
+        say cached;   // always 43, computed only on first call
+    }
+
+    // try! — aborts with "try! null" if the value is nil/zero, otherwise returns it
+    let n = 7;
+    let safe = try!(n);
+    say safe;   // 7
+
+    // time! — wraps an expression and prints how long it took to stderr
+    let result = time!(abs!(-123));
+    say result;   // 123
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MAIN
+// ─────────────────────────────────────────────────────────────────────────────
+
+say "=== debug & safety ===";
+demo_debug();
+
+say "=== math ===";
+demo_math();
+
+say "=== bits ===";
+demo_bits();
+
+say "=== strings ===";
+demo_strings();
+
+say "=== arrays ===";
+demo_arrays();
+
+say "=== memory ===";
+demo_memory();
+
+say "=== i/o ===";
+demo_io();
+
+say "=== misc ===";
+demo_misc();

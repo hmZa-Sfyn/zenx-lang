@@ -24,5 +24,4 @@ mod math_stuff {
         for i in from..to+1 { s += i; }
         return s;
     }
-
 }

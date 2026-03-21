@@ -1,246 +1,572 @@
-# ZX Language  v0.6.0
+# ZX
 
 ```
  ▒███████▒ ▒██   ██▒
 ▒ ▒ ▒ ▄▀░ ▒▒ █ █ ▒░
 ░ ▒ ▄▀▒░  ░░  █   ░
   ▄▀▒   ░  ░ █ █  ░
-▒███████▒ ▒██▒ ▒██▒  v0.6.0
+▒███████▒ ▒██▒ ▒██▒  v3.2.0
 ```
 
-**ZX** is a tiny, Perl-flavored language that compiles to C.
-Simple syntax. Full C interop. Rust-style error messages.
-
----
+A fast, small language that compiles to C. Perl-flavored syntax, full C interop, Rust-style errors.
 
 ```sh
-$ ./zxc -c 'my abc = "ayo wat dat dawg doin?"; say len(abc);'
-22
-```
-
-## Build
-
-```bash
-cd zx
-go build -o zxc .
-```
-
-Requires: **Go 1.21+** and **GCC** (for compiling the generated C).
-
----
-
-## Usage
-
-```
-zxc <file.zx>              compile & run immediately
-zxc build <file.zx>        compile to binary
-zxc build <file.zx> -o x   compile to named binary
-zxc emit  <file.zx>        print the generated C source
-zxc check <file.zx>        type-check only (no output)
-zxc version                print version
+go build -o zxc .          # requires Go 1.21+ and GCC
+zxc -c 'say "hello";'      # run a one-liner
 ```
 
 ---
 
-## Quick Examples
+## CLI
 
-```zx
-// hello.zx
-println("Hello, World!");
+```
+zxc <file.zx>                  compile and run
+zxc build <file.zx>            compile to binary
+zxc build <file.zx> -o name    compile to named binary
+zxc build <file.zx> -O2        compile with optimizations
+zxc emit  <file.zx>            print generated C
+zxc check <file.zx>            type-check only
+zxc test  <file.zx>            run @test functions
+zxc repl                       interactive REPL
+zxc -c "code"                  run a one-liner
+zxc mods                       list stdlib modules
 ```
 
-```zx
-// fib.zx
-fn fib(n: int) -> int {
-    if n <= 1 { return n; }
-    return fib(n - 1) + fib(n - 2);
-}
-for i in 0..15 {
-    println(fib(i));
-}
-```
+**Optimization flags:** `-O0` (default) `-O1` `-O2` `-O3` `-Os` `-Oz`
 
 ---
 
-## Language Reference
+## Variables
 
-### Comments
 ```zx
-// line comment
-# also a line comment  (Perl-style)
-/* block comment */
+let x = 42;               // inferred type
+let y: float = 3.14;      // explicit type
+const MAX = 255;          // immutable
+our counter = 0;          // file-scope global
+priv fn helper() { }      // priv = not importable from other files
 ```
 
-### Variables & Constants
-```zx
-let x: int = 42;          // mutable, explicit type
-let y = 3.14;             // type inferred from value
-const MAX: int = 255;     // immutable constant
-```
+**Keywords:** `let` `my` `const` `our` `priv`
 
-### Types
+---
 
-| ZX type    | C type         | Notes                        |
-|------------|----------------|------------------------------|
-| `int`      | `long long`    | 64-bit signed integer        |
-| `float`    | `double`       | 64-bit double precision      |
-| `bool`     | `int`          | 0 = false, 1 = true          |
-| `str`      | `const char*`  | string literal pointer       |
-| `char`     | `char`         | single byte character        |
-| `void`     | `void`         | no value (return types only) |
-| `ptr<T>`   | `T*`           | raw pointer to T             |
-| `[N]T`     | `T[N]`         | fixed-size array             |
-| `MyStruct` | `MyStruct`     | user-defined struct          |
+## Types
 
-### Functions
+| Type | C equivalent | Notes |
+|------|-------------|-------|
+| `int` | `long long` | 64-bit signed |
+| `float` | `double` | 64-bit |
+| `bool` | `int` | `true` / `false` |
+| `str` | `const char*` | string pointer |
+| `char` | `char` | single byte |
+| `void` | `void` | return types only |
+| `any` | `long long` | escape hatch |
+| `ref T` | `T*` | pointer to T |
+| `[N]T` | `T[N]` | fixed-size array |
+| `MyStruct` | `MyStruct` | user struct |
+
+**Casts:** `int(x)` `float(x)` `bool(x)` `char(x)`
+
+---
+
+## Functions
+
 ```zx
 fn add(a: int, b: int) -> int {
     return a + b;
 }
 
-fn greet(name: str) {      // void return — no arrow needed
-    println("hi ", name);
+fn greet(name: str) {           // void — no arrow needed
+    say "hello", name;
 }
 
-fn variadic(fmt: str, ...) -> int {  // variadic (maps to C ...)
-    return 0;
+fn variadic(fmt: str, ...) -> int { }   // C variadic
+```
+
+**Method syntax:**
+```zx
+fn (self ref Point) scale(factor: float) -> Point {
+    return new Point { x: self->x * factor, y: self->y * factor };
 }
 ```
 
-### Control Flow
+**Lambda:**
+```zx
+let double = |x: int| -> int { return x * 2; };
+```
+
+**Annotations:**
+```zx
+@inline  fn fast() { }
+@cold    fn rare_path() { }
+@hot     fn critical() { }
+@deprecated fn old() { }
+@test    fn test_add() { assert add(1, 2) == 3, "wrong"; }
+```
+
+---
+
+## Control Flow
+
 ```zx
 // if / elif / else
-if score >= 90 {
-    println("A");
-} elif score >= 80 {
-    println("B");
-} else {
-    println("F");
+if score >= 90 { say "A"; }
+elif score >= 80 { say "B"; }
+else { say "F"; }
+
+// unless (inverse if)
+unless ready { return; }
+
+// while / until
+while i < 10 { i += 1; }
+until done { step(); }
+
+// for range  (exclusive end)
+for i in 0..10 { say i; }
+for i in 0..10 : 2 { say i; }    // step by 2
+
+// match
+match status {
+    0 => { say "ok"; }
+    1 | 2 => { say "warn"; }    // multi-pattern arm
+    _ => { say "error"; }
 }
 
-// while
-while i < 10 {
-    i += 1;
+// repeat N times
+repeat 5 { say "hi"; }
+
+// with — scoped alias
+with expensive_call() as result {
+    say result;
 }
 
-// for range  (exclusive end, like Python range)
-for i in 0..10 {
-    println(i);       // 0, 1, ..., 9
+// try / catch / finally
+try {
+    risky();
+} catch (err) {
+    say "errno:", err;
+} finally {
+    cleanup();
 }
 
-// break / continue inside loops
+// defer — runs at scope exit (LIFO)
+defer free(ptr);
+
+// break / continue
 while true {
     if done { break; }
     if skip { continue; }
 }
 ```
 
-### Structs
+---
+
+## Structs
+
 ```zx
 struct Point {
     x: float,
     y: float
 }
 
-let p: Point = new Point { x: 1.0, y: 2.0 };
-println(p.x);
-p.y = 5.0;
+let p = new Point { x: 1.0, y: 2.0 };
+let q: ref Point = &Point { x: 3.0, y: 4.0 };  // heap alloc
 
-// pointer to struct — use . or ->
-let ptr_p: ptr<Point> = &p;
-println(ptr_p->x);          // sugar for (*ptr_p).x
-```
+p.x = 5.0;
+q->y = 6.0;
 
-### Importing C Headers
-```zx
-import "stdio.h"
-import "math.h"
-import "string.h"
-```
-Becomes `#include <stdio.h>` etc. in the generated C.
-
-### Declaring C Functions (extern)
-```zx
-extern fn sqrt(x: float) -> float;
-extern fn printf(fmt: str, ...) -> int;
-extern fn strlen(s: str) -> int;
-```
-
-**Important:** ZX knows about all standard C library functions
-(`printf`, `malloc`, `sqrt`, `strlen`, etc.). If you declare them
-as `extern`, ZX's type checker uses the declaration for validation,
-but does **not** re-emit it in the C output (avoiding conflicts with
-the headers).
-
-### Built-in print / println
-```zx
-print("x = ", x);       // no newline, space-separated
-println("done!");        // appends newline
-println(x, y, z);        // multiple args, space-separated
-```
-Types are auto-formatted: `int → %lld`, `float → %g`, `str → %s`, etc.
-
-### Cast
-```zx
-let f: float = 9.99;
-let i: int   = int(f);       // truncates to 9
-let c: char  = char(65);     // 'A'
-let b: bool  = bool(0);      // false
-```
-
-### Pointers
-```zx
-let n: int       = 42;
-let p: ptr<int>  = &n;     // take address
-*p = 100;                  // dereference & write
-println(n);                // 100
-```
-
-### Arrays
-```zx
-let arr: [5]int = [10, 20, 30, 40, 50];
-println(arr[0]);           // 10
-arr[2] = 999;
-```
-
-### sizeof
-```zx
-println(sizeof(int));      // 8  (long long on 64-bit)
-println(sizeof(float));    // 8  (double)
-println(sizeof(char));     // 1
-```
-
-### Operators
-```
-Arithmetic:   +  -  *  /  %
-Comparison:   ==  !=  <  >  <=  >=
-Logical:      &&  ||  !
-Bitwise:      &  |  ^  ~  <<  >>
-Assignment:   =  +=  -=  *=  /=  %=
-Range:        ..    (for i in 0..10)
-Address:      &expr   *expr
-Arrow:        ->  (return type + pointer field access)
-```
-
-### Hex & Numeric Literals
-```zx
-let big:  int = 1_000_000;    // underscores ignored
-let hex:  int = 0xFF;         // hex
-let ch:   int = 'A';          // char literal → integer
+say sizeof(Point);
 ```
 
 ---
 
-## Error Messages
+## Strings
 
-ZX gives Rust-style errors with file path, line, column,
-source underline, and a green hint:
+```zx
+let name = "world";
+
+// f-string interpolation
+let msg = f"hello {name}, you are {age} years old";
+
+// multiline with ${ } interpolation
+let body = @`
+  name: ${name}
+  lines: ${count}
+`;
+
+// common operations  (bang macros)
+len!(s)                 // byte length
+str_eq!(a, b)           // value equality  (not pointer)
+str_contains!(s, "x")
+str_starts!(s, "pre")
+str_ends!(s, "suf")
+str_to_int!(s)
+str_to_float!(s)
+int_to_str!(n)
+float_to_str!(f)
+str_upper!(s)
+str_lower!(s)
+str_trim!(s)
+str_repeat!(s, 3)
+```
+
+---
+
+## Pointers & Memory
+
+```zx
+let n = 42;
+let p: ref int = &n;
+*p = 100;
+
+// manual memory
+let buf = alloc!(1024);
+free!(buf);
+let z   = zalloc!(10, sizeof(int));   // calloc
+memcpy!(dst, src, size);
+memset!(ptr, 0, size);
+
+// nil checks
+is_nil!(ptr)
+not_nil!(ptr)
+```
+
+---
+
+## Output
+
+```zx
+print "x =", x;          // no newline
+println "done!";          // with newline
+say "hi";                 // alias for println
+warn "debug info";        // prints to stderr
+eprint "raw stderr";      // also stderr, no newline
+```
+
+---
+
+## Input
+
+```zx
+let line = input();                  // read line from stdin
+let name = input("enter name: ");    // with prompt
+let raw  = read_line!();             // bang macro form
+```
+
+---
+
+## File I/O
+
+```zx
+let src  = readfile!("data.txt");
+writefile!("out.txt", content);
+```
+
+---
+
+## Shell Commands
+
+```zx
+cmd!("ls -la");                    // run, discard output
+let out = cmd!("git log --oneline");   // capture output
+spawn git_pull();                      // fire and forget
+```
+
+---
+
+## Macros
+
+```zx
+macro fn double |x: int| -> int {
+    return x * 2;
+}
+
+// chain macros — pipeline style
+score
+    ifPositive: {
+        say "positive";
+    }
+    ifNegative: {
+        say "negative";
+    }
+
+// built-in chain macros
+value
+    ifTrue:     { ... }
+    ifFalse:    { ... }
+    ifNil:      { ... }
+    ifNotNil:   { ... }
+    ifZero:     { ... }
+    ifNotZero:  { ... }
+    ifEven:     { ... }
+    ifOdd:      { ... }
+    ifGt(10):   { ... }
+    ifLt(0):    { ... }
+    repeat:     { ... }      // run N times
+    times:      { ... }      // alias
+    whileTrue:  { ... }
+    then:       { ... }      // always run
+    map(fn):                 // transform value
+    tap:        { ... }      // side-effect, keep value
+    orDefault(x):            // replace if falsy
+    clampTo(lo, hi):         // clamp in place
+    printVal:                // print and continue
+
+// pipe operator
+value |> transform |> validate
+```
+
+---
+
+## Bang Macros
+
+Quick inline operations. All expand to C expressions — zero overhead.
+
+**Debug / safety**
+```zx
+dbg!(x)              // print name=value to stderr, returns x
+log!(x)              // print [log] value to stderr
+time!(expr)          // print timing for expr to stderr
+assert!(cond, msg)   // abort with message if false
+ok!(cond)            // abort if false
+panic!("reason")     // abort unconditionally
+unreachable!()       // marks a code path as impossible
+todo!("msg")         // marks unfinished code
+try!(ptr)            // abort if ptr is nil, otherwise return it
+```
+
+**Math**
+```zx
+min!(a, b)
+max!(a, b)
+abs!(n)
+clamp!(v, lo, hi)
+between!(v, lo, hi)    // lo <= v <= hi
+sign!(n)               // -1, 0, or 1
+swap!(a, b)
+```
+
+**Bits**
+```zx
+bit_set!(val, n)       // test bit n
+bit_on!(val, n)        // set bit n
+bit_off!(val, n)       // clear bit n
+```
+
+**Strings**
+```zx
+len!(s)
+str_eq!(a, b)
+str_ne!(a, b)
+str_contains!(s, sub)
+str_starts!(s, pre)
+str_ends!(s, suf)
+str_to_int!(s)
+str_to_float!(s)
+int_to_str!(n)
+float_to_str!(f)
+str_upper!(s)
+str_lower!(s)
+str_trim!(s)
+str_repeat!(s, n)
+```
+
+**Arrays**
+```zx
+count_of!(arr)         // element count (compile-time)
+arr_fill!(arr, v, n)
+arr_sum!(arr, n)
+arr_min!(arr, n)
+arr_max!(arr, n)
+```
+
+**Types / introspection**
+```zx
+type_of!(x)            // returns type name as str
+size_of!(x)            // sizeof the value's type
+cast!(type, value)     // raw C cast
+sizeof(Type)           // sizeof a type (keyword form)
+typeof(expr)           // type name as str (keyword form)
+```
+
+**Misc**
+```zx
+env!("HOME")           // getenv
+print!(fmt, ...)       // raw printf
+eprint!(fmt, ...)      // fprintf to stderr
+read_line!()           // read stdin line
+exit_ok!()             // exit(0)
+exit_err!("msg")       // print msg, exit(1)
+alloc!(n)              // malloc(n)
+zalloc!(n)             // calloc(n, 1)
+free!(ptr)
+memcpy!(dst, src, n)
+memset!(ptr, v, n)
+is_nil!(ptr)
+not_nil!(ptr)
+likely!(cond)          // branch hint
+unlikely!(cond)        // branch hint
+once!(expr)            // evaluate once, cache forever
+apply!(macro, val)     // apply a named macro as an expression
+```
+
+---
+
+## Modules
+
+```zx
+// declare a module
+mod Math {
+    fn square(x: int) -> int { return x * x; }
+    priv fn internal() { }     // not importable
+}
+
+// call module functions
+Math->square(5);
+Math::square(5);         // both work
+
+// module init — runs once before main
+mod Config {
+    fn __init__() {
+        // setup code
+    }
+}
+```
+
+---
+
+## Imports
+
+```zx
+use "stdio.h"             // C header: becomes #include <stdio.h>
+use std::math             // stdlib module
+use std::str
+use std::io
+use std::fs
+use std::sys
+use std::cmd
+use std::mem
+use std::conv
+use std::time
+use std::net
+
+import _/utils            // ./utils.zx
+import __/shared/types    // ../shared/types.zx
+import ___/common         // ../../common.zx
+import _/logger (Logger)  // import only the Logger mod block
+import std/net/socket     // $ZENX_STD_PATH/net/socket.zx
+import usr/mylib/util     // $ZENX_USR_PATH/mylib/util.zx
+```
+
+---
+
+## Extern (C interop)
+
+```zx
+extern fn malloc(size: int) -> ref void;
+extern fn printf(fmt: str, ...) -> int;
+extern fn sqrt(x: float) -> float;
+```
+
+ZX knows all standard C library functions already — declare `extern` only for third-party or non-standard functions.
+
+---
+
+## Visibility (`priv`)
+
+By default everything is **public** and importable. Use `priv` to make a declaration file-private:
+
+```zx
+priv fn helper() { }          // not accessible from other files
+priv struct Internal { ... }  // same
+priv macro cleanup |x| { }   // same
+priv mod Details { ... }      // entire mod is private
+
+mod Api {
+    fn public_fn() { }
+    priv fn private_fn() { }  // private within the mod
+}
+```
+
+Accessing a `priv` name from another file is a compile-time error (`EP1`–`EP6`).
+
+---
+
+## Diagnostics
+
+Errors show file, line, column, source underline, and a fix suggestion:
 
 ```
-error: E11: type mismatch — cannot initialize int variable with str value
-  --> examples/errors.zx:3:18
-     2 │ // E11: type mismatch on init
-     3 │ let score: int = "oops";
-               │                  ^^^^^^
-               │                  hint: cast with int(...) or change the type to str
+error[E11]: type mismatch — cannot assign str to int
+  --> src/main.zx:4:16
+   3 |  // declare score as int
+   4 |  let score: int = "ninety";
+                         ^^^^^^^^^
+   4 |  help  change the type to str, or cast: int("ninety")
+   4 |  fix   let score: str = "ninety";
+```
+
+All diagnostic codes are listed in **[errors.md](errors.md)**.
+
+---
+
+## Numeric Literals
+
+```zx
+1_000_000      // underscores ignored
+0xFF           // hex
+0b1010         // binary
+0o755          // octal
+1.5e10         // scientific notation
+'A'            // char literal → int (65)
+```
+
+---
+
+## Operators
+
+```
+Arithmetic    +  -  *  /  %
+Comparison    ==  !=  <  >  <=  >=
+Logical       &&  ||  !
+Bitwise       &  |  ^  ~  <<  >>
+Assignment    =  +=  -=  *=  /=  %=
+Range         ..   (exclusive end)
+Pipe          |>   (left to right chaining)
+Address       &expr   *expr   ^expr
+Ternary       cond ? then : else
+```
+
+---
+
+## Quick Reference
+
+```zx
+// hello world
+say "hello, world";
+
+// fibonacci
+fn fib(n: int) -> int {
+    if n <= 1 { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+for i in 0..10 { say fib(i); }
+
+// struct + method
+struct Vec2 { x: float, y: float }
+fn (v Vec2) len() -> float { return sqrt(v.x*v.x + v.y*v.y); }
+
+// file-private helper + public api
+priv fn validate(x: int) -> bool { return x > 0; }
+fn process(x: int) -> int {
+    if !validate(x) { panic!("bad input"); }
+    return x * 2;
+}
+
+// macro pipeline
+let result = getUserScore();
+result
+    ifGt(100): { say "bonus!"; }
+    clampTo(0, 100):
+    printVal:
 ```

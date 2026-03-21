@@ -372,12 +372,27 @@ func (tc *TypeChecker) isPrivateFrom(name, declFile string) bool {
 
 // ── Dead-code / unused-fn detection ──────────────────────────────────────────
 
-// checkDeadCode warns on top-level functions that are never called anywhere
-// (excluding main, exported names, and test functions).
+// checkDeadCode warns on private top-level functions that are never called.
+// Public functions are skipped — they may be called from other files.
 func (tc *TypeChecker) checkDeadCode() {
-	// Build set of called functions by walking all bodies.
 	called := make(map[string]bool)
-	tc.collectCalls(prog_nodes(tc.prog), called)
+
+	// Walk every function body in the whole program.
+	for _, fn := range tc.fns {
+		tc.walkBody(fn.Body, called)
+	}
+	for _, m := range tc.methods {
+		tc.walkBody(m.Body, called)
+	}
+	for _, mb := range tc.prog.ModBlocks {
+		tc.walkModBlock(mb, called)
+	}
+	// Also walk top-level statements (script-style code outside any fn).
+	for _, stmt := range tc.prog.TopStmts {
+		if _, isFn := stmt.(*FnDecl); !isFn {
+			tc.walkNode(stmt, called)
+		}
+	}
 
 	for name, fn := range tc.fns {
 		if name == "main" {
@@ -386,9 +401,8 @@ func (tc *TypeChecker) checkDeadCode() {
 		if fn.HasAnnotation(AnnTest) || fn.HasAnnotation(AnnSetup) || fn.HasAnnotation(AnnTeardown) {
 			continue
 		}
-		// exported (public) functions might be called from other files
 		if fn.Vis == VisPublic {
-			continue
+			continue // may be called from another file
 		}
 		if !called[name] {
 			warnCode("W91", fn.Sp,
@@ -398,91 +412,211 @@ func (tc *TypeChecker) checkDeadCode() {
 	}
 }
 
-func prog_nodes(prog *Program) []Node {
-	var nodes []Node
-	nodes = append(nodes, prog.TopStmts...)
-	for _, m := range prog.Methods {
-		if m.Body != nil {
-			nodes = append(nodes, m.Body.Stmts...)
-		}
+func (tc *TypeChecker) walkModBlock(mb *ModBlock, called map[string]bool) {
+	if mb == nil {
+		return
 	}
-	for _, mb := range prog.ModBlocks {
-		for _, fn := range mb.Fns {
-			if fn.Body != nil {
-				nodes = append(nodes, fn.Body.Stmts...)
-			}
-		}
+	for _, fn := range mb.Fns {
+		tc.walkBody(fn.Body, called)
 	}
-	return nodes
-}
-
-func (tc *TypeChecker) collectCalls(nodes []Node, called map[string]bool) {
-	for _, n := range nodes {
-		tc.collectCallsNode(n, called)
+	for _, td := range mb.Tests {
+		tc.walkBody(td.Fn.Body, called)
+	}
+	for _, nested := range mb.Mods {
+		tc.walkModBlock(nested, called)
 	}
 }
 
-func (tc *TypeChecker) collectCallsNode(n Node, called map[string]bool) {
+func (tc *TypeChecker) walkBody(b *Block, called map[string]bool) {
+	if b == nil {
+		return
+	}
+	for _, s := range b.Stmts {
+		tc.walkNode(s, called)
+	}
+}
+
+// walkNode is a complete, nil-safe recursive walker over every AST node type.
+// It records every function name that appears in a call position into `called`.
+func (tc *TypeChecker) walkNode(n Node, called map[string]bool) {
 	if n == nil {
 		return
 	}
 	switch s := n.(type) {
+	// ── declarations ────────────────────────────────────────────────────────
+	case *FnDecl:
+		tc.walkBody(s.Body, called)
+	case *VarDecl:
+		tc.walkNode(s.Init, called)
+	case *AssignStmt:
+		tc.walkNode(s.LHS, called)
+		tc.walkNode(s.Value, called)
+
+	// ── call expressions ────────────────────────────────────────────────────
 	case *CallExpr:
-		if id, ok := s.Func.(*Ident); ok {
+		if id, ok := s.Func.(*Ident); ok && id != nil {
 			called[id.Name] = true
 		}
+		tc.walkNode(s.Func, called)
 		for _, a := range s.Args {
-			tc.collectCallsNode(a, called)
+			tc.walkNode(a, called)
 		}
-	case *FnDecl:
-		if s.Body != nil {
-			tc.collectCalls(s.Body.Stmts, called)
-		}
-	case *Block:
-		tc.collectCalls(s.Stmts, called)
-	case *IfStmt:
-		tc.collectCallsNode(s.Cond, called)
-		tc.collectCallsNode(s.Then, called)
-		for _, el := range s.Elifs {
-			tc.collectCallsNode(el.Cond, called)
-			tc.collectCallsNode(el.Body, called)
-		}
-		tc.collectCallsNode(s.Else, called)
-	case *WhileStmt:
-		tc.collectCallsNode(s.Cond, called)
-		tc.collectCallsNode(s.Body, called)
-	case *ForRangeStmt:
-		tc.collectCallsNode(s.From, called)
-		tc.collectCallsNode(s.To, called)
-		tc.collectCallsNode(s.Body, called)
-	case *ReturnStmt:
-		tc.collectCallsNode(s.Value, called)
-	case *ExprStmt:
-		tc.collectCallsNode(s.Expr, called)
-	case *AssignStmt:
-		tc.collectCallsNode(s.LHS, called)
-		tc.collectCallsNode(s.Value, called)
-	case *VarDecl:
-		tc.collectCallsNode(s.Init, called)
-	case *BinExpr:
-		tc.collectCallsNode(s.LHS, called)
-		tc.collectCallsNode(s.RHS, called)
-	case *UnaryExpr:
-		tc.collectCallsNode(s.Operand, called)
 	case *MethodCallExpr:
-		tc.collectCallsNode(s.Recv, called)
+		tc.walkNode(s.Recv, called)
 		for _, a := range s.Args {
-			tc.collectCallsNode(a, called)
+			tc.walkNode(a, called)
 		}
-	case *FieldExpr:
-		tc.collectCallsNode(s.Obj, called)
-	case *IndexExpr:
-		tc.collectCallsNode(s.Obj, called)
-		tc.collectCallsNode(s.Idx, called)
+	case *ModCallExpr:
+		for _, a := range s.Args {
+			tc.walkNode(a, called)
+		}
+	case *MacroCallExpr:
+		for _, a := range s.Args {
+			tc.walkNode(a, called)
+		}
+	case *BangMacroExpr:
+		for _, a := range s.Args {
+			tc.walkNode(a, called)
+		}
+	case *MacroCallChain:
+		tc.walkNode(s.Recv, called)
+		for _, step := range s.Steps {
+			for _, a := range step.Args {
+				tc.walkNode(a, called)
+			}
+			tc.walkBody(step.Body, called)
+			tc.walkBody(step.ElseBody, called)
+		}
+	case *MacroApplyExpr:
+		tc.walkNode(s.Value, called)
+		for _, a := range s.Args {
+			tc.walkNode(a, called)
+		}
+
+	// ── blocks & control flow ───────────────────────────────────────────────
+	case *Block:
+		tc.walkBody(s, called)
+	case *ExprStmt:
+		tc.walkNode(s.Expr, called)
+	case *ReturnStmt:
+		tc.walkNode(s.Value, called)
+	case *IfStmt:
+		tc.walkNode(s.Cond, called)
+		tc.walkBody(s.Then, called)
+		for _, el := range s.Elifs {
+			tc.walkNode(el.Cond, called)
+			tc.walkBody(el.Body, called)
+		}
+		tc.walkBody(s.Else, called)
+	case *UnlessStmt:
+		tc.walkNode(s.Cond, called)
+		tc.walkBody(s.Body, called)
+		tc.walkBody(s.Else, called)
+	case *WhileStmt:
+		tc.walkNode(s.Cond, called)
+		tc.walkBody(s.Body, called)
+	case *UntilStmt:
+		tc.walkNode(s.Cond, called)
+		tc.walkBody(s.Body, called)
+	case *ForRangeStmt:
+		tc.walkNode(s.From, called)
+		tc.walkNode(s.To, called)
+		tc.walkNode(s.Step, called)
+		tc.walkBody(s.Body, called)
+	case *RepeatStmt:
+		tc.walkNode(s.Count, called)
+		tc.walkBody(s.Body, called)
+	case *WithStmt:
+		tc.walkNode(s.Expr, called)
+		tc.walkBody(s.Body, called)
+	case *MatchStmt:
+		tc.walkNode(s.Expr, called)
+		for _, arm := range s.Arms {
+			tc.walkNode(arm.Pattern, called)
+			for _, p := range arm.Patterns {
+				tc.walkNode(p, called)
+			}
+			tc.walkNode(arm.Guard, called)
+			tc.walkBody(arm.Body, called)
+		}
+	case *TryCatchStmt:
+		tc.walkBody(s.Try, called)
+		tc.walkBody(s.Catch, called)
+		tc.walkBody(s.Finally, called)
+	case *DeferStmt:
+		tc.walkNode(s.Call, called)
+	case *AssertStmt:
+		tc.walkNode(s.Cond, called)
+		tc.walkNode(s.Msg, called)
+	case *PrintStmt:
+		for _, a := range s.Args {
+			tc.walkNode(a, called)
+		}
+	case *ExitStmt:
+		tc.walkNode(s.Code, called)
+	case *SpawnStmt:
+		tc.walkNode(s.Call, called)
+
+	// ── expressions ─────────────────────────────────────────────────────────
+	case *BinExpr:
+		tc.walkNode(s.LHS, called)
+		tc.walkNode(s.RHS, called)
+	case *UnaryExpr:
+		tc.walkNode(s.Operand, called)
 	case *TernaryExpr:
-		tc.collectCallsNode(s.Cond, called)
-		tc.collectCallsNode(s.Then, called)
-		tc.collectCallsNode(s.Else, called)
+		tc.walkNode(s.Cond, called)
+		tc.walkNode(s.Then, called)
+		tc.walkNode(s.Else, called)
+	case *FieldExpr:
+		tc.walkNode(s.Obj, called)
+	case *IndexExpr:
+		tc.walkNode(s.Obj, called)
+		tc.walkNode(s.Idx, called)
+	case *AddrExpr:
+		tc.walkNode(s.Operand, called)
+	case *CastExpr:
+		tc.walkNode(s.Operand, called)
+	case *PipeExpr:
+		for _, step := range s.Steps {
+			tc.walkNode(step, called)
+		}
+	case *StructInit:
+		for _, f := range s.Fields {
+			tc.walkNode(f.Value, called)
+		}
+	case *ArrayLit:
+		for _, el := range s.Elems {
+			tc.walkNode(el, called)
+		}
+	case *LambdaExpr:
+		tc.walkBody(s.Body, called)
+	case *TemplateStr:
+		for _, part := range s.Parts {
+			if part.IsExpr {
+				tc.walkNode(part.Expr, called)
+			}
+		}
+	case *MultilineStr:
+		for _, part := range s.Parts {
+			if part.IsExpr {
+				tc.walkNode(part.Expr, called)
+			}
+			for _, st := range part.Stmts {
+				tc.walkNode(st, called)
+			}
+		}
+	case *CmdExpr:
+		tc.walkNode(s.Command, called)
+	case *ReadFileExpr:
+		tc.walkNode(s.Path, called)
+	case *WriteFileExpr:
+		tc.walkNode(s.Path, called)
+		tc.walkNode(s.Content, called)
+
+	// literals and leaf nodes — nothing to walk
+	case *Ident, *IntLit, *FloatLit, *BoolLit, *StrLit, *NilLit,
+		*SizeofExpr, *TypeofExpr, *BreakStmt, *ContinueStmt:
+		// no children
 	}
 }
 

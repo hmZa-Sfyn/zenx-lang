@@ -1,0 +1,309 @@
+// structs_methods.zx
+// Go-style method declarations on structs.
+//
+// Syntax:  fn (receiverName ReceiverType) methodName(params) -> RetType { }
+//          fn (receiverName ref ReceiverType) methodName(params) -> RetType { }
+//
+// Value receiver  — gets a copy; cannot mutate the original.
+// Ref receiver    — gets a pointer; can mutate the original.
+//
+// Run: ./zxc examples/structs_methods.zx
+
+use std::math
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Vec2 — 2D vector with a full method set
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct Vec2 {
+    x: float,
+    y: float
+}
+
+// Value receivers — read-only, returns new value or scalar
+
+fn (v Vec2) length() -> float {
+    return sqrt(v.x*v.x + v.y*v.y);
+}
+
+fn (v Vec2) length_sq() -> float {
+    return v.x*v.x + v.y*v.y;
+}
+
+fn (v Vec2) dot(other: Vec2) -> float {
+    return v.x*other.x + v.y*other.y;
+}
+
+fn (v Vec2) add(other: Vec2) -> Vec2 {
+    return new Vec2 { x: v.x + other.x, y: v.y + other.y };
+}
+
+fn (v Vec2) sub(other: Vec2) -> Vec2 {
+    return new Vec2 { x: v.x - other.x, y: v.y - other.y };
+}
+
+fn (v Vec2) scale(f: float) -> Vec2 {
+    return new Vec2 { x: v.x * f, y: v.y * f };
+}
+
+fn (v Vec2) normalize() -> Vec2 {
+    let len = v.length();
+    if len == 0.0 { return new Vec2 { x: 0.0, y: 0.0 }; }
+    return new Vec2 { x: v.x / len, y: v.y / len };
+}
+
+fn (v Vec2) negate() -> Vec2 {
+    return new Vec2 { x: -v.x, y: -v.y };
+}
+
+fn (v Vec2) distance_to(other: Vec2) -> float {
+    let d = v.sub(other);
+    return d.length();
+}
+
+fn (v Vec2) lerp(other: Vec2, t: float) -> Vec2 {
+    return new Vec2 {
+        x: v.x + (other.x - v.x) * t,
+        y: v.y + (other.y - v.y) * t
+    };
+}
+
+fn (v Vec2) print() {
+    say "Vec2(", v.x, ",", v.y, ")";
+}
+
+// Ref receiver — mutates the struct in place
+
+fn (v ref Vec2) set(x: float, y: float) {
+    v->x = x;
+    v->y = y;
+}
+
+fn (v ref Vec2) add_in_place(other: Vec2) {
+    v->x += other.x;
+    v->y += other.y;
+}
+
+fn (v ref Vec2) scale_in_place(f: float) {
+    v->x *= f;
+    v->y *= f;
+}
+
+fn (v ref Vec2) normalize_in_place() {
+    let len = v->length();
+    if len == 0.0 { return; }
+    v->x /= len;
+    v->y /= len;
+}
+
+fn demo_vec2_methods() {
+    let a = new Vec2 { x: 3.0, y: 4.0 };
+    let b = new Vec2 { x: 1.0, y: 0.0 };
+
+    say a.length();            // 5
+    say a.length_sq();         // 25
+    say a.dot(b);              // 3
+
+    let c = a.add(b);
+    c.print();                 // Vec2(4, 4)
+
+    let d = a.normalize();
+    say d.x;                   // 0.6
+    say d.y;                   // 0.8
+
+    say a.distance_to(b);      // ~3.605
+
+    let mid = a.lerp(b, 0.5);
+    mid.print();               // Vec2(2, 2)
+
+    // Chained method calls (return-value chaining)
+    let result = a.sub(b).scale(2.0).negate();
+    result.print();            // Vec2(-4, -8)
+
+    // Mutating via ref receiver
+    let mut_v = new Vec2 { x: 0.0, y: 0.0 };
+    mut_v.set(6.0, 8.0);
+    say mut_v.length();        // 10
+
+    mut_v.normalize_in_place();
+    say mut_v.x;               // 0.6
+    say mut_v.y;               // 0.8
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Stack — linked-list style struct with methods
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct Stack {
+    data:  [128]int,
+    top:   int,
+    cap:   int
+}
+
+fn (s ref Stack) init() {
+    s->top = 0;
+    s->cap = 128;
+}
+
+fn (s ref Stack) push(v: int) -> bool {
+    if s->top >= s->cap { return false; }
+    s->data[s->top] = v;
+    s->top += 1;
+    return true;
+}
+
+fn (s ref Stack) pop() -> int {
+    if s->top <= 0 { return 0; }
+    s->top -= 1;
+    return s->data[s->top];
+}
+
+fn (s ref Stack) peek() -> int {
+    if s->top <= 0 { return 0; }
+    return s->data[s->top - 1];
+}
+
+fn (s Stack) size()  -> int  { return s.top; }
+fn (s Stack) empty() -> bool { return s.top == 0; }
+
+fn (s ref Stack) clear() { s->top = 0; }
+
+fn demo_stack_methods() {
+    let stk: Stack;
+    stk.init();
+
+    stk.push(10);
+    stk.push(20);
+    stk.push(30);
+
+    say stk.size();    // 3
+    say stk.peek();    // 30
+
+    while !stk.empty() {
+        say stk.pop();   // 30, 20, 10
+    }
+
+    say stk.size();    // 0
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  StringBuilder — builder pattern via ref methods
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct StringBuilder {
+    buf:  [4096]char,
+    len:  int
+}
+
+extern fn strlen(s: str) -> int;
+extern fn memcpy(dst: ref void, src: ref void, n: int) -> ref void;
+extern fn snprintf(buf: ref void, size: int, fmt: str, ...) -> int;
+
+fn (sb ref StringBuilder) init() {
+    sb->len = 0;
+    sb->buf[0] = char(0);
+}
+
+fn (sb ref StringBuilder) append(s: str) {
+    let slen = strlen(s);
+    if sb->len + slen >= 4095 { return; }
+    memcpy(&sb->buf[sb->len], s, slen + 1);
+    sb->len += slen;
+}
+
+fn (sb ref StringBuilder) append_int(n: int) {
+    // Write the int into a temp buffer then append
+    let tmp: [32]char;
+    snprintf(&tmp, 32, "%lld", n);
+    sb->append(&tmp);
+}
+
+fn (sb ref StringBuilder) append_char(c: char) {
+    if sb->len >= 4095 { return; }
+    sb->buf[sb->len] = c;
+    sb->len += 1;
+    sb->buf[sb->len] = char(0);
+}
+
+fn (sb StringBuilder) str()    -> str { return &sb.buf; }
+fn (sb StringBuilder) length() -> int { return sb.len;  }
+
+fn (sb ref StringBuilder) clear() {
+    sb->len = 0;
+    sb->buf[0] = char(0);
+}
+
+fn demo_string_builder() {
+    let sb: StringBuilder;
+    sb.init();
+
+    sb.append("hello");
+    sb.append(", ");
+    sb.append("world");
+    sb.append_char('!');
+
+    say sb.str();      // "hello, world!"
+    say sb.length();   // 13
+
+    sb.clear();
+    for i in 1..6 {
+        sb.append("item");
+        sb.append_int(i);
+        if i < 5 { sb.append(", "); }
+    }
+    say sb.str();    // "item1, item2, item3, item4, item5"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  METHODS CALLING OTHER METHODS
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct Triangle {
+    a: Vec2,
+    b: Vec2,
+    c: Vec2
+}
+
+fn (t Triangle) perimeter() -> float {
+    return t.a.distance_to(t.b)
+         + t.b.distance_to(t.c)
+         + t.c.distance_to(t.a);
+}
+
+fn (t Triangle) area() -> float {
+    // Shoelace formula
+    return abs(
+        (t.b.x - t.a.x) * (t.c.y - t.a.y) -
+        (t.c.x - t.a.x) * (t.b.y - t.a.y)
+    ) / 2.0;
+}
+
+fn (t Triangle) centroid() -> Vec2 {
+    return new Vec2 {
+        x: (t.a.x + t.b.x + t.c.x) / 3.0,
+        y: (t.a.y + t.b.y + t.c.y) / 3.0
+    };
+}
+
+extern fn abs(x: float) -> float;
+
+fn demo_triangle_methods() {
+    let tri = new Triangle {
+        a: new Vec2 { x: 0.0, y: 0.0 },
+        b: new Vec2 { x: 4.0, y: 0.0 },
+        c: new Vec2 { x: 0.0, y: 3.0 }
+    };
+
+    say tri.perimeter();    // ~12  (3 + 4 + 5)
+    say tri.area();          // 6   (0.5 * 3 * 4)
+    tri.centroid().print();  // Vec2(1.333, 1.0)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MAIN
+// ─────────────────────────────────────────────────────────────────────────────
+
+say "=== Vec2 methods ===";        demo_vec2_methods();
+say "=== Stack methods ===";       demo_stack_methods();
+say "=== StringBuilder ===";       demo_string_builder();
+say "=== Triangle methods ===";    demo_triangle_methods();

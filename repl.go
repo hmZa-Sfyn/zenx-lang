@@ -28,7 +28,7 @@ import (
 const (
 	replPrompt     = "zx> "
 	replPromptCont = "... "
-	replVersion    = "0.6"
+	replVersion    = "3.2"
 )
 
 // replSession accumulates the persistent parts of the session so every new

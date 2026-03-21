@@ -1,0 +1,240 @@
+// mods_stateful.zx
+// Advanced mod patterns: stateful mods, init functions, @test annotations
+// inside mods, mods calling each other, and building service-style APIs.
+//
+// Run: ./zxc examples/mods_stateful.zx
+// Test: ./zxc test examples/mods_stateful.zx
+
+use std::math
+use std::str
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  STATEFUL MOD — a mod as a singleton object
+//  module-level `our` variables persist for the program's lifetime.
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod Stack {
+    const MAX = 64;
+    our data: [64]int = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                          0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                          0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                          0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+    our top = 0;
+
+    fn push(v: int) -> bool {
+        if top >= MAX { return false; }
+        data[top] = v;
+        top += 1;
+        return true;
+    }
+
+    fn pop() -> int {
+        if top <= 0 { return 0; }
+        top -= 1;
+        return data[top];
+    }
+
+    fn peek() -> int {
+        if top <= 0 { return 0; }
+        return data[top - 1];
+    }
+
+    fn size()  -> int  { return top; }
+    fn empty() -> bool { return top == 0; }
+    fn clear()         { top = 0; }
+
+    @test
+    fn test_push_pop() {
+        clear();
+        push(10); push(20); push(30);
+        assert size() == 3, "size should be 3";
+        assert pop() == 30, "top should be 30";
+        assert pop() == 20, "next should be 20";
+        assert size() == 1, "size should be 1";
+        say "Stack tests passed";
+    }
+}
+
+fn demo_stack() {
+    Stack->push(1);
+    Stack->push(2);
+    Stack->push(3);
+
+    say Stack->peek();    // 3
+    say Stack->size();    // 3
+
+    while !Stack->empty() {
+        say Stack->pop();   // 3, 2, 1
+    }
+
+    say Stack->size();    // 0
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MOD WITH INIT FUNCTION
+//  fn __init__() runs automatically before main — guaranteed once.
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod Config {
+    our debug_mode = 0;
+    our log_level  = 1;
+    our app_name: str = "app";
+    our max_retries = 3;
+
+    fn __init__() {
+        // Runs before main. Use it for one-time setup.
+        debug_mode = 0;
+        log_level  = 2;
+        app_name   = "zx-demo";
+        max_retries = 5;
+        say "[Config] initialised";
+    }
+
+    fn is_debug() -> bool { return debug_mode != 0; }
+    fn set_debug(v: bool) { debug_mode = int(v); }
+
+    fn log(msg: str) {
+        if log_level > 0 {
+            say "[log]", msg;
+        }
+    }
+
+    fn name() -> str    { return app_name;   }
+    fn retries() -> int { return max_retries; }
+}
+
+fn demo_config() {
+    // __init__ already ran, so values are set.
+    say Config->name();       // "zx-demo"
+    say Config->retries();    // 5
+    say Config->is_debug();   // 0
+
+    Config->set_debug(true);
+    say Config->is_debug();   // 1
+
+    Config->log("hello from Config");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MODS CALLING EACH OTHER
+//  Mods are just C functions — any mod can call any other mod directly.
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod Validator {
+    fn is_email(s: str) -> bool {
+        // Simple check: must contain @
+        let i = 0;
+        while s[i] != 0 {
+            if s[i] == '@' { return true; }
+            i += 1;
+        }
+        return false;
+    }
+
+    fn is_positive(n: int) -> bool { return n > 0; }
+    fn is_in_range(n: int, lo: int, hi: int) -> bool {
+        return n >= lo && n <= hi;
+    }
+}
+
+mod UserService {
+    struct User {
+        name: str,
+        age:  int,
+        email: str
+    }
+
+    fn create(name: str, age: int, email: str) -> User {
+        // Validate using Validator mod before creating
+        if !Validator->is_positive(age) {
+            say "error: age must be positive";
+            return new User { name: "invalid", age: 0, email: "" };
+        }
+        if !Validator->is_email(email) {
+            say "error: invalid email";
+            return new User { name: "invalid", age: 0, email: "" };
+        }
+        return new User { name: name, age: age, email: email };
+    }
+
+    fn print_user(u: User) {
+        say "name:", u.name, "  age:", u.age, "  email:", u.email;
+    }
+
+    fn is_adult(u: User) -> bool {
+        return Validator->is_in_range(u.age, 18, 120);
+    }
+}
+
+fn demo_inter_mod_calls() {
+    let alice = UserService->create("Alice", 30, "alice@example.com");
+    UserService->print_user(alice);
+    say UserService->is_adult(alice);    // 1
+
+    // Validation failures
+    UserService->create("Bob", -1, "bob@example.com");   // error
+    UserService->create("Eve", 25, "not-an-email");       // error
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MOD AS AN ACCUMULATOR / BUILDER
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod Stats {
+    our n     = 0;
+    our total: float = 0.0;
+    our min_v: float = 1e18;
+    our max_v: float = -1e18;
+
+    fn add(v: float) {
+        n     += 1;
+        total += v;
+        if v < min_v { min_v = v; }
+        if v > max_v { max_v = v; }
+    }
+
+    fn mean()  -> float { if n == 0 { return 0.0; } return total / float(n); }
+    fn min()   -> float { return min_v; }
+    fn max()   -> float { return max_v; }
+    fn count() -> int   { return n; }
+    fn sum()   -> float { return total; }
+
+    fn reset() {
+        n = 0; total = 0.0;
+        min_v = 1e18; max_v = -1e18;
+    }
+
+    fn report() {
+        say "count:", n, "  sum:", total, "  mean:", Stats->mean(),
+            "  min:", min_v, "  max:", max_v;
+    }
+
+    @test
+    fn test_stats() {
+        reset();
+        add(1.0); add(2.0); add(3.0); add(4.0); add(5.0);
+        assert count() == 5,  "count";
+        assert sum()   == 15.0, "sum";
+        assert min()   == 1.0,  "min";
+        assert max()   == 5.0,  "max";
+        say "Stats tests passed";
+    }
+}
+
+fn demo_stats() {
+    let values: [6]float = [4.5, 2.1, 9.8, 1.0, 7.3, 5.5];
+    for i in 0..6 {
+        Stats->add(values[i]);
+    }
+    Stats->report();
+    say "mean:", Stats->mean();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MAIN
+// ─────────────────────────────────────────────────────────────────────────────
+
+say "=== stack mod ===";          demo_stack();
+say "=== config + init ===";      demo_config();
+say "=== inter-mod calls ===";    demo_inter_mod_calls();
+say "=== stats accumulator ===";  demo_stats();
