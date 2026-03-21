@@ -6,6 +6,8 @@
 
 use std::math
 
+const PI = (22/7);
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  BASIC MOD — namespace + functions
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,7 +91,7 @@ mod Hasher {
     }
 
     priv fn fnv_step(h: int, b: int) -> int {
-        return (h ^ b) * 16777619;
+        return (h ** b) * 16777619;
     }
 
     // Public API uses private helpers
