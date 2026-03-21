@@ -655,7 +655,8 @@ func (tc *TypeChecker) checkStmt(n Node) {
 			if t != nil && t.Kind != TyVoid && t.Kind != TyAny {
 				warnCode("W60", s.Sp,
 					fmt.Sprintf("result of this call (type %s) is discarded", t),
-					"assign the result to a variable, or cast to void if intentional: _ = expr")
+					"assign the result to a variable, or cast to void if intentional: _ = expr, or you also could just leave as it is, lol!")
+
 			}
 		}
 	case *PrintStmt:

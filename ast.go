@@ -21,8 +21,8 @@ const (
 	TyStruct
 	TyAny
 	TyUnknown
-	TyTuple // NEW: tuple types (int, str)
-	TyFn    // NEW: first-class function types fn(int)->str
+	TyTuple
+	TyFn
 )
 
 type ZXType struct {
@@ -30,11 +30,9 @@ type ZXType struct {
 	Elem    *ZXType
 	ArrSize int
 	Name    string
-	// NEW: for TyFn — first-class function types
-	Params []*ZXType
-	Ret    *ZXType
-	// NEW: for TyTuple
-	Elems []*ZXType
+	Params  []*ZXType
+	Ret     *ZXType
+	Elems   []*ZXType
 }
 
 var (
@@ -168,7 +166,6 @@ func coercible(from, to *ZXType) bool {
 	if from.Kind == TyRef && from.Elem != nil && from.Elem.Kind == TyChar && to.Kind == TyStr {
 		return true
 	}
-	// NEW: fn type coercion — any fn type can coerce to any
 	if from.Kind == TyFn || to.Kind == TyFn {
 		return true
 	}
@@ -193,6 +190,26 @@ func isTruthy(t *ZXType) bool {
 	}
 	return t.Kind == TyInt || t.Kind == TyBool || t.Kind == TyChar ||
 		t.Kind == TyFloat || t.Kind == TyRef || t.Kind == TyAny
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Visibility
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Vis represents the visibility of a declaration.
+// By default everything is Public. The `priv` keyword makes it Private.
+type Vis int
+
+const (
+	VisPublic  Vis = iota // default — importable from other files
+	VisPrivate            // priv — not importable from other files
+)
+
+func (v Vis) String() string {
+	if v == VisPrivate {
+		return "priv"
+	}
+	return "pub"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,12 +238,11 @@ const (
 	AnnBenchmark  = "benchmark"
 	AnnSetup      = "setup"
 	AnnTeardown   = "teardown"
-	// NEW annotations
-	AnnDoc     = "doc"     // @doc="description" — inline documentation
-	AnnCold    = "cold"    // @cold — hint: rarely called path
-	AnnHot     = "hot"     // @hot — hint: frequently called path
-	AnnAlias   = "alias"   // @alias=other_name — alternate name for function
-	AnnVersion = "version" // @version=1.2 — version gate
+	AnnDoc        = "doc"
+	AnnCold       = "cold"
+	AnnHot        = "hot"
+	AnnAlias      = "alias"
+	AnnVersion    = "version"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -243,53 +259,48 @@ type TestDecl struct {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  ModBlock  (EXTENDED)
+//  ModBlock
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ModBlock struct {
-	Sp   Span
-	Name string
-	Path string
-	// NEW: optional doc comment attached at the mod declaration
-	Doc string
-	// NEW: visibility — "pub" (default) or "priv"
-	Vis     string
-	Mods    []*ModBlock
-	Structs []*StructDecl
-	Methods []*MethodDecl
-	Fns     []*FnDecl
-	Tests   []*TestDecl
-	// NEW: module-level constants — emitted as C file-scope statics
-	Consts []*VarDecl
-	// NEW: module init function (runs before main, guaranteed once)
-	Init *FnDecl
-	// NEW: module re-exports from nested mods
+	Sp        Span
+	Name      string
+	Path      string
+	Doc       string
+	Vis       Vis // NEW: pub (default) or priv
+	Mods      []*ModBlock
+	Structs   []*StructDecl
+	Methods   []*MethodDecl
+	Fns       []*FnDecl
+	Tests     []*TestDecl
+	Consts    []*VarDecl
+	Init      *FnDecl
 	Reexports []string
 }
 
 func (n *ModBlock) nodeSpan() Span  { return n.Sp }
 func (n *ModBlock) nodeTag() string { return "mod" }
 
+// IsExportable returns true if the mod can be imported by other files.
+func (n *ModBlock) IsExportable() bool { return n.Vis == VisPublic }
+
 // ─────────────────────────────────────────────────────────────────────────────
-//  MacroDecl  (EXTENDED)
+//  MacroDecl
 // ─────────────────────────────────────────────────────────────────────────────
 
 type MacroDecl struct {
-	Sp      Span
-	Name    string
-	Params  []Param
-	RetType *ZXType
-	Body    *Block
-	Inputs  []string
-	Outputs []string
-	// NEW: doc comment
-	Doc string
-	// NEW: marks this macro as always-inline (no C function, always substituted)
+	Sp           Span
+	Name         string
+	Params       []Param
+	RetType      *ZXType
+	Body         *Block
+	Inputs       []string
+	Outputs      []string
+	Doc          string
 	AlwaysInline bool
-	// NEW: macro aliases
-	Aliases []string
-	// NEW: guard condition evaluated before the macro body runs
-	Guard Node
+	Aliases      []string
+	Guard        Node
+	Vis          Vis // NEW: pub (default) or priv
 }
 
 func (n *MacroDecl) nodeSpan() Span  { return n.Sp }
@@ -313,11 +324,10 @@ type MacroCallChain struct {
 }
 
 type MacroChainStep struct {
-	Sp    Span
-	Macro string
-	Args  []Node
-	Body  *Block
-	// NEW: optional else block for conditional chain steps
+	Sp       Span
+	Macro    string
+	Args     []Node
+	Body     *Block
 	ElseBody *Block
 }
 
@@ -336,18 +346,16 @@ type Node interface {
 // ── Program ───────────────────────────────────────────────────────────────────
 
 type Program struct {
-	Module    string
-	Imports   []*ImportDecl
-	Externs   []*ExternDecl
-	Structs   []*StructDecl
-	Methods   []*MethodDecl
-	ModBlocks []*ModBlock
-	Macros    []*MacroDecl
-	TopStmts  []Node
-	// GlobalVars holds 'our' declarations hoisted to C file scope.
+	Module     string
+	Imports    []*ImportDecl
+	Externs    []*ExternDecl
+	Structs    []*StructDecl
+	Methods    []*MethodDecl
+	ModBlocks  []*ModBlock
+	Macros     []*MacroDecl
+	TopStmts   []Node
 	GlobalVars []*VarDecl
-	// NEW: module-level init calls collected from mod blocks
-	ModInits []*ModBlock
+	ModInits   []*ModBlock
 }
 
 // ── Import ────────────────────────────────────────────────────────────────────
@@ -383,6 +391,7 @@ type ExternDecl struct {
 	Params   []Param
 	Variadic bool
 	RetType  *ZXType
+	Vis      Vis // NEW
 }
 
 func (n *ExternDecl) nodeSpan() Span  { return n.Sp }
@@ -393,10 +402,9 @@ type StructDecl struct {
 	Name        string
 	Fields      []Param
 	Annotations []Annotation
-	// NEW: optional doc comment
-	Doc string
-	// NEW: derived struct — inherits fields from base (emitted as embedded struct)
-	Base string
+	Doc         string
+	Base        string
+	Vis         Vis // NEW: pub (default) or priv
 }
 
 func (n *StructDecl) nodeSpan() Span  { return n.Sp }
@@ -411,10 +419,9 @@ type FnDecl struct {
 	Body        *Block
 	Annotations []Annotation
 	ModPath     string
-	// NEW: optional doc comment parsed from leading ## comment
-	Doc string
-	// NEW: explicit C name override (for @export="c_name")
-	CName string
+	Doc         string
+	CName       string
+	Vis         Vis // NEW: pub (default) or priv
 }
 
 func (n *FnDecl) nodeSpan() Span  { return n.Sp }
@@ -437,6 +444,9 @@ func (n *FnDecl) GetAnnotation(name string) *Annotation {
 	return nil
 }
 
+// IsExportable returns true if fn can be imported by other files.
+func (n *FnDecl) IsExportable() bool { return n.Vis == VisPublic }
+
 type MethodDecl struct {
 	Sp          Span
 	RecvName    string
@@ -448,6 +458,7 @@ type MethodDecl struct {
 	RetType     *ZXType
 	Body        *Block
 	Annotations []Annotation
+	Vis         Vis // NEW
 }
 
 func (n *MethodDecl) nodeSpan() Span  { return n.Sp }
@@ -479,8 +490,8 @@ type VarDecl struct {
 	IsConst      bool
 	IsGlobal     bool
 	ResolvedType *ZXType
-	// NEW: module-scope const (static within a mod block)
-	IsModConst bool
+	IsModConst   bool
+	Vis          Vis // NEW: pub (default) or priv
 }
 
 func (n *VarDecl) nodeSpan() Span  { return n.Sp }
@@ -539,13 +550,12 @@ func (n *UntilStmt) nodeSpan() Span  { return n.Sp }
 func (n *UntilStmt) nodeTag() string { return "until" }
 
 type ForRangeStmt struct {
-	Sp   Span
-	Var  string
-	From Node
-	To   Node
-	Step Node
-	Body *Block
-	// NEW: optional "by" variable to iterate in reverse
+	Sp      Span
+	Var     string
+	From    Node
+	To      Node
+	Step    Node
+	Body    *Block
 	Reverse bool
 }
 
@@ -559,9 +569,8 @@ type MatchStmt struct {
 }
 
 type MatchArm struct {
-	Sp      Span
-	Pattern Node
-	// NEW: multiple patterns per arm: 1 | 2 | 3 => { }
+	Sp       Span
+	Pattern  Node
 	Patterns []Node
 	IsWild   bool
 	Guard    Node
@@ -651,7 +660,6 @@ type SpawnStmt struct {
 func (n *SpawnStmt) nodeSpan() Span  { return n.Sp }
 func (n *SpawnStmt) nodeTag() string { return "spawn" }
 
-// NEW: repeat N times syntactic sugar — repeat 5 { }
 type RepeatStmt struct {
 	Sp    Span
 	Count Node
@@ -661,8 +669,6 @@ type RepeatStmt struct {
 func (n *RepeatStmt) nodeSpan() Span  { return n.Sp }
 func (n *RepeatStmt) nodeTag() string { return "repeat" }
 
-// NEW: with statement — scoped alias for a long expression
-// with expensive_expr() as x { use x }
 type WithStmt struct {
 	Sp   Span
 	Expr Node
@@ -831,7 +837,6 @@ type MethodCallExpr struct {
 func (n *MethodCallExpr) nodeSpan() Span  { return n.Sp }
 func (n *MethodCallExpr) nodeTag() string { return "methodcall" }
 
-// ModCallExpr — modName->fn(args) or modName::fn(args)
 type ModCallExpr struct {
 	Sp   Span
 	Mod  string
@@ -953,7 +958,6 @@ type WriteFileExpr struct {
 func (n *WriteFileExpr) nodeSpan() Span  { return n.Sp }
 func (n *WriteFileExpr) nodeTag() string { return "writefile" }
 
-// NEW: LambdaExpr — anonymous inline function: |x int, y int| -> int { return x + y; }
 type LambdaExpr struct {
 	Sp      Span
 	Params  []Param
@@ -965,7 +969,6 @@ type LambdaExpr struct {
 func (n *LambdaExpr) nodeSpan() Span  { return n.Sp }
 func (n *LambdaExpr) nodeTag() string { return "lambda" }
 
-// NEW: RangeExpr — represents a..b as a value (for future iteration / slice use)
 type RangeExpr struct {
 	Sp   Span
 	From Node
@@ -976,8 +979,6 @@ type RangeExpr struct {
 func (n *RangeExpr) nodeSpan() Span  { return n.Sp }
 func (n *RangeExpr) nodeTag() string { return "range" }
 
-// NEW: MacroApplyExpr — apply!(macro_name, value) — apply a named macro as a value
-// Allows storing macro application in variables.
 type MacroApplyExpr struct {
 	Sp    Span
 	Macro string
@@ -988,3 +989,18 @@ type MacroApplyExpr struct {
 
 func (n *MacroApplyExpr) nodeSpan() Span  { return n.Sp }
 func (n *MacroApplyExpr) nodeTag() string { return "macroapply" }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PrivAccessExpr — NEW: explicit private access violation marker
+//  Used internally by typechecker to surface helpful error messages.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type PrivAccessExpr struct {
+	Sp       Span
+	Name     string
+	DeclFile string
+	Typ      *ZXType
+}
+
+func (n *PrivAccessExpr) nodeSpan() Span  { return n.Sp }
+func (n *PrivAccessExpr) nodeTag() string { return "privaccess" }
