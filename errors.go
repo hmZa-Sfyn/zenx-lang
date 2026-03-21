@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"unicode/utf8"
 )
@@ -276,10 +275,10 @@ func printDiag(d Diagnostic) {
 			loc := ""
 			if frame.Span.Line > 0 {
 				fileDisplay := frame.Span.File
-				if fileDisplay != "" {
+				/*if fileDisplay != "" {
 					fileDisplay = filepath.Base(fileDisplay)
-				}
-				loc = fmt.Sprintf(" (%s%d", fileDisplay, frame.Span.Line)
+				}*/
+				loc = fmt.Sprintf(" (%s:%d", fileDisplay, frame.Span.Line)
 				if frame.Span.Col > 0 {
 					loc += fmt.Sprintf(":%d", frame.Span.Col)
 				}
