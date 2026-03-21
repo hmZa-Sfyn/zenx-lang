@@ -21,6 +21,8 @@ const (
 	TyStruct
 	TyAny
 	TyUnknown
+	TyTuple // NEW: tuple types (int, str)
+	TyFn    // NEW: first-class function types fn(int)->str
 )
 
 type ZXType struct {
@@ -28,6 +30,11 @@ type ZXType struct {
 	Elem    *ZXType
 	ArrSize int
 	Name    string
+	// NEW: for TyFn — first-class function types
+	Params []*ZXType
+	Ret    *ZXType
+	// NEW: for TyTuple
+	Elems []*ZXType
 }
 
 var (
@@ -46,6 +53,12 @@ func ArrayOf(elem *ZXType, n int) *ZXType { return &ZXType{Kind: TyArray, Elem: 
 func SliceOf(elem *ZXType) *ZXType        { return &ZXType{Kind: TySlice, Elem: elem} }
 func StructType(name string) *ZXType      { return &ZXType{Kind: TyStruct, Name: name} }
 func PtrOf(elem *ZXType) *ZXType          { return RefOf(elem) }
+func FnType(params []*ZXType, ret *ZXType) *ZXType {
+	return &ZXType{Kind: TyFn, Params: params, Ret: ret}
+}
+func TupleType(elems []*ZXType) *ZXType {
+	return &ZXType{Kind: TyTuple, Elems: elems}
+}
 
 func (t *ZXType) String() string {
 	if t == nil {
@@ -86,6 +99,10 @@ func (t *ZXType) String() string {
 		return "slice"
 	case TyStruct:
 		return t.Name
+	case TyFn:
+		return "fn(...)"
+	case TyTuple:
+		return "tuple"
 	default:
 		return "unknown"
 	}
@@ -151,6 +168,10 @@ func coercible(from, to *ZXType) bool {
 	if from.Kind == TyRef && from.Elem != nil && from.Elem.Kind == TyChar && to.Kind == TyStr {
 		return true
 	}
+	// NEW: fn type coercion — any fn type can coerce to any
+	if from.Kind == TyFn || to.Kind == TyFn {
+		return true
+	}
 	return false
 }
 
@@ -200,6 +221,12 @@ const (
 	AnnBenchmark  = "benchmark"
 	AnnSetup      = "setup"
 	AnnTeardown   = "teardown"
+	// NEW annotations
+	AnnDoc     = "doc"     // @doc="description" — inline documentation
+	AnnCold    = "cold"    // @cold — hint: rarely called path
+	AnnHot     = "hot"     // @hot — hint: frequently called path
+	AnnAlias   = "alias"   // @alias=other_name — alternate name for function
+	AnnVersion = "version" // @version=1.2 — version gate
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,25 +243,35 @@ type TestDecl struct {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  ModBlock
+//  ModBlock  (EXTENDED)
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ModBlock struct {
-	Sp      Span
-	Name    string
-	Path    string
+	Sp   Span
+	Name string
+	Path string
+	// NEW: optional doc comment attached at the mod declaration
+	Doc string
+	// NEW: visibility — "pub" (default) or "priv"
+	Vis     string
 	Mods    []*ModBlock
 	Structs []*StructDecl
 	Methods []*MethodDecl
 	Fns     []*FnDecl
 	Tests   []*TestDecl
+	// NEW: module-level constants — emitted as C file-scope statics
+	Consts []*VarDecl
+	// NEW: module init function (runs before main, guaranteed once)
+	Init *FnDecl
+	// NEW: module re-exports from nested mods
+	Reexports []string
 }
 
 func (n *ModBlock) nodeSpan() Span  { return n.Sp }
 func (n *ModBlock) nodeTag() string { return "mod" }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  MacroDecl
+//  MacroDecl  (EXTENDED)
 // ─────────────────────────────────────────────────────────────────────────────
 
 type MacroDecl struct {
@@ -245,6 +282,14 @@ type MacroDecl struct {
 	Body    *Block
 	Inputs  []string
 	Outputs []string
+	// NEW: doc comment
+	Doc string
+	// NEW: marks this macro as always-inline (no C function, always substituted)
+	AlwaysInline bool
+	// NEW: macro aliases
+	Aliases []string
+	// NEW: guard condition evaluated before the macro body runs
+	Guard Node
 }
 
 func (n *MacroDecl) nodeSpan() Span  { return n.Sp }
@@ -266,11 +311,14 @@ type MacroCallChain struct {
 	Steps []MacroChainStep
 	Typ   *ZXType
 }
+
 type MacroChainStep struct {
 	Sp    Span
 	Macro string
 	Args  []Node
 	Body  *Block
+	// NEW: optional else block for conditional chain steps
+	ElseBody *Block
 }
 
 func (n *MacroCallChain) nodeSpan() Span  { return n.Sp }
@@ -297,41 +345,29 @@ type Program struct {
 	Macros    []*MacroDecl
 	TopStmts  []Node
 	// GlobalVars holds 'our' declarations hoisted to C file scope.
-	// Populated during type-check, consumed by emitter.
 	GlobalVars []*VarDecl
+	// NEW: module-level init calls collected from mod blocks
+	ModInits []*ModBlock
 }
 
 // ── Import ────────────────────────────────────────────────────────────────────
 
-// ImportDecl represents a single import/use statement.
-//
-// Forms and their fields:
-//   use "stdio.h"                   → Path="stdio.h", IsCHeader=true
-//   use std::str                    → Module="std::str", IsStdModule=true
-//   import std/net/socket           → EnvPrefix="ZENX_STD_PATH", Segments=["net","socket"], ImportAll=true
-//   import std/net/socket (socServ) → EnvPrefix="ZENX_STD_PATH", Segments=["net","socket"], Alias="socServ"
-//   import _/a                      → UpsCount=0, Segments=["a"], ImportAll=true
-//   import __/a (Mod)              → UpsCount=1, Segments=["a"], Alias="Mod"
 type ImportDecl struct {
-	Sp   Span
-	// Raw C header path — set only for: use "stdio.h"
+	Sp        Span
 	Path      string
 	IsCHeader bool
 
-	// ZX stdlib module — set only for: use std::str
 	Module      string
 	IsStdModule bool
 
-	// File-path import — set for std/x/y and _/x forms
 	IsFileImport bool
-	EnvPrefix    string // e.g. "ZENX_STD_PATH" or "ZENX_USR_PATH" or "" for local
-	UpsCount     int    // how many levels up (0=same dir, 1=.., 2=../..)
-	Segments     []string // path components after the prefix/ups
-	ResolvedFile string   // populated by typechecker/resolver: absolute .zx path
-	Alias        string   // (ModName) — specific mod to import; empty = import all
-	ImportAll    bool     // true when no (ModName) specified
+	EnvPrefix    string
+	UpsCount     int
+	Segments     []string
+	ResolvedFile string
+	Alias        string
+	ImportAll    bool
 
-	// Legacy fields kept for compatibility with emitter/typechecker that read them
 	IsStd     bool
 	IsUser    bool
 	IsLocal   bool
@@ -357,6 +393,10 @@ type StructDecl struct {
 	Name        string
 	Fields      []Param
 	Annotations []Annotation
+	// NEW: optional doc comment
+	Doc string
+	// NEW: derived struct — inherits fields from base (emitted as embedded struct)
+	Base string
 }
 
 func (n *StructDecl) nodeSpan() Span  { return n.Sp }
@@ -371,6 +411,10 @@ type FnDecl struct {
 	Body        *Block
 	Annotations []Annotation
 	ModPath     string
+	// NEW: optional doc comment parsed from leading ## comment
+	Doc string
+	// NEW: explicit C name override (for @export="c_name")
+	CName string
 }
 
 func (n *FnDecl) nodeSpan() Span  { return n.Sp }
@@ -427,16 +471,16 @@ type Block struct {
 func (n *Block) nodeSpan() Span  { return n.Sp }
 func (n *Block) nodeTag() string { return "block" }
 
-// VarDecl — IsGlobal is set when declared with 'our' at top level.
-// The emitter hoists IsGlobal vars to C file scope before main().
 type VarDecl struct {
 	Sp           Span
 	Name         string
 	VarType      *ZXType
 	Init         Node
 	IsConst      bool
-	IsGlobal     bool // true for 'our' top-level declarations
+	IsGlobal     bool
 	ResolvedType *ZXType
+	// NEW: module-scope const (static within a mod block)
+	IsModConst bool
 }
 
 func (n *VarDecl) nodeSpan() Span  { return n.Sp }
@@ -501,6 +545,8 @@ type ForRangeStmt struct {
 	To   Node
 	Step Node
 	Body *Block
+	// NEW: optional "by" variable to iterate in reverse
+	Reverse bool
 }
 
 func (n *ForRangeStmt) nodeSpan() Span  { return n.Sp }
@@ -515,9 +561,11 @@ type MatchStmt struct {
 type MatchArm struct {
 	Sp      Span
 	Pattern Node
-	IsWild  bool
-	Guard   Node
-	Body    *Block
+	// NEW: multiple patterns per arm: 1 | 2 | 3 => { }
+	Patterns []Node
+	IsWild   bool
+	Guard    Node
+	Body     *Block
 }
 
 func (n *MatchStmt) nodeSpan() Span  { return n.Sp }
@@ -555,9 +603,9 @@ func (n *AssignStmt) nodeTag() string { return "assign" }
 type BreakStmt struct{ Sp Span }
 type ContinueStmt struct{ Sp Span }
 
-func (n *BreakStmt) nodeSpan() Span    { return n.Sp }
-func (n *BreakStmt) nodeTag() string   { return "break" }
-func (n *ContinueStmt) nodeSpan() Span { return n.Sp }
+func (n *BreakStmt) nodeSpan() Span     { return n.Sp }
+func (n *BreakStmt) nodeTag() string    { return "break" }
+func (n *ContinueStmt) nodeSpan() Span  { return n.Sp }
 func (n *ContinueStmt) nodeTag() string { return "continue" }
 
 type PrintStmt struct {
@@ -602,6 +650,28 @@ type SpawnStmt struct {
 
 func (n *SpawnStmt) nodeSpan() Span  { return n.Sp }
 func (n *SpawnStmt) nodeTag() string { return "spawn" }
+
+// NEW: repeat N times syntactic sugar — repeat 5 { }
+type RepeatStmt struct {
+	Sp    Span
+	Count Node
+	Body  *Block
+}
+
+func (n *RepeatStmt) nodeSpan() Span  { return n.Sp }
+func (n *RepeatStmt) nodeTag() string { return "repeat" }
+
+// NEW: with statement — scoped alias for a long expression
+// with expensive_expr() as x { use x }
+type WithStmt struct {
+	Sp   Span
+	Expr Node
+	As   string
+	Body *Block
+}
+
+func (n *WithStmt) nodeSpan() Span  { return n.Sp }
+func (n *WithStmt) nodeTag() string { return "with" }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
@@ -762,11 +832,10 @@ func (n *MethodCallExpr) nodeSpan() Span  { return n.Sp }
 func (n *MethodCallExpr) nodeTag() string { return "methodcall" }
 
 // ModCallExpr — modName->fn(args) or modName::fn(args)
-// Enforces namespace: only callable via the mod name, not by plain fn name.
 type ModCallExpr struct {
 	Sp   Span
-	Mod  string // mod block name
-	Fn   string // function name within mod
+	Mod  string
+	Fn   string
 	Args []Node
 	Typ  *ZXType
 }
@@ -808,9 +877,6 @@ type TplPart struct {
 func (n *TemplateStr) nodeSpan() Span  { return n.Sp }
 func (n *TemplateStr) nodeTag() string { return "tplstr" }
 
-// MultilineStr — @`...` multiline strings with ${expr} and ${stmts} interpolation.
-// Text parts are literal. IsExpr parts are value-producing expressions.
-// IsStmt parts are statement blocks whose say/print output is captured.
 type MultilineStr struct {
 	Sp    Span
 	Parts []MlsPart
@@ -818,10 +884,10 @@ type MultilineStr struct {
 }
 
 type MlsPart struct {
-	Text   string // literal text
-	IsExpr bool   // ${expr} — interpolate expression value
+	Text   string
+	IsExpr bool
 	Expr   Node
-	IsStmt bool   // ${stmts} — run statements, capture their stdout
+	IsStmt bool
 	Stmts  []Node
 }
 
@@ -886,3 +952,39 @@ type WriteFileExpr struct {
 
 func (n *WriteFileExpr) nodeSpan() Span  { return n.Sp }
 func (n *WriteFileExpr) nodeTag() string { return "writefile" }
+
+// NEW: LambdaExpr — anonymous inline function: |x int, y int| -> int { return x + y; }
+type LambdaExpr struct {
+	Sp      Span
+	Params  []Param
+	RetType *ZXType
+	Body    *Block
+	Typ     *ZXType
+}
+
+func (n *LambdaExpr) nodeSpan() Span  { return n.Sp }
+func (n *LambdaExpr) nodeTag() string { return "lambda" }
+
+// NEW: RangeExpr — represents a..b as a value (for future iteration / slice use)
+type RangeExpr struct {
+	Sp   Span
+	From Node
+	To   Node
+	Typ  *ZXType
+}
+
+func (n *RangeExpr) nodeSpan() Span  { return n.Sp }
+func (n *RangeExpr) nodeTag() string { return "range" }
+
+// NEW: MacroApplyExpr — apply!(macro_name, value) — apply a named macro as a value
+// Allows storing macro application in variables.
+type MacroApplyExpr struct {
+	Sp    Span
+	Macro string
+	Value Node
+	Args  []Node
+	Typ   *ZXType
+}
+
+func (n *MacroApplyExpr) nodeSpan() Span  { return n.Sp }
+func (n *MacroApplyExpr) nodeTag() string { return "macroapply" }
