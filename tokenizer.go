@@ -14,7 +14,7 @@ const (
 	TK_BOOL
 	TK_NIL
 	TK_TEMPLATE_STR
-	TK_MULTILINE_STR // @`...` multiline string with ${} interpolation
+	TK_MULTILINE_STR
 	TK_ANNOTATION
 
 	TK_IDENT
@@ -23,6 +23,7 @@ const (
 	TK_MY
 	TK_CONST
 	TK_OUR
+	TK_PRIV // NEW: priv visibility modifier
 	TK_FN
 	TK_SUB
 	TK_MACRO
@@ -133,7 +134,7 @@ const (
 	TK_SEMI
 	TK_COLON
 	TK_DCOLON
-	TK_PIPE_MACRO // |  in macro param lists
+	TK_PIPE_MACRO
 
 	TK_EOF
 )
@@ -142,10 +143,14 @@ var tkNames = map[TK]string{
 	TK_INT: "int-literal", TK_FLOAT: "float-literal",
 	TK_STRING: "string-literal", TK_TEMPLATE_STR: "f-string",
 	TK_MULTILINE_STR: "multiline-string",
-	TK_ANNOTATION: "annotation", TK_BOOL: "bool-literal", TK_NIL: "nil",
-	TK_IDENT: "identifier",
+	TK_ANNOTATION:    "annotation",
+	TK_BOOL:          "bool-literal",
+	TK_NIL:           "nil",
+	TK_IDENT:         "identifier",
+
 	TK_LET: "let", TK_MY: "my", TK_CONST: "const", TK_OUR: "our",
-	TK_FN: "fn", TK_SUB: "sub", TK_MACRO: "macro", TK_RETURN: "return",
+	TK_PRIV: "priv",
+	TK_FN:   "fn", TK_SUB: "sub", TK_MACRO: "macro", TK_RETURN: "return",
 	TK_IF: "if", TK_UNLESS: "unless", TK_ELIF: "elif", TK_ELSE: "else",
 	TK_WHILE: "while", TK_UNTIL: "until",
 	TK_FOR: "for", TK_FOREACH: "foreach", TK_IN: "in", TK_DO: "do",
@@ -159,9 +164,11 @@ var tkNames = map[TK]string{
 	TK_DEFER: "defer", TK_ASSERT: "assert", TK_SPAWN: "spawn",
 	TK_CMD: "cmd!", TK_READFILE: "readfile!", TK_WRITEFILE: "writefile!", TK_BANG_MACRO: "macro!",
 	TK_INPUT: "input", TK_STDIN: "stdin", TK_STDOUT: "stdout", TK_STDERR: "stderr",
+
 	TK_TYPE_INT: "int", TK_TYPE_FLOAT: "float", TK_TYPE_BOOL: "bool",
 	TK_TYPE_STR: "str", TK_TYPE_VOID: "void", TK_TYPE_CHAR: "char",
 	TK_TYPE_REF: "ref", TK_TYPE_ANY: "any",
+
 	TK_PLUS: "+", TK_MINUS: "-", TK_STAR: "*", TK_SLASH: "/", TK_PERCENT: "%",
 	TK_AMP: "&", TK_PIPE: "|", TK_CARET: "^", TK_TILDE: "~",
 	TK_LSHIFT: "<<", TK_RSHIFT: ">>",
@@ -176,7 +183,7 @@ var tkNames = map[TK]string{
 	TK_LBRACKET: "[", TK_RBRACKET: "]",
 	TK_COMMA: ",", TK_SEMI: ";", TK_COLON: ":", TK_DCOLON: "::",
 	TK_PIPE_MACRO: "|param|",
-	TK_EOF: "<EOF>",
+	TK_EOF:        "<EOF>",
 }
 
 func (t TK) String() string {
@@ -189,9 +196,10 @@ func (t TK) String() string {
 var keywords = map[string]TK{
 	"let": TK_LET, "my": TK_MY, "local": TK_MY,
 	"const": TK_CONST, "our": TK_OUR,
-	"fn": TK_FN, "func": TK_FN, "sub": TK_SUB, "macro": TK_MACRO,
+	"priv": TK_PRIV, // NEW: priv visibility modifier
+	"fn":   TK_FN, "func": TK_FN, "sub": TK_SUB, "macro": TK_MACRO,
 	"return": TK_RETURN,
-	"if": TK_IF, "unless": TK_UNLESS,
+	"if":     TK_IF, "unless": TK_UNLESS,
 	"elif": TK_ELIF, "elsif": TK_ELIF, "elseif": TK_ELIF, "else": TK_ELSE,
 	"while": TK_WHILE, "until": TK_UNTIL,
 	"for": TK_FOR, "foreach": TK_FOREACH, "in": TK_IN, "do": TK_DO,
@@ -225,6 +233,10 @@ type Token struct {
 func (t Token) String() string {
 	return fmt.Sprintf("Token(%s %q %d:%d)", t.Kind, t.Value, t.Span.Line, t.Span.Col)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Tokenizer
+// ─────────────────────────────────────────────────────────────────────────────
 
 type Tokenizer struct {
 	src    []rune
@@ -290,7 +302,6 @@ func (t *Tokenizer) nextToken() {
 	}
 
 	// @`...` multiline string — ONLY when @ is followed immediately by backtick.
-	// Plain @ident is still an annotation.
 	if ch == '@' && t.pos+1 < len(t.src) && t.src[t.pos+1] == '`' {
 		t.advance() // consume @
 		t.lexMultilineStr()
@@ -352,6 +363,9 @@ func (t *Tokenizer) nextToken() {
 		if t.tryEat('=') {
 			t.push(TK_SLASH_EQ, "/=", sp)
 		} else {
+			// NOTE: /=  is already handled above.
+			// Plain / is a path separator in imports AND arithmetic divide.
+			// We emit TK_SLASH for both — the parser disambiguates by context.
 			t.push(TK_SLASH, "/", sp)
 		}
 	case '%':
@@ -475,7 +489,8 @@ func (t *Tokenizer) lexAnnotation(sp Span) {
 				}
 			}
 		} else {
-			for !t.eof() && t.peek(0) != '\n' && t.peek(0) != ' ' && t.peek(0) != '\t' && t.peek(0) != '\r' {
+			for !t.eof() && t.peek(0) != '\n' && t.peek(0) != ' ' &&
+				t.peek(0) != '\t' && t.peek(0) != '\r' {
 				raw += string(t.peek(0))
 				t.advance()
 			}
@@ -508,12 +523,6 @@ func (t *Tokenizer) lexTemplateStr() {
 	t.push(TK_TEMPLATE_STR, sb.String(), sp)
 }
 
-// lexMultilineStr lexes @`...` strings.
-// The '@' has already been consumed by nextToken.
-// We consume the opening backtick here and read until the closing backtick.
-// Backticks can be escaped with \` inside the string.
-// The raw content (everything between the backticks) is stored as the token value.
-// ${...} interpolation is parsed later by the parser.
 func (t *Tokenizer) lexMultilineStr() {
 	sp := t.here(1)
 	t.advance() // consume opening `
@@ -521,7 +530,6 @@ func (t *Tokenizer) lexMultilineStr() {
 	for !t.eof() {
 		ch := t.peek(0)
 		if ch == '\\' && t.pos+1 < len(t.src) && t.src[t.pos+1] == '`' {
-			// escaped backtick \` → literal backtick in output
 			sb.WriteRune('`')
 			t.advance()
 			t.advance()
@@ -541,10 +549,14 @@ func (t *Tokenizer) lexNumber() {
 	sp := t.here(1)
 	start := t.pos
 	isFloat := false
+
 	for !t.eof() && (isDigit(t.peek(0)) || t.peek(0) == '_') {
 		t.advance()
 	}
+
 	justOne := t.pos-start == 1 && t.src[start] == '0'
+
+	// hex: 0x...
 	if justOne && !t.eof() && (t.peek(0) == 'x' || t.peek(0) == 'X') {
 		t.advance()
 		for !t.eof() && (isHex(t.peek(0)) || t.peek(0) == '_') {
@@ -553,6 +565,8 @@ func (t *Tokenizer) lexNumber() {
 		t.push(TK_INT, strings.ReplaceAll(string(t.src[start:t.pos]), "_", ""), sp)
 		return
 	}
+
+	// binary: 0b...
 	if justOne && !t.eof() && (t.peek(0) == 'b' || t.peek(0) == 'B') {
 		t.advance()
 		bs := t.pos
@@ -567,6 +581,8 @@ func (t *Tokenizer) lexNumber() {
 		t.push(TK_INT, fmt.Sprintf("%d", val), sp)
 		return
 	}
+
+	// octal: 0o...
 	if justOne && !t.eof() && (t.peek(0) == 'o' || t.peek(0) == 'O') {
 		t.advance()
 		for !t.eof() && (t.peek(0) >= '0' && t.peek(0) <= '7' || t.peek(0) == '_') {
@@ -575,6 +591,8 @@ func (t *Tokenizer) lexNumber() {
 		t.push(TK_INT, strings.ReplaceAll(string(t.src[start:t.pos]), "_", ""), sp)
 		return
 	}
+
+	// float: 1.5  or  1e10
 	if !t.eof() && t.peek(0) == '.' && t.pos+1 < len(t.src) && t.src[t.pos+1] != '.' {
 		isFloat = true
 		t.advance()
@@ -592,6 +610,7 @@ func (t *Tokenizer) lexNumber() {
 			t.advance()
 		}
 	}
+
 	raw := strings.ReplaceAll(string(t.src[start:t.pos]), "_", "")
 	if isFloat {
 		t.push(TK_FLOAT, raw, sp)
@@ -608,7 +627,8 @@ func (t *Tokenizer) lexIdent() {
 	}
 	val := string(t.src[start:t.pos])
 	sp.Len = len(val)
-	// Bang-suffixed macros: cmd! readfile! writefile! dbg! env! ...
+
+	// Bang-suffixed built-in macros
 	if !t.eof() && t.peek(0) == '!' {
 		switch val {
 		case "cmd", "sh", "shell", "run", "exec":
@@ -629,6 +649,7 @@ func (t *Tokenizer) lexIdent() {
 			return
 		}
 	}
+
 	if kw, ok := keywords[val]; ok {
 		t.push(kw, val, sp)
 	} else {
@@ -744,6 +765,7 @@ func (t *Tokenizer) skipWS() {
 			t.advance()
 			continue
 		}
+		// single-line comment: # or //
 		if ch == '#' {
 			for !t.eof() && t.peek(0) != '\n' {
 				t.advance()
@@ -756,6 +778,7 @@ func (t *Tokenizer) skipWS() {
 			}
 			continue
 		}
+		// block comment: /* ... */
 		if ch == '/' && t.pos+1 < len(t.src) && t.src[t.pos+1] == '*' {
 			sp2 := t.here(2)
 			t.advance()
@@ -779,6 +802,10 @@ func (t *Tokenizer) skipWS() {
 		break
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Tokenizer primitives
+// ─────────────────────────────────────────────────────────────────────────────
 
 func (t *Tokenizer) eof() bool { return t.pos >= len(t.src) }
 func (t *Tokenizer) peek(n int) rune {
@@ -814,6 +841,10 @@ func (t *Tokenizer) here(l int) Span {
 func (t *Tokenizer) push(k TK, v string, sp Span) {
 	t.tokens = append(t.tokens, Token{Kind: k, Value: v, Span: sp})
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Character class helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 func isDigit(r rune) bool    { return r >= '0' && r <= '9' }
 func isAlpha(r rune) bool    { return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') }

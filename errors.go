@@ -24,15 +24,26 @@ type Span struct {
 	Len  int
 }
 
+// CallFrame represents one entry in a diagnostic call-stack trace.
+type CallFrame struct {
+	Span  Span
+	Label string // e.g. "in function 'foo'" or "called from here"
+}
+
 type Diagnostic struct {
-	Sev     Severity
-	Code    string
-	Span    Span
-	Message string
-	Hint    string
-	Notes   []string
-	// Secondary spans for multi-location errors (e.g. "previous declaration here")
+	Sev       Severity
+	Code      string
+	Span      Span
+	Message   string
+	Hint      string
+	Notes     []string
 	Secondary []SecondarySpan
+	// NEW: call-stack trace — shown as a chain of "→ in ..." lines
+	Trace []CallFrame
+	// NEW: suggested fix snippet (shown after hint in green)
+	Fix string
+	// NEW: link to docs
+	DocURL string
 }
 
 type SecondarySpan struct {
@@ -47,7 +58,7 @@ var (
 	warnCount      int
 )
 
-const maxDiags = 60
+const maxDiags = 80
 
 func resetDiags() {
 	allDiagnostics = nil
@@ -75,6 +86,8 @@ func emitDiag(d Diagnostic) {
 	}
 }
 
+// ── Convenience constructors ──────────────────────────────────────────────────
+
 func errAt(span Span, msg, hint string) {
 	emitDiag(Diagnostic{Sev: SevError, Span: span, Message: msg, Hint: hint})
 }
@@ -84,6 +97,21 @@ func errCode(code string, span Span, msg, hint string) {
 func errCodeSecondary(code string, span Span, msg, hint string, secondary []SecondarySpan) {
 	emitDiag(Diagnostic{Sev: SevError, Code: code, Span: span, Message: msg, Hint: hint, Secondary: secondary})
 }
+
+// errCodeTrace emits an error with a full call-stack trace.
+func errCodeTrace(code string, span Span, msg, hint string, trace []CallFrame) {
+	emitDiag(Diagnostic{Sev: SevError, Code: code, Span: span, Message: msg, Hint: hint, Trace: trace})
+}
+
+// errFull emits an error with all fields.
+func errFull(code string, span Span, msg, hint, fix string, secondary []SecondarySpan, trace []CallFrame) {
+	emitDiag(Diagnostic{
+		Sev: SevError, Code: code, Span: span,
+		Message: msg, Hint: hint, Fix: fix,
+		Secondary: secondary, Trace: trace,
+	})
+}
+
 func warnAt(span Span, msg, hint string) {
 	emitDiag(Diagnostic{Sev: SevWarn, Span: span, Message: msg, Hint: hint})
 }
@@ -124,8 +152,7 @@ func printDiag(d Diagnostic) {
 		label = "style"
 	}
 
-	// ── Header line ─────────────────────────────────────────────────────────
-	// error[E27]: undefined variable or function "foo"
+	// ── Header line ──────────────────────────────────────────────────────────
 	codeStr := ""
 	if d.Code != "" {
 		codeStr = fmt.Sprintf("[%s%s%s%s]",
@@ -142,7 +169,6 @@ func printDiag(d Diagnostic) {
 	}
 
 	// ── Location arrow ───────────────────────────────────────────────────────
-	// --> src/main.zx:12:5
 	fmt.Fprintf(w, "  %s-->%s %s%s%s:%s%d%s:%s%d%s\n",
 		colorBlue+colorBold, colorReset,
 		colorCyan, sp.File, colorReset,
@@ -170,7 +196,6 @@ func printDiag(d Diagnostic) {
 			marker)
 	}
 
-	// blank gutter before context
 	fmt.Fprintf(w, "  %s\n", gutter(0, false))
 
 	// optional: line before
@@ -193,10 +218,16 @@ func printDiag(d Diagnostic) {
 	if col0 < 0 {
 		col0 = 0
 	}
-	// account for tab width in visual alignment
 	visCol := visualWidth(lineText, col0)
 	under := buildUnderline(visCol, underLen, d.Sev)
 	fmt.Fprintf(w, "  %s%s\n", gutter(0, false), under)
+
+	// optional: line after (for context)
+	if sp.Line < len(lines) {
+		fmt.Fprintf(w, "  %s%s%s\n",
+			gutter(sp.Line+1, false),
+			colorDim, lines[sp.Line]+colorReset)
+	}
 
 	// ── Hint / suggestion ────────────────────────────────────────────────────
 	if d.Hint != "" {
@@ -216,6 +247,14 @@ func printDiag(d Diagnostic) {
 			colorGreen, d.Hint, colorReset)
 	}
 
+	// ── Fix snippet ───────────────────────────────────────────────────────────
+	if d.Fix != "" {
+		fmt.Fprintf(w, "  %s%s= fix:%s %s%s%s\n",
+			gutter(0, false),
+			colorGreen+colorBold, colorReset,
+			colorGreen, d.Fix, colorReset)
+	}
+
 	// ── Notes ────────────────────────────────────────────────────────────────
 	for _, n := range d.Notes {
 		fmt.Fprintf(w, "  %s%s= note:%s %s\n",
@@ -223,7 +262,39 @@ func printDiag(d Diagnostic) {
 			colorPurple+colorBold, colorReset, n)
 	}
 
-	// ── Secondary spans (e.g. "previous declaration here") ──────────────────
+	// ── Doc URL ──────────────────────────────────────────────────────────────
+	if d.DocURL != "" {
+		fmt.Fprintf(w, "  %s%s= docs:%s %s%s%s\n",
+			gutter(0, false),
+			colorCyan+colorBold, colorReset,
+			colorCyan, d.DocURL, colorReset)
+	}
+
+	// ── Call-stack trace (NEW) ───────────────────────────────────────────────
+	if len(d.Trace) > 0 {
+		fmt.Fprintf(w, "  %s%s= trace:%s\n",
+			gutter(0, false),
+			colorPurple+colorBold, colorReset)
+		for i, frame := range d.Trace {
+			indent := strings.Repeat("  ", i+1)
+			fmt.Fprintf(w, "  %s  %s%s→%s %s%s %s(%s:%d:%d)%s\n",
+				gutter(0, false),
+				indent,
+				colorPurple+colorBold, colorReset,
+				colorBold, frame.Label, colorReset,
+				colorDim+colorCyan, frame.Span.File, frame.Span.Line, frame.Span.Col, colorReset)
+			// show source line for this frame
+			frameLines := getSourceLines(frame.Span.File)
+			if frameLines != nil && frame.Span.Line >= 1 && frame.Span.Line <= len(frameLines) {
+				fmt.Fprintf(w, "  %s  %s  %s%s%s\n",
+					gutter(0, false),
+					indent,
+					colorDim, frameLines[frame.Span.Line-1], colorReset)
+			}
+		}
+	}
+
+	// ── Secondary spans ──────────────────────────────────────────────────────
 	for _, sec := range d.Secondary {
 		if sec.Span.File == "" {
 			continue
@@ -265,7 +336,6 @@ func printDiag(d Diagnostic) {
 		}
 	}
 
-	// ── Closing line ─────────────────────────────────────────────────────────
 	fmt.Fprintf(w, "\n")
 }
 
@@ -327,8 +397,6 @@ func padLeft(s string, width int) string {
 	return strings.Repeat(" ", width-len(s)) + s
 }
 
-// visualWidth returns the visual column offset for position pos in s,
-// treating tabs as 4-wide stops.
 func visualWidth(s string, pos int) int {
 	vis := 0
 	i := 0
@@ -348,7 +416,6 @@ func visualWidth(s string, pos int) int {
 
 // ── Summary printer ───────────────────────────────────────────────────────────
 
-// PrintDiagSummary prints a compact summary at the end of compilation.
 func PrintDiagSummary() {
 	w := os.Stderr
 	errs := 0
@@ -383,3 +450,32 @@ func PrintDiagSummary() {
 		colorBold, colorReset,
 		strings.Join(parts, " and "))
 }
+
+// ── TraceBuilder — helper to accumulate call frames ──────────────────────────
+
+// TraceBuilder is used by the typechecker to track which fn/mod we're in.
+type TraceBuilder struct {
+	frames []CallFrame
+}
+
+func (tb *TraceBuilder) Push(sp Span, label string) {
+	tb.frames = append(tb.frames, CallFrame{Span: sp, Label: label})
+}
+
+func (tb *TraceBuilder) Pop() {
+	if len(tb.frames) > 0 {
+		tb.frames = tb.frames[:len(tb.frames)-1]
+	}
+}
+
+// Snapshot returns a copy of the current trace (safe to attach to a Diagnostic).
+func (tb *TraceBuilder) Snapshot() []CallFrame {
+	if len(tb.frames) == 0 {
+		return nil
+	}
+	out := make([]CallFrame, len(tb.frames))
+	copy(out, tb.frames)
+	return out
+}
+
+func (tb *TraceBuilder) Len() int { return len(tb.frames) }
