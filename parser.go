@@ -8,6 +8,10 @@ import (
 	"strings"
 )
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Parser
+// ─────────────────────────────────────────────────────────────────────────────
+
 type Parser struct {
 	tokens     []Token
 	pos        int
@@ -43,6 +47,10 @@ func (p *Parser) peekN(n int) Token {
 	return p.tokens[p.pos+n]
 }
 func (p *Parser) at(k TK) bool { return p.peek().Kind == k }
+
+// check is an alias for at — used by parseVis.
+func (p *Parser) check(k TK) bool { return p.peek().Kind == k }
+
 func (p *Parser) atAny(ks ...TK) bool {
 	k := p.peek().Kind
 	for _, x := range ks {
@@ -89,6 +97,21 @@ func (p *Parser) eatSemi() {
 	if p.at(TK_SEMI) {
 		p.advance()
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  NEW: Visibility — parseVis()
+//  Call at the start of any top-level or mod-level declaration.
+//  Consumes `priv` if present; returns VisPrivate.
+//  Otherwise returns VisPublic (the default) without consuming anything.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func (p *Parser) parseVis() Vis {
+	if p.check(TK_PRIV) {
+		p.advance()
+		return VisPrivate
+	}
+	return VisPublic
 }
 
 func (p *Parser) isInMacroScope(name string) bool {
@@ -165,6 +188,10 @@ func buildTestDecl(fn *FnDecl, modPath string) *TestDecl {
 	return td
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Program  — identical to original + NEW: optional priv before each declaration
+// ─────────────────────────────────────────────────────────────────────────────
+
 func (p *Parser) parseProgram() *Program {
 	prog := &Program{}
 	if p.at(TK_MOD) && p.peekN(1).Kind == TK_IDENT && p.peekN(2).Kind != TK_LBRACE {
@@ -174,38 +201,82 @@ func (p *Parser) parseProgram() *Program {
 	}
 	for !p.at(TK_EOF) && p.ok {
 		anns := p.parseAnnotations()
+
+		// NEW: consume optional `priv` before any declaration
+		vis := VisPublic
+		if p.at(TK_PRIV) {
+			vis = p.parseVis()
+		}
+
 		switch p.peek().Kind {
 		case TK_IMPORT, TK_USE:
 			if len(anns) > 0 {
 				warnAt(anns[0].Sp, "annotations on imports are ignored", "")
 			}
+			if vis == VisPrivate {
+				warnAt(p.peek().Span, "'priv' on an import has no effect — imports are always file-local", "")
+			}
 			prog.Imports = append(prog.Imports, p.parseImport())
+
 		case TK_MOD:
 			mb := p.parseModBlock("")
+			mb.Vis = vis // NEW
 			prog.ModBlocks = append(prog.ModBlocks, mb)
+
 		case TK_EXTERN:
-			prog.Externs = append(prog.Externs, p.parseExtern())
+			ext := p.parseExtern()
+			ext.Vis = vis // NEW
+			prog.Externs = append(prog.Externs, ext)
+
 		case TK_STRUCT:
 			sd := p.parseStruct()
 			sd.Annotations = anns
+			sd.Vis = vis // NEW
 			prog.Structs = append(prog.Structs, sd)
+
 		case TK_TYPE:
 			sd := p.parseTypeStruct()
 			sd.Annotations = anns
+			sd.Vis = vis // NEW
 			prog.Structs = append(prog.Structs, sd)
+
 		case TK_MACRO:
 			mc := p.parseMacroDecl()
-			prog.Macros = append(prog.Macros, mc)
+			if mc != nil {
+				mc.Vis = vis // NEW
+				prog.Macros = append(prog.Macros, mc)
+			}
+
 		case TK_FN, TK_SUB:
 			if p.isFnMethod() {
 				md := p.parseMethod()
 				md.Annotations = anns
+				md.Vis = vis // NEW
 				prog.Methods = append(prog.Methods, md)
 			} else {
 				fn := p.parseFnDecl(anns)
+				fn.Vis = vis // NEW
 				prog.TopStmts = append(prog.TopStmts, fn)
 			}
+
+		case TK_CONST, TK_OUR:
+			vd := p.parseVarDecl(true)
+			vd.Vis = vis // NEW
+			prog.TopStmts = append(prog.TopStmts, vd)
+
+		case TK_LET, TK_MY:
+			vd := p.parseVarDecl(false)
+			vd.Vis = vis // NEW
+			prog.TopStmts = append(prog.TopStmts, vd)
+
 		default:
+			if vis == VisPrivate {
+				errAt(p.peek().Span,
+					fmt.Sprintf("'priv' cannot be applied to %q — priv is only valid before fn, struct, macro, mod, extern, or a variable declaration", p.peek().Value),
+					"valid: priv fn foo() { }  |  priv struct Bar { }  |  priv macro baz |x| { }")
+				p.ok = false
+				break
+			}
 			if len(anns) > 0 {
 				warnAt(anns[0].Sp,
 					fmt.Sprintf("@%s cannot be applied here — annotations go before fn or struct", anns[0].Name), "")
@@ -222,6 +293,10 @@ func (p *Parser) isFnMethod() bool {
 	return p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Kind == TK_LPAREN
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Mod block  — identical to original + NEW: priv on each item inside the mod
+// ─────────────────────────────────────────────────────────────────────────────
+
 func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 	sp := p.peek().Span
 	p.expect(TK_MOD)
@@ -231,38 +306,58 @@ func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 	if parentPath != "" {
 		path = parentPath + "::" + name
 	}
-	mb := &ModBlock{Sp: sp, Name: name, Path: path}
+	mb := &ModBlock{Sp: sp, Name: name, Path: path, Vis: VisPublic}
 	for !p.at(TK_RBRACE) && !p.at(TK_EOF) && p.ok {
 		anns := p.parseAnnotations()
+
+		// NEW: consume optional priv before each item inside the mod
+		itemVis := VisPublic
+		if p.at(TK_PRIV) {
+			itemVis = p.parseVis()
+		}
+
 		switch p.peek().Kind {
 		case TK_MOD:
-			mb.Mods = append(mb.Mods, p.parseModBlock(path))
+			nested := p.parseModBlock(path)
+			nested.Vis = itemVis // NEW
+			mb.Mods = append(mb.Mods, nested)
+
 		case TK_STRUCT:
 			sd := p.parseStruct()
 			sd.Annotations = anns
+			sd.Vis = itemVis // NEW
 			mb.Structs = append(mb.Structs, sd)
+
 		case TK_TYPE:
 			sd := p.parseTypeStruct()
 			sd.Annotations = anns
+			sd.Vis = itemVis // NEW
 			mb.Structs = append(mb.Structs, sd)
+
 		case TK_FN, TK_SUB:
 			fn := p.parseFnDecl(anns)
 			fn.ModPath = path
+			fn.Vis = itemVis // NEW
 			if fn.HasAnnotation(AnnTest) {
 				mb.Tests = append(mb.Tests, buildTestDecl(fn, path))
 			} else {
 				mb.Fns = append(mb.Fns, fn)
 			}
+
 		case TK_SEMI:
 			p.advance()
+
+		// original: const/our/let/my inside mod block → synthetic init fn
 		case TK_CONST, TK_OUR, TK_LET, TK_MY:
 			isConst := p.peek().Kind == TK_CONST || p.peek().Kind == TK_OUR
 			vd := p.parseVarDecl(isConst)
+			vd.Vis = itemVis // NEW
 			mb.Fns = append(mb.Fns, &FnDecl{
 				Sp:   vd.Sp,
 				Name: "__zx_const_init_" + vd.Name,
 				Body: &Block{Sp: vd.Sp, Stmts: []Node{vd}},
 			})
+
 		default:
 			t := p.peek()
 			if t.Kind != TK_RBRACE && t.Kind != TK_EOF {
@@ -279,9 +374,7 @@ func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Import parsing
-//
-//  Supported syntax (complete):
+//  Import parsing  (identical to original — every form preserved)
 //
 //  use "stdio.h"                     → raw C header include
 //  use std::str                      → built-in ZX stdlib module (inline, no file)
@@ -396,13 +489,13 @@ func (p *Parser) parseLocalImport(sp Span, imp *ImportDecl) {
 			p.ok = false
 			return
 		}
-		seg := p.advance().Value
-		if seg == "" {
+		s := p.advance().Value
+		if s == "" {
 			errAt(sepSp, "path segment cannot be empty", "")
 			p.ok = false
 			return
 		}
-		segments = append(segments, seg)
+		segments = append(segments, s)
 	}
 
 	if len(segments) == 0 {
@@ -879,11 +972,22 @@ func (p *Parser) tryParseMacroChain(recv Node) Node {
 			break
 		}
 		body := p.parseBlock()
+
+		// NEW: optional else block on chain step:  stepName: { } else { }
+		var elseBody *Block
+		if p.at(TK_ELSE) {
+			p.advance()
+			if p.at(TK_LBRACE) {
+				elseBody = p.parseBlock()
+			}
+		}
+
 		chain.Steps = append(chain.Steps, MacroChainStep{
-			Sp:    stepSp,
-			Macro: macroName,
-			Args:  args,
-			Body:  body,
+			Sp:       stepSp,
+			Macro:    macroName,
+			Args:     args,
+			Body:     body,
+			ElseBody: elseBody, // NEW
 		})
 	}
 	if len(chain.Steps) == 0 {
@@ -1077,6 +1181,16 @@ func (p *Parser) parseStmt() Node {
 				fmt.Sprintf("@%s inside a block is only valid before a fn", anns[0].Name), "")
 		}
 	}
+
+	// NEW: priv inside a function body is a clear error
+	if p.at(TK_PRIV) {
+		errAt(p.peek().Span,
+			"'priv' cannot appear inside a function body — use it at top level or inside a mod block",
+			"move the priv declaration to the top level or inside a mod block")
+		p.ok = false
+		return nil
+	}
+
 	t := p.peek()
 	switch t.Kind {
 	case TK_LET, TK_MY:
