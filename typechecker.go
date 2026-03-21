@@ -121,6 +121,16 @@ type TypeChecker struct {
 	// key = "filename::name" → true means it is private
 	privDecls map[string]bool
 
+	// NEW: map of fn name → declaring file path, for every priv fn that was
+	// skipped during import. Lets inferCall emit "this is private" instead of
+	// "undefined function" when the caller tries to use a priv import.
+	// key = fn name, value = file that declared it priv
+	privFns map[string]string
+
+	// Same for priv structs, macros, and mod-level fns.
+	privStructs map[string]string // struct name → file
+	privMacros  map[string]string // macro name → file
+
 	// NEW: recursive call detection — tracks fn names in active call chain
 	callChain map[string]bool
 
@@ -143,6 +153,9 @@ func TypeCheck(prog *Program, src, file string) bool {
 		modNames:      make(map[string]bool),
 		importedProgs: make(map[string]*Program),
 		privDecls:     make(map[string]bool),
+		privFns:       make(map[string]string),
+		privStructs:   make(map[string]string),
+		privMacros:    make(map[string]string),
 		callChain:     make(map[string]bool),
 		recursiveFns:  make(map[string]bool),
 		ok:            true,
@@ -1523,6 +1536,38 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 			if suggestion != "" {
 				hint = fmt.Sprintf("did you mean %q?", suggestion)
 			}
+			// Check if this name is a private declaration from an imported file
+			// and give a specific error instead of the generic "undefined name".
+			if declFile, isPriv := tc.privFns[e.Name]; isPriv {
+				errFull("EP1", e.Sp,
+					fmt.Sprintf("cannot use %q — it is declared 'priv' in %q and is not accessible from this file",
+						e.Name, declFile),
+					fmt.Sprintf("remove 'priv' from fn %q in %q to make it importable", e.Name, declFile),
+					"", nil, tc.trace.Snapshot())
+				tc.ok = false
+				e.Typ = TypUnknown
+				return TypUnknown
+			}
+			if declFile, isPriv := tc.privStructs[e.Name]; isPriv {
+				errFull("EP4", e.Sp,
+					fmt.Sprintf("cannot use struct %q — it is declared 'priv' in %q and is not accessible from this file",
+						e.Name, declFile),
+					fmt.Sprintf("remove 'priv' from struct %q in %q to make it importable", e.Name, declFile),
+					"", nil, tc.trace.Snapshot())
+				tc.ok = false
+				e.Typ = TypUnknown
+				return TypUnknown
+			}
+			if declFile, isPriv := tc.privMacros[e.Name]; isPriv {
+				errFull("EP3", e.Sp,
+					fmt.Sprintf("cannot use macro %q — it is declared 'priv' in %q and is not accessible from this file",
+						e.Name, declFile),
+					fmt.Sprintf("remove 'priv' from macro %q in %q to make it importable", e.Name, declFile),
+					"", nil, tc.trace.Snapshot())
+				tc.ok = false
+				e.Typ = TypUnknown
+				return TypUnknown
+			}
 			errFull("E27", e.Sp,
 				fmt.Sprintf("undefined name %q", e.Name),
 				hint, "",
@@ -1839,6 +1884,17 @@ func (tc *TypeChecker) suggestModName(name string) string {
 func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 	mc, ok := tc.macros[e.Name]
 	if !ok {
+		// Check if this is a private macro from an imported file.
+		if declFile, isPriv := tc.privMacros[e.Name]; isPriv {
+			errFull("EP3", e.Sp,
+				fmt.Sprintf("cannot call macro %q — it is declared 'priv' in %q and is not accessible from this file",
+					e.Name, declFile),
+				fmt.Sprintf("remove 'priv' from macro %q in %q to make it importable", e.Name, declFile),
+				"", nil, tc.trace.Snapshot())
+			tc.ok = false
+			e.Typ = TypUnknown
+			return TypUnknown
+		}
 		hint := fmt.Sprintf("declare it: macro fn %s |input| -> |output| { }", e.Name)
 		if s := tc.suggestName(e.Name); s != "" {
 			hint = fmt.Sprintf("did you mean %q?", s)
@@ -2304,6 +2360,20 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 	if fnName != "" {
 		vi := tc.scope.lookup(fnName)
 		if vi == nil {
+			// Check if this name is a private function from an imported file.
+			// Give a specific "it's private" error instead of "undefined".
+			if declFile, isPriv := tc.privFns[fnName]; isPriv {
+				errFull("EP1", e.Sp,
+					fmt.Sprintf("cannot call %q — it is declared 'priv' in %q and is not accessible from this file",
+						fnName, declFile),
+					fmt.Sprintf("remove 'priv' from fn %q in %q to make it importable", fnName, declFile),
+					"",
+					nil,
+					tc.trace.Snapshot())
+				tc.ok = false
+				e.Typ = TypUnknown
+				return TypUnknown
+			}
 			suggestion := tc.suggestName(fnName)
 			hint := fmt.Sprintf("declare it: extern fn %s(...) -> int  or  fn %s(...) { }", fnName, fnName)
 			if suggestion != "" {
@@ -2501,6 +2571,17 @@ func (tc *TypeChecker) suggestField(sd *StructDecl, name string) string {
 func (tc *TypeChecker) inferStructInit(e *StructInit) *ZXType {
 	sd, ok := tc.structs[e.Name]
 	if !ok {
+		// Check if this is a private struct from an imported file.
+		if declFile, isPriv := tc.privStructs[e.Name]; isPriv {
+			errFull("EP5", e.Sp,
+				fmt.Sprintf("cannot construct struct %q — it is declared 'priv' in %q and is not accessible from this file",
+					e.Name, declFile),
+				fmt.Sprintf("remove 'priv' from struct %q in %q to make it importable", e.Name, declFile),
+				"", nil, tc.trace.Snapshot())
+			tc.ok = false
+			e.Typ = TypUnknown
+			return TypUnknown
+		}
 		best := ""
 		bestDist := 3
 		for sName := range tc.structs {
@@ -2832,8 +2913,10 @@ func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
 	}
 	for _, stmt := range imported.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok {
-			// NEW: skip priv functions when importing
+			// priv functions: skip from import but record them so inferCall
+			// can give a proper "this function is private" error.
 			if fn.Vis == VisPrivate {
+				tc.privFns[fn.Name] = filePath
 				continue
 			}
 			if _, exists := tc.fns[fn.Name]; exists {
@@ -2849,6 +2932,17 @@ func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
 			}
 			prog.GlobalVars = append(prog.GlobalVars, vd)
 			prog.TopStmts = append(prog.TopStmts, vd)
+		}
+	}
+	// Record priv structs and macros too so field-access / call errors are precise.
+	for _, s := range imported.Structs {
+		if s.Vis == VisPrivate {
+			tc.privStructs[s.Name] = filePath
+		}
+	}
+	for _, mc := range imported.Macros {
+		if mc.Vis == VisPrivate {
+			tc.privMacros[mc.Name] = filePath
 		}
 	}
 	prog.Structs = append(prog.Structs, filterPublicStructs(imported.Structs)...)
