@@ -16,8 +16,8 @@
 //  Called as: macroName!(value)  or  value |> macroName!
 // ─────────────────────────────────────────────────────────────────────────────
 
-// A macro that doubles an integer.
-macro fn double |x: int| -> int {
+// A macro that _doubles an integer.
+macro fn _double |x: int| -> int {
     return x * 2;
 }
 
@@ -37,46 +37,25 @@ macro fn square |n: int| -> int {
 macro fn negate |b: int| -> int {
     return !b;
 }
-
-fn demo_basic_macros() {
-    say double!(5);        // 10
-    say double!(double!(3)); // 12  — macro calls can nest
-
-    say clamp_pct!(-10);   // 0
-    say clamp_pct!(50);    // 50
-    say clamp_pct!(999);   // 100
-
-    say square!(7);        // 49
-
-    say negate!(1);        // 0
-    say negate!(0);        // 1
-
-    // Use apply! to call a macro by name as an expression.
-    // apply!(macroName, value)
-    let result = apply!(double, 8);
-    say result;            // 16
-
-    let clamped = apply!(clamp_pct, 150);
-    say clamped;           // 100
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 //  PIPE OPERATOR |>
 //  value |> macroName!   feeds value as the first arg to the macro.
 // ─────────────────────────────────────────────────────────────────────────────
 
+fn add_one(n: int) -> int { return n + 1; }
+
 fn demo_pipe_operator() {
     // Chain multiple macros left-to-right using |>
-    let v = 7 |> square! |> double! |> clamp_pct!;
-    say v;    // square(7)=49 → double(49)=98 → clamp(98)=98
+    let v = 7 |> square! |> _double! |> clamp_pct!;
+    say v;    // square(7)=49 → _double(49)=98 → clamp(98)=98
 
-    let w = 200 |> clamp_pct! |> double!;
-    say w;    // clamp(200)=100 → double(100)=200
+    let w = 200 |> clamp_pct! |> _double!;
+    say w;    // clamp(200)=100 → _double(100)=200
 
     // Mix with regular functions
-    fn add_one(n: int) -> int { return n + 1; }
-    let x = 5 |> add_one |> square! |> double!;
-    say x;    // add_one(5)=6 → square(6)=36 → double(36)=72
+    
+    let x = 5 |> add_one |> square! |> _double!;
+    say x;    // add_one(5)=6 → square(6)=36 → _double(36)=72
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -270,25 +249,25 @@ fn demo_multi_arg_macros() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 macro fn normalize |v: int| -> int {
-    // clamp to 0..100 then double
+    // clamp to 0..100 then _double
     let c = clamp_pct!(v);
-    return double!(c);
+    return _double!(c);
 }
 
 fn compute(n: int) -> int { return n * 3; }
 
 fn demo_composition() {
-    say normalize!(-5);    // clamp(-5)=0  → double(0)=0
-    say normalize!(40);    // clamp(40)=40 → double(40)=80
-    say normalize!(200);   // clamp(200)=100 → double(100)=200
+    say normalize!(-5);    // clamp(-5)=0  → _double(0)=0
+    say normalize!(40);    // clamp(40)=40 → _double(40)=80
+    say normalize!(200);   // clamp(200)=100 → _double(100)=200
 
     // Compose with pipe
     let out = 30 |> normalize! |> square!;
     say out;   // normalize(30)=60 → square(60)=3600
 
     // Mix macros and functions in a pipe
-    let out2 = 5 |> compute |> double! |> clamp_pct!;
-    say out2;  // compute(5)=15 → double(15)=30 → clamp(30)=30
+    let out2 = 5 |> compute |> _double! |> clamp_pct!;
+    say out2;  // compute(5)=15 → _double(15)=30 → clamp(30)=30
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
