@@ -1668,17 +1668,54 @@ func (p *Parser) parsePostfix() Node {
 			}
 
 		case TK_DCOLON:
-			// Support chained :: for nested mods: Outer::Inner::fn()
-			// We collect the full path and then decide if it's a mod call.
 			p.advance()
 			if p.at(TK_IDENT) {
-				name := p.advance()
-				// Keep consuming ::ident segments to build the full nested path.
-				for p.at(TK_DCOLON) && p.peekN(1).Kind == TK_IDENT {
-					p.advance()
-					name = p.advance()
+				seg := p.advance()
+				// Build receiver path: fold current expr name + "::" + seg
+				// e.g.  Ident{"Math"} + "Int"  →  Ident{"Math::Int"}
+				recvName := ""
+				if id, ok := expr.(*Ident); ok {
+					recvName = id.Name
 				}
-				if p.at(TK_LPAREN) {
+				fullPath := recvName
+				if fullPath != "" {
+					fullPath = fullPath + "::" + seg.Value
+				} else {
+					fullPath = seg.Value
+				}
+				// Keep consuming ::ident segments (but NOT if next token after :: is
+				// an ident followed by '(' — that would be the function call segment).
+				for p.at(TK_DCOLON) && p.peekN(1).Kind == TK_IDENT {
+					// peek ahead: if the ident is followed by '(' it is the fn name, stop
+					if p.peekN(2).Kind == TK_LPAREN {
+						break
+					}
+					// also stop if ident is the last segment before '(' (checked above)
+					// but keep consuming plain path segments
+					p.advance() // consume ::
+					nextSeg := p.advance()
+					fullPath = fullPath + "::" + nextSeg.Value
+				}
+				// Now check: are we at :: fn_name ( ?
+				if p.at(TK_DCOLON) && p.peekN(1).Kind == TK_IDENT && p.peekN(2).Kind == TK_LPAREN {
+					p.advance()          // consume ::
+					fnTok := p.advance() // consume fn name
+					p.advance()          // consume (
+					var args []Node
+					for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
+						args = append(args, p.parseExpr())
+						if p.at(TK_COMMA) {
+							p.advance()
+						}
+					}
+					p.expect(TK_RPAREN)
+					expr = &MethodCallExpr{Sp: sp,
+						Recv:   &Ident{Sp: seg.Span, Name: fullPath},
+						Method: fnTok.Value,
+						Args:   args,
+					}
+				} else if p.at(TK_LPAREN) {
+					// Math::Int style where fullPath IS the function (unlikely but handle)
 					p.advance()
 					var args []Node
 					for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
@@ -1688,9 +1725,24 @@ func (p *Parser) parsePostfix() Node {
 						}
 					}
 					p.expect(TK_RPAREN)
-					expr = &MethodCallExpr{Sp: sp, Recv: expr, Method: name.Value, Args: args}
+					// split fullPath into mod + fn at last ::
+					lastSep := strings.LastIndex(fullPath, "::")
+					if lastSep >= 0 {
+						modPart := fullPath[:lastSep]
+						fnPart := fullPath[lastSep+2:]
+						expr = &MethodCallExpr{Sp: sp,
+							Recv:   &Ident{Sp: seg.Span, Name: modPart},
+							Method: fnPart,
+							Args:   args,
+						}
+					} else {
+						expr = &CallExpr{Sp: sp,
+							Func: &Ident{Sp: seg.Span, Name: fullPath},
+							Args: args,
+						}
+					}
 				} else {
-					expr = &Ident{Sp: name.Span, Name: name.Value}
+					expr = &Ident{Sp: seg.Span, Name: fullPath}
 				}
 			}
 
