@@ -172,9 +172,9 @@ func printDiag(d Diagnostic) {
 	// Location arrow
 	fmt.Fprintf(w, "  %s-->%s %s%s%s:%s%d%s:%s%d%s\n",
 		colorBlue+colorBold, colorReset,
-		colorCyan, sp.File, colorReset,
-		colorYellow, sp.Line, colorReset,
-		colorYellow, sp.Col, colorReset)
+		colorWhite, sp.File, colorDim,
+		colorReset+colorRed, sp.Line, colorDim,
+		colorReset+colorRed, sp.Col, colorReset)
 
 	// Source context
 	lines := getSourceLines(sp.File)
@@ -186,14 +186,14 @@ func printDiag(d Diagnostic) {
 	lineNumWidth := digits(sp.Line + 1)
 	gutter := func(n int, active bool) string {
 		if n == 0 {
-			return fmt.Sprintf("%s%s |%s ", colorBlue+colorBold, padLeft("", lineNumWidth), colorReset)
+			return fmt.Sprintf("%s%s |%s ", colorReset+colorBlue+colorBold, padLeft("", lineNumWidth), colorReset)
 		}
 		marker := "|"
 		if active {
-			marker = colorBlue + colorBold + "|" + colorReset
+			marker = colorReset + colorBlue + colorBold + "|" + colorReset
 		}
 		return fmt.Sprintf("%s%s%s %s ",
-			colorBlue+colorBold, padLeft(fmt.Sprintf("%d", n), lineNumWidth), colorBlue,
+			colorReset+colorBlue+colorBold, padLeft(fmt.Sprintf("%d", n), lineNumWidth), colorBlue,
 			marker)
 	}
 
@@ -262,46 +262,36 @@ func printDiag(d Diagnostic) {
 			colorCyan, d.DocURL, colorReset)
 	}
 
-	// Trace — fixed version (no garbage, colors preserved)
+	// Trace
 	if len(d.Trace) > 0 {
-		fmt.Fprintf(w, "  %s%s= trace:%s\n",
+		fmt.Fprintf(w, "  %s%strace:%s\n",
 			gutter(0, false),
 			colorPurple+colorBold, colorReset)
 
 		for i, frame := range d.Trace {
-			indent := strings.Repeat("  ", i+1)
-
-			// Safe location formatting — this prevents %!(EXTRA ...)
-			loc := ""
-			if frame.Span.Line > 0 {
-				fileDisplay := frame.Span.File
-				/*if fileDisplay != "" {
-					fileDisplay = filepath.Base(fileDisplay)
-				}*/
-				loc = fmt.Sprintf(" (%s:%d", fileDisplay, frame.Span.Line)
-				if frame.Span.Col > 0 {
-					loc += fmt.Sprintf(":%d", frame.Span.Col)
-				}
-				loc += ")"
+			fileName := frame.Span.File
+			if idx := strings.LastIndexAny(fileName, "/\\"); idx >= 0 {
+				fileName = fileName[idx+1:]
 			}
 
-			fmt.Fprintf(w, "  %s%s%s→%s %s%s%s%s\n",
+			prefix := "  "
+			if i == 0 {
+				prefix = "  " // align with trace label for first frame
+			}
+
+			loc := fmt.Sprintf("%s:%d", fileName, frame.Span.Line)
+			if frame.Span.Col > 0 {
+				loc += fmt.Sprintf(":%d", frame.Span.Col)
+			}
+
+			fmt.Fprintf(w, "  %s%s%s%s %s %s%s\n",
 				gutter(0, false),
-				indent,
-				colorPurple+colorBold, colorReset,
-				colorBold, frame.Label, colorReset,
-				colorDim+loc+colorReset,
-			)
-
-			// frame source line
-			frameLines := getSourceLines(frame.Span.File)
-			if frameLines != nil && frame.Span.Line >= 1 && frame.Span.Line <= len(frameLines) {
-				fmt.Fprintf(w, "  %s%s  %s%s%s\n",
-					gutter(0, false),
-					indent,
-					colorDim, frameLines[frame.Span.Line-1], colorReset)
-			}
+				colorPurple+colorBold, prefix, colorReset,
+				colorBold+frame.Label+colorReset,
+				colorDim, loc)
 		}
+
+		fmt.Fprintf(w, "\n")
 	}
 
 	// Secondary spans
