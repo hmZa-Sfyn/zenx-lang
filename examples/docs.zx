@@ -1,0 +1,8 @@
+mod doc_example {
+    @doc = "hello"
+    fn abc() -> int {
+        return 123;
+    }
+}
+
+say doc_example::abc();

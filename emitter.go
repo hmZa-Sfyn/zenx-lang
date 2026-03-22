@@ -12,9 +12,9 @@ type Emitter struct {
 	deferBuf   []string
 	tmpCounter int
 	prog       *Program
-	// NEW: lambda counter for unique C function names
+	// lambda counter for unique C function names
 	lambdaCounter int
-	// NEW: accumulated lambda forward declarations (emitted before main)
+	// accumulated lambda forward declarations (emitted before main)
 	lambdaDecls  strings.Builder
 	lambdaBodies strings.Builder
 }
@@ -124,7 +124,6 @@ func (e *Emitter) emitProgram(prog *Program) {
 	e.ln("}")
 	e.ln("")
 
-	// NEW: built-in snprintf template buffer (larger, separate from input buf)
 	e.ln("/* built-in template string buffer */")
 	e.ln("static char __zx_fmt_buf[65536];")
 	e.ln("")
@@ -145,7 +144,6 @@ func (e *Emitter) emitProgram(prog *Program) {
 			continue
 		}
 		e.ln("%s %s(%s);", cType(mc.RetType), macroFnName(mc.Name), macroParamStr(mc))
-		// NEW: emit aliases as #define
 		for _, alias := range mc.Aliases {
 			e.ln("#define %s %s", macroFnName(alias), macroFnName(mc.Name))
 		}
@@ -196,22 +194,22 @@ func (e *Emitter) emitProgram(prog *Program) {
 		e.ln("")
 	}
 
-	// NEW: emit mod-level constants as static C variables
+	// emit mod-level constants as static C variables
 	for _, mb := range prog.ModBlocks {
 		e.emitModConsts(mb)
 	}
 
-	// forward declare mod block functions
+	// forward declare mod block functions (including nested)
 	for _, mb := range prog.ModBlocks {
 		e.fwdDeclModFns(mb)
 	}
 
-	// emit mod block fn bodies
+	// emit mod block fn bodies (including nested)
 	for _, mb := range prog.ModBlocks {
 		e.emitModFns(mb)
 	}
 
-	// NEW: emit collected lambda bodies (captured during expr emission)
+	// emit collected lambda bodies
 	if e.lambdaBodies.Len() > 0 {
 		e.sb.WriteString(e.lambdaBodies.String())
 		e.ln("")
@@ -242,7 +240,7 @@ func (e *Emitter) emitProgram(prog *Program) {
 	if !hasUserMain {
 		e.ln("int main(int argc, char **argv) {")
 		e.indent++
-		// NEW: call mod init functions before any user code
+		// call mod init functions before any user code
 		for _, mb := range prog.ModBlocks {
 			e.emitModInitCall(mb)
 		}
@@ -255,7 +253,10 @@ func (e *Emitter) emitProgram(prog *Program) {
 	}
 }
 
-// NEW: emitModConsts emits module-level const variables as C static globals.
+// ── Mod constants ─────────────────────────────────────────────────────────────
+
+// emitModConsts emits module-level const variables as C static globals.
+// Uses mb.Path so nested mods produce "Outer_Inner_constName".
 func (e *Emitter) emitModConsts(mb *ModBlock) {
 	for _, vd := range mb.Consts {
 		typ := vd.ResolvedType
@@ -265,11 +266,11 @@ func (e *Emitter) emitModConsts(mb *ModBlock) {
 		if typ == nil {
 			typ = TypAny
 		}
-		cname := modCFnName(mb.Name, vd.Name)
+		cname := modCFnName(mb.Path, vd.Name)
 		if vd.Init != nil {
-			e.ln("static const %s = %s; /* mod %s const */", cTypeDecl(typ, cname), e.emitExpr(vd.Init), mb.Name)
+			e.ln("static const %s = %s; /* mod %s const */", cTypeDecl(typ, cname), e.emitExpr(vd.Init), mb.Path)
 		} else {
-			e.ln("static %s; /* mod %s const */", cTypeDecl(typ, cname), mb.Name)
+			e.ln("static %s; /* mod %s const */", cTypeDecl(typ, cname), mb.Path)
 		}
 	}
 	for _, nested := range mb.Mods {
@@ -277,22 +278,23 @@ func (e *Emitter) emitModConsts(mb *ModBlock) {
 	}
 }
 
-// NEW: emitModInitCall calls a mod's __init__ function if one exists.
+// emitModInitCall calls a mod's __init__ function if one exists.
+// Uses mb.Path so nested mods get the right C name.
 func (e *Emitter) emitModInitCall(mb *ModBlock) {
 	if mb.Init != nil {
-		e.ln("%s(); /* mod %s init */", modCFnName(mb.Name, mb.Init.Name), mb.Name)
+		e.ln("%s(); /* mod %s init */", modCFnName(mb.Path, mb.Init.Name), mb.Path)
 	}
 	for _, nested := range mb.Mods {
 		e.emitModInitCall(nested)
 	}
 }
 
+// ── Struct emission ───────────────────────────────────────────────────────────
+
 func (e *Emitter) emitStruct(s *StructDecl) {
-	// NEW: emit doc comment if present
 	if s.Doc != "" {
 		e.ln("/* %s */", s.Doc)
 	}
-	// NEW: emit base struct embed if declared
 	if s.Base != "" {
 		e.ln("typedef struct %s {", s.Name)
 		e.indent++
@@ -323,6 +325,8 @@ func (e *Emitter) emitStruct(s *StructDecl) {
 	e.ln("")
 }
 
+// ── C name helpers ────────────────────────────────────────────────────────────
+
 var cReservedFnNames = map[string]bool{
 	"double": true, "float": true, "int": true, "char": true,
 	"long": true, "short": true, "unsigned": true, "signed": true,
@@ -342,16 +346,22 @@ func safeFnName(name string) string {
 	return name
 }
 
-func modCFnName(modName, fnName string) string {
-	return modName + "_" + fnName
+// modCFnName converts a (possibly nested) mod path and function name to a
+// C-safe identifier.
+//
+//	modCFnName("Outer", "fn")         → "Outer_fn"
+//	modCFnName("Outer::Inner", "fn")  → "Outer_Inner_fn"
+func modCFnName(modPath, fnName string) string {
+	cPath := strings.ReplaceAll(modPath, "::", "_")
+	return cPath + "_" + fnName
 }
 
+// ── Function / method emission ────────────────────────────────────────────────
+
 func (e *Emitter) emitFnFull(fn *FnDecl) {
-	// NEW: emit doc comment
 	if fn.Doc != "" {
 		e.ln("/* %s */", fn.Doc)
 	}
-	// NEW: handle @cold / @hot hints
 	attribs := ""
 	if fn.HasAnnotation(AnnInline) {
 		attribs = "__attribute__((always_inline)) inline "
@@ -408,6 +418,8 @@ func (e *Emitter) emitBlockStmts(b *Block) {
 		e.ln("/* deferred */ %s;", e.emitExpr(defers[i]))
 	}
 }
+
+// ── Statement emission ────────────────────────────────────────────────────────
 
 func (e *Emitter) emitStmt(n Node) {
 	if n == nil {
@@ -495,7 +507,6 @@ func (e *Emitter) emitStmt(n Node) {
 		e.emitMacroChainStmt(s)
 	case *MacroCallExpr:
 		e.ln("%s;", e.emitMacroCall(s))
-	// NEW: RepeatStmt — repeat N { }
 	case *RepeatStmt:
 		iterVar := e.tmp()
 		e.ln("for (long long %s = 0; %s < (long long)(%s); %s++) {", iterVar, iterVar, e.emitExpr(s.Count), iterVar)
@@ -503,7 +514,6 @@ func (e *Emitter) emitStmt(n Node) {
 		e.emitBlockStmts(s.Body)
 		e.indent--
 		e.ln("}")
-	// NEW: WithStmt — with expr() as x { }
 	case *WithStmt:
 		exprStr := e.emitExpr(s.Expr)
 		exprType := exprType(s.Expr)
@@ -576,7 +586,6 @@ func (e *Emitter) emitForRange(s *ForRangeStmt) {
 	if s.Step != nil {
 		step = e.emitExpr(s.Step)
 	}
-	// NEW: reverse iteration support
 	if s.Reverse {
 		e.ln("for (long long %s = (%s)-1; %s >= %s; %s -= %s) {", s.Var, to, s.Var, from, s.Var, step)
 	} else {
@@ -615,7 +624,6 @@ func (e *Emitter) emitMatch(s *MatchStmt) {
 			if !first {
 				kw = "} else if"
 			}
-			// NEW: multi-pattern arm:  1 | 2 | 3 => { }
 			var cond string
 			if len(arm.Patterns) > 0 {
 				var parts []string
@@ -699,7 +707,7 @@ func (e *Emitter) emitPrint(s *PrintStmt) {
 	e.ln(`fprintf(%s, "%s", %s);`, dest, fmtStr, strings.Join(args, ", "))
 }
 
-// ── Expressions ───────────────────────────────────────────────────────────────
+// ── Expression emission ───────────────────────────────────────────────────────
 
 func (e *Emitter) emitExpr(n Node) string {
 	if n == nil {
@@ -744,6 +752,7 @@ func (e *Emitter) emitExpr(n Node) string {
 		return e.emitBuiltin(ex)
 
 	case *ModCallExpr:
+		// ex.Mod may be a nested path like "Outer::Inner"; modCFnName handles ::→_
 		var argStrs []string
 		for _, a := range ex.Args {
 			argStrs = append(argStrs, e.emitExpr(a))
@@ -751,6 +760,8 @@ func (e *Emitter) emitExpr(n Node) string {
 		return fmt.Sprintf("%s(%s)", modCFnName(ex.Mod, ex.Fn), strings.Join(argStrs, ", "))
 
 	case *MethodCallExpr:
+		// When the receiver Ident has unknown type it is a mod name.
+		// id.Name may be a nested path like "Outer::Inner".
 		if id, ok := ex.Recv.(*Ident); ok && (id.Typ == nil || id.Typ.Kind == TyUnknown) {
 			var argStrs []string
 			for _, a := range ex.Args {
@@ -851,11 +862,9 @@ func (e *Emitter) emitExpr(n Node) string {
 	case *BangMacroExpr:
 		return e.emitBangMacro(ex)
 
-	// NEW: LambdaExpr — emit as a named static C function
 	case *LambdaExpr:
 		return e.emitLambda(ex)
 
-	// NEW: MacroApplyExpr — apply!(macro, value, args...)
 	case *MacroApplyExpr:
 		return e.emitMacroApply(ex)
 
@@ -864,19 +873,16 @@ func (e *Emitter) emitExpr(n Node) string {
 	}
 }
 
-// NEW: emitLambda emits a lambda as a file-scope static C function and
-// returns a pointer to it (function pointer).
+// emitLambda emits a lambda as a file-scope static C function and
+// returns a pointer to it.
 func (e *Emitter) emitLambda(lam *LambdaExpr) string {
 	name := e.lambdaName()
-	// Build param string
 	params := buildParamStr(lam.Params, false)
 	retT := lam.RetType
 	if retT == nil {
 		retT = TypVoid
 	}
-	// Emit the lambda as a static function into the lambda bodies buffer
 	e.lln("static %s %s(%s) {", cType(retT), name, params)
-	// Temporarily redirect output to lambda buffer
 	savedSB := e.sb
 	e.sb = e.lambdaBodies
 	e.indent = 1
@@ -886,11 +892,10 @@ func (e *Emitter) emitLambda(lam *LambdaExpr) string {
 	e.indent = 0
 	e.lln("}")
 	e.lln("")
-	// Return the function name as a function pointer
 	return name
 }
 
-// NEW: emitMacroApply — apply!(macroName, value, extraArgs...)
+// emitMacroApply — apply!(macroName, value, extraArgs...)
 func (e *Emitter) emitMacroApply(ma *MacroApplyExpr) string {
 	valStr := e.emitExpr(ma.Value)
 	var argStrs []string
@@ -1015,7 +1020,6 @@ func (e *Emitter) emitTemplateStr(ts *TemplateStr) string {
 	if len(args) > 0 {
 		argStr = ", " + strings.Join(args, ", ")
 	}
-	// FIX: use dedicated format buffer instead of input buffer to avoid clobbering
 	return fmt.Sprintf("(snprintf(__zx_fmt_buf, sizeof(__zx_fmt_buf), \"%s\"%s), __zx_fmt_buf)", fmtStr, argStr)
 }
 
@@ -1050,7 +1054,6 @@ func (e *Emitter) emitMultilineStr(ms *MultilineStr) string {
 		if len(args) > 0 {
 			argStr = ", " + strings.Join(args, ", ")
 		}
-		// FIX: use dedicated format buffer
 		return fmt.Sprintf("(snprintf(__zx_fmt_buf, sizeof(__zx_fmt_buf), \"%s\"%s), __zx_fmt_buf)", fmtStr, argStr)
 	}
 	// Complex path: capture stdout via open_memstream (Linux/glibc).
@@ -1115,7 +1118,6 @@ func cType(t *ZXType) string {
 	case TyStruct:
 		return t.Name
 	case TyFn:
-		// Emit as void* for simplicity; the caller casts as needed
 		return "void*"
 	default:
 		return "long long"
@@ -1301,7 +1303,6 @@ func macroParamStr(mc *MacroDecl) string {
 }
 
 func (e *Emitter) emitMacroFull(mc *MacroDecl) {
-	// NEW: emit doc comment if present
 	if mc.Doc != "" {
 		e.ln("/* macro: %s — %s */", mc.Name, mc.Doc)
 	} else {
@@ -1310,7 +1311,6 @@ func (e *Emitter) emitMacroFull(mc *MacroDecl) {
 	sig := fmt.Sprintf("%s %s(%s)", cType(mc.RetType), macroFnName(mc.Name), macroParamStr(mc))
 	e.ln("%s {", sig)
 	e.indent++
-	// NEW: emit guard check — if guard fails, return zero-value
 	if mc.Guard != nil {
 		e.ln("if (!(%s)) { return (%s)0; }", e.emitExpr(mc.Guard), cType(mc.RetType))
 	}
@@ -1418,7 +1418,6 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 			)
 			return "(" + inner + ")"
 		}
-
 	case "type_of":
 		if len(b.Args) == 1 {
 			t := exprType(b.Args[0])
@@ -1429,37 +1428,31 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 			b.Typ = TypStr
 			return fmt.Sprintf("(\"%s\")", typeName)
 		}
-
 	case "size_of":
 		if len(b.Args) == 1 {
 			t := exprType(b.Args[0])
 			b.Typ = TypInt
 			return fmt.Sprintf("((long long)sizeof(%s))", cType(t))
 		}
-
 	case "max":
 		if len(argStrs) == 2 {
 			a, bv := argStrs[0], argStrs[1]
 			return fmt.Sprintf("((%s) > (%s) ? (%s) : (%s))", a, bv, a, bv)
 		}
-
 	case "min":
 		if len(argStrs) == 2 {
 			a, bv := argStrs[0], argStrs[1]
 			return fmt.Sprintf("((%s) < (%s) ? (%s) : (%s))", a, bv, a, bv)
 		}
-
 	case "abs":
 		if len(argStrs) == 1 {
 			return fmt.Sprintf("((%s) < 0 ? -(%s) : (%s))", arg0, arg0, arg0)
 		}
-
 	case "clamp":
 		if len(argStrs) == 3 {
 			v, lo, hi := argStrs[0], argStrs[1], argStrs[2]
 			return fmt.Sprintf("((%s)<(%s)?(%s):((%s)>(%s)?(%s):(%s)))", v, lo, lo, v, hi, hi, v)
 		}
-
 	case "swap":
 		if len(argStrs) == 2 {
 			tmp := e.tmp()
@@ -1468,37 +1461,31 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 			return fmt.Sprintf("({ %s %s = %s; %s = %s; %s = %s; 0; })",
 				cType(t), tmp, a, a, bv, bv, tmp)
 		}
-
 	case "len":
 		if len(argStrs) == 1 {
 			b.Typ = TypInt
 			return fmt.Sprintf("((long long)strlen((const char*)(%s)))", arg0)
 		}
-
 	case "str_eq":
 		if len(argStrs) == 2 {
 			b.Typ = TypBool
 			return fmt.Sprintf("(strcmp(%s, %s) == 0)", argStrs[0], argStrs[1])
 		}
-
 	case "str_ne":
 		if len(argStrs) == 2 {
 			b.Typ = TypBool
 			return fmt.Sprintf("(strcmp(%s, %s) != 0)", argStrs[0], argStrs[1])
 		}
-
 	case "str_contains":
 		if len(argStrs) == 2 {
 			b.Typ = TypBool
 			return fmt.Sprintf("(strstr(%s, %s) != NULL)", argStrs[0], argStrs[1])
 		}
-
 	case "str_starts":
 		if len(argStrs) == 2 {
 			b.Typ = TypBool
 			return fmt.Sprintf("(strncmp(%s, %s, strlen(%s)) == 0)", argStrs[0], argStrs[1], argStrs[1])
 		}
-
 	case "str_ends":
 		if len(argStrs) == 2 {
 			b.Typ = TypBool
@@ -1507,19 +1494,16 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 				"(strlen(%s) >= strlen(%s) && strcmp(%s + strlen(%s) - strlen(%s), %s) == 0)",
 				s, suf, s, s, suf, suf)
 		}
-
 	case "str_to_int":
 		if len(argStrs) == 1 {
 			b.Typ = TypInt
 			return fmt.Sprintf("((long long)atoi(%s))", arg0)
 		}
-
 	case "str_to_float":
 		if len(argStrs) == 1 {
 			b.Typ = TypFloat
 			return fmt.Sprintf("(atof(%s))", arg0)
 		}
-
 	case "int_to_str":
 		if len(argStrs) == 1 {
 			b.Typ = TypStr
@@ -1528,7 +1512,6 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 				"({ static char %s[32]; snprintf(%s, sizeof(%s), \"%%lld\", (long long)(%s)); %s; })",
 				tmp, tmp, tmp, arg0, tmp)
 		}
-
 	case "float_to_str":
 		if len(argStrs) == 1 {
 			b.Typ = TypStr
@@ -1537,7 +1520,6 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 				"({ static char %s[64]; snprintf(%s, sizeof(%s), \"%%g\", (double)(%s)); %s; })",
 				tmp, tmp, tmp, arg0, tmp)
 		}
-
 	case "print":
 		if len(argStrs) >= 1 {
 			rest := ""
@@ -1546,7 +1528,6 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 			}
 			return fmt.Sprintf("(printf(%s%s))", arg0, rest)
 		}
-
 	case "eprint":
 		if len(argStrs) >= 1 {
 			rest := ""
@@ -1555,136 +1536,105 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 			}
 			return fmt.Sprintf("(fprintf(stderr, %s%s))", arg0, rest)
 		}
-
 	case "read_line":
 		b.Typ = TypStr
 		return "((__zx_input(NULL)))"
-
 	case "exit_ok":
 		return "(exit(0), 0)"
-
 	case "exit_err":
 		msg := `"error"`
 		if len(argStrs) > 0 {
 			msg = argStrs[0]
 		}
 		return fmt.Sprintf("(fprintf(stderr, \"%%s\\n\", %s), exit(1), 0)", msg)
-
 	case "alloc":
 		if len(argStrs) == 1 {
 			return fmt.Sprintf("(malloc((size_t)(%s)))", arg0)
 		}
-
 	case "zalloc":
 		if len(argStrs) == 1 {
 			return fmt.Sprintf("(calloc((size_t)(%s), 1))", arg0)
 		}
-
 	case "free":
 		if len(argStrs) == 1 {
 			return fmt.Sprintf("(free(%s), 0)", arg0)
 		}
-
 	case "memcpy":
 		if len(argStrs) == 3 {
 			return fmt.Sprintf("(memcpy(%s, %s, (size_t)(%s)))",
 				argStrs[0], argStrs[1], argStrs[2])
 		}
-
 	case "memset":
 		if len(argStrs) == 3 {
 			return fmt.Sprintf("(memset(%s, (int)(%s), (size_t)(%s)))",
 				argStrs[0], argStrs[1], argStrs[2])
 		}
-
 	case "is_nil":
 		if len(argStrs) == 1 {
 			b.Typ = TypBool
 			return fmt.Sprintf("((void*)(%s) == NULL)", arg0)
 		}
-
 	case "not_nil":
 		if len(argStrs) == 1 {
 			b.Typ = TypBool
 			return fmt.Sprintf("((void*)(%s) != NULL)", arg0)
 		}
-
 	case "cast":
 		if len(argStrs) == 2 {
 			return fmt.Sprintf("((%s)(%s))", argStrs[0], argStrs[1])
 		}
-
 	case "count_of":
 		if len(argStrs) == 1 {
 			b.Typ = TypInt
 			return fmt.Sprintf("((long long)(sizeof(%s)/sizeof((%s)[0])))", arg0, arg0)
 		}
-
 	case "likely":
 		if len(argStrs) == 1 {
 			return fmt.Sprintf("(__builtin_expect(!!(%s), 1))", arg0)
 		}
-
 	case "unlikely":
 		if len(argStrs) == 1 {
 			return fmt.Sprintf("(__builtin_expect(!!(%s), 0))", arg0)
 		}
-
-	// NEW: apply — apply!(macroName, value) inlines a macro call
 	case "apply":
 		if len(argStrs) >= 2 {
 			macroName := argStrs[0]
 			rest := argStrs[1:]
 			return fmt.Sprintf("%s(%s)", macroFnName(macroName), strings.Join(rest, ", "))
 		}
-
-	// NEW: defer! — runtime-safe defer (calls free/cleanup at scope end via comma expr)
 	case "once":
-		// once!(expr) — evaluate once, cache in static variable
 		if len(argStrs) == 1 {
 			tmp := e.tmp()
 			t := exprType(b.Args[0])
 			return fmt.Sprintf("({ static %s %s = 0; static int %s_done = 0; if (!%s_done) { %s = (%s); %s_done = 1; } %s; })",
 				cType(t), tmp, tmp, tmp, tmp, arg0, tmp, tmp)
 		}
-
-	// NEW: between!(val, lo, hi) — inclusive range check
 	case "between":
 		if len(argStrs) == 3 {
 			b.Typ = TypBool
 			v, lo, hi := argStrs[0], argStrs[1], argStrs[2]
 			return fmt.Sprintf("((%s) >= (%s) && (%s) <= (%s))", v, lo, v, hi)
 		}
-
-	// NEW: sign!(n) — returns -1, 0, or 1
 	case "sign":
 		if len(argStrs) == 1 {
 			b.Typ = TypInt
 			return fmt.Sprintf("((%s) > 0 ? 1LL : (%s) < 0 ? -1LL : 0LL)", arg0, arg0)
 		}
-
-	// NEW: bit_set!(val, bit) — test if bit N is set
 	case "bit_set":
 		if len(argStrs) == 2 {
 			b.Typ = TypBool
 			return fmt.Sprintf("(!!((%s) & (1LL << (%s))))", argStrs[0], argStrs[1])
 		}
-
-	// NEW: bit_on!(val, bit) — set bit N
 	case "bit_on":
 		if len(argStrs) == 2 {
 			b.Typ = TypInt
 			return fmt.Sprintf("((%s) | (1LL << (%s)))", argStrs[0], argStrs[1])
 		}
-
-	// NEW: bit_off!(val, bit) — clear bit N
 	case "bit_off":
 		if len(argStrs) == 2 {
 			b.Typ = TypInt
 			return fmt.Sprintf("((%s) & ~(1LL << (%s)))", argStrs[0], argStrs[1])
 		}
-
-	// NEW: str_upper!(s) — convert string to upper case (returns static buf)
 	case "str_upper":
 		if len(argStrs) == 1 {
 			b.Typ = TypStr
@@ -1693,8 +1643,6 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 				"({ static char %s[4096]; strncpy(%s, %s, 4095); for(int __i=0;%s[__i];__i++) %s[__i]=('a'<=%s[__i]&&%s[__i]<='z')?%s[__i]-32:%s[__i]; %s; })",
 				tmp, tmp, arg0, tmp, tmp, tmp, tmp, tmp, tmp, tmp)
 		}
-
-	// NEW: str_lower!(s) — convert string to lower case (returns static buf)
 	case "str_lower":
 		if len(argStrs) == 1 {
 			b.Typ = TypStr
@@ -1703,8 +1651,6 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 				"({ static char %s[4096]; strncpy(%s, %s, 4095); for(int __i=0;%s[__i];__i++) %s[__i]=('A'<=%s[__i]&&%s[__i]<='Z')?%s[__i]+32:%s[__i]; %s; })",
 				tmp, tmp, arg0, tmp, tmp, tmp, tmp, tmp, tmp, tmp)
 		}
-
-	// NEW: str_trim!(s) — trim leading/trailing whitespace (returns static buf)
 	case "str_trim":
 		if len(argStrs) == 1 {
 			b.Typ = TypStr
@@ -1713,8 +1659,6 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 				"({ static char %s[4096]; strncpy(%s, %s, 4095); char *__s=%s,*__e=%s+strlen(%s)-1; while(*__s==' '||*__s=='\\t'||*__s=='\\n')__s++; while(__e>__s&&(*__e==' '||*__e=='\\t'||*__e=='\\n'))*__e--='\\0'; memmove(%s,__s,strlen(__s)+1); %s; })",
 				tmp, tmp, arg0, tmp, tmp, tmp, tmp, tmp)
 		}
-
-	// NEW: str_repeat!(s, n) — repeat string n times
 	case "str_repeat":
 		if len(argStrs) == 2 {
 			b.Typ = TypStr
@@ -1723,15 +1667,11 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 				"({ static char %s[65536]; %s[0]='\\0'; for(long long __i=0;__i<(long long)(%s);__i++) strncat(%s, %s, sizeof(%s)-strlen(%s)-1); %s; })",
 				tmp, tmp, argStrs[1], tmp, argStrs[0], tmp, tmp, tmp)
 		}
-
-	// NEW: arr_fill!(arr, val, n) — fill array with value
 	case "arr_fill":
 		if len(argStrs) == 3 {
 			return fmt.Sprintf("({ for(long long __i=0;__i<(long long)(%s);__i++) (%s)[__i]=(%s); 0; })",
 				argStrs[2], argStrs[0], argStrs[1])
 		}
-
-	// NEW: arr_sum!(arr, n) — sum of array elements
 	case "arr_sum":
 		if len(argStrs) == 2 {
 			b.Typ = TypInt
@@ -1739,8 +1679,6 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 			return fmt.Sprintf("({ long long %s=0; for(long long __i=0;__i<(long long)(%s);__i++) %s+=(%s)[__i]; %s; })",
 				tmp, argStrs[1], tmp, argStrs[0], tmp)
 		}
-
-	// NEW: arr_min!(arr, n) / arr_max!(arr, n)
 	case "arr_min":
 		if len(argStrs) == 2 {
 			tmp := e.tmp()
@@ -1753,7 +1691,6 @@ func (e *Emitter) emitBangMacro(b *BangMacroExpr) string {
 			return fmt.Sprintf("({ long long %s=(%s)[0]; for(long long __i=1;__i<(long long)(%s);__i++) if((%s)[__i]>%s) %s=(%s)[__i]; %s; })",
 				tmp, argStrs[0], argStrs[1], argStrs[0], tmp, tmp, argStrs[0], tmp)
 		}
-
 	}
 	return fmt.Sprintf("%s(%s)", macroFnName(b.Name), strings.Join(argStrs, ", "))
 }
@@ -1796,7 +1733,6 @@ func (e *Emitter) findMacro(name string) *MacroDecl {
 		if mc.Name == name {
 			return mc
 		}
-		// NEW: check aliases
 		for _, alias := range mc.Aliases {
 			if alias == name {
 				return mc
@@ -1850,13 +1786,11 @@ func (e *Emitter) emitUserMacroChainStep(mc *MacroDecl, step MacroChainStep, rec
 		}
 	}
 
-	// NEW: guard check in chain step
 	if mc.Guard != nil {
 		e.ln("if (%s) {", e.emitExpr(mc.Guard))
 		e.indent++
 		e.emitMacroBodyWithBlockSubst(mc.Body, blockParamName, step.Body)
 		e.indent--
-		// NEW: optional else body on chain step
 		if step.ElseBody != nil {
 			e.ln("} else {")
 			e.indent++
@@ -1866,7 +1800,6 @@ func (e *Emitter) emitUserMacroChainStep(mc *MacroDecl, step MacroChainStep, rec
 		e.ln("}")
 	} else {
 		e.emitMacroBodyWithBlockSubst(mc.Body, blockParamName, step.Body)
-		// NEW: optional else body
 		if step.ElseBody != nil {
 			e.ln("/* chain else */")
 			e.ln("{")
@@ -1915,7 +1848,6 @@ func (e *Emitter) emitStmtWithSubst(stmt Node, bp string, doBlock *Block) {
 	}
 
 	switch s := stmt.(type) {
-
 	case *IfStmt:
 		e.ln("if (%s) {", e.emitExpr(s.Cond))
 		e.indent++
@@ -1934,7 +1866,6 @@ func (e *Emitter) emitStmtWithSubst(stmt Node, bp string, doBlock *Block) {
 			e.indent--
 		}
 		e.ln("}")
-
 	case *UnlessStmt:
 		e.ln("if (!(%s)) {", e.emitExpr(s.Cond))
 		e.indent++
@@ -1947,21 +1878,18 @@ func (e *Emitter) emitStmtWithSubst(stmt Node, bp string, doBlock *Block) {
 			e.indent--
 		}
 		e.ln("}")
-
 	case *WhileStmt:
 		e.ln("while (%s) {", e.emitExpr(s.Cond))
 		e.indent++
 		e.emitBlockWithSubst(s.Body, bp, doBlock)
 		e.indent--
 		e.ln("}")
-
 	case *UntilStmt:
 		e.ln("while (!(%s)) {", e.emitExpr(s.Cond))
 		e.indent++
 		e.emitBlockWithSubst(s.Body, bp, doBlock)
 		e.indent--
 		e.ln("}")
-
 	case *ForRangeStmt:
 		from := e.emitExpr(s.From)
 		to := e.emitExpr(s.To)
@@ -1975,14 +1903,12 @@ func (e *Emitter) emitStmtWithSubst(stmt Node, bp string, doBlock *Block) {
 		e.emitBlockWithSubst(s.Body, bp, doBlock)
 		e.indent--
 		e.ln("}")
-
 	case *Block:
 		e.ln("{")
 		e.indent++
 		e.emitBlockWithSubst(s, bp, doBlock)
 		e.indent--
 		e.ln("}")
-
 	case *TryCatchStmt:
 		e.ln("{ /* try */")
 		e.indent++
@@ -2009,7 +1935,6 @@ func (e *Emitter) emitStmtWithSubst(stmt Node, bp string, doBlock *Block) {
 			e.ln("}")
 		}
 		e.ln("}")
-
 	default:
 		e.emitStmt(stmt)
 	}
@@ -2101,7 +2026,6 @@ func (e *Emitter) emitBuiltinChainStep(step MacroChainStep, recvTmp string) {
 		e.indent--
 		emitElseBranch()
 		e.ln("}")
-	// NEW: ifEven / ifOdd
 	case "ifEven", "if_even":
 		e.ln("if ((%s) %% 2 == 0) {", recvTmp)
 		e.indent++
@@ -2116,7 +2040,6 @@ func (e *Emitter) emitBuiltinChainStep(step MacroChainStep, recvTmp string) {
 		e.indent--
 		emitElseBranch()
 		e.ln("}")
-	// NEW: ifGt(n), ifLt(n), ifGte(n), ifLte(n)
 	case "ifGt", "if_gt":
 		threshold := "0"
 		if len(step.Args) > 0 {
@@ -2161,7 +2084,6 @@ func (e *Emitter) emitBuiltinChainStep(step MacroChainStep, recvTmp string) {
 		e.indent--
 		emitElseBranch()
 		e.ln("}")
-	// NEW: ifEq(n) — equality check against a value
 	case "ifEq", "if_eq":
 		val := "0"
 		if len(step.Args) > 0 {
@@ -2192,29 +2114,24 @@ func (e *Emitter) emitBuiltinChainStep(step MacroChainStep, recvTmp string) {
 		runBlock()
 		e.indent--
 		e.ln("}")
-	// NEW: map — transform the value and rebind recvTmp
 	case "map":
 		if len(step.Args) > 0 {
 			fn := e.emitExpr(step.Args[0])
 			e.ln("%s = %s(%s); /* map */", recvTmp, fn, recvTmp)
 		}
-	// NEW: tap — run a side effect, keep the original value
 	case "tap":
 		e.ln("{ /* tap: run block, then continue with original value */")
 		e.indent++
 		runBlock()
 		e.indent--
 		e.ln("}")
-	// NEW: printVal — print the current value
 	case "printVal", "print_val", "dump":
 		e.ln("printf(\"%%lld\\n\", (long long)(%s)); /* printVal */", recvTmp)
-	// NEW: orDefault(n) — if zero/nil, replace with default
 	case "orDefault", "or_default":
 		if len(step.Args) > 0 {
 			def := e.emitExpr(step.Args[0])
 			e.ln("if (!(%s)) { %s = (%s); } /* orDefault */", recvTmp, recvTmp, def)
 		}
-	// NEW: clampTo(lo, hi) — clamp the value
 	case "clampTo", "clamp_to":
 		if len(step.Args) >= 2 {
 			lo := e.emitExpr(step.Args[0])
@@ -2223,7 +2140,6 @@ func (e *Emitter) emitBuiltinChainStep(step MacroChainStep, recvTmp string) {
 				recvTmp, lo, recvTmp, lo, recvTmp, hi, recvTmp, hi)
 		}
 	default:
-		// Unknown macro — call as C function, run block after
 		e.ln("{")
 		e.indent++
 		e.ln("%s = %s(%s);", recvTmp, macroFnName(step.Macro), recvTmp)
@@ -2239,60 +2155,70 @@ func (e *Emitter) emitMacroChainExpr(chain *MacroCallChain) string {
 }
 
 // ── Mod block emission ────────────────────────────────────────────────────────
+//
+// All functions below use mb.Path (e.g. "Outer" or "Outer::Inner") when
+// deriving C names, so nested mods automatically get flattened identifiers:
+//   mod Outer { mod Inner { fn foo() {} } }
+//   → C function: Outer_Inner_foo()
 
+// fwdDeclModFns forward-declares all functions in a mod block and its
+// nested mod blocks.
 func (e *Emitter) fwdDeclModFns(mb *ModBlock) {
-	// NEW: emit doc comment for mod
 	if mb.Doc != "" {
-		e.ln("/* mod %s: %s */", mb.Name, mb.Doc)
+		e.ln("/* mod %s: %s */", mb.Path, mb.Doc)
 	}
 	for _, s := range mb.Structs {
 		e.emitStruct(s)
 	}
 	for _, fn := range mb.Fns {
-		e.ln("%s %s(%s);", cType(fn.RetType), modCFnName(mb.Name, fn.Name), buildParamStr(fn.Params, fn.Variadic))
+		e.ln("%s %s(%s);", cType(fn.RetType), modCFnName(mb.Path, fn.Name), buildParamStr(fn.Params, fn.Variadic))
 	}
 	for _, td := range mb.Tests {
 		fn := td.Fn
-		e.ln("%s %s(%s);", cType(fn.RetType), modCFnName(mb.Name, fn.Name), buildParamStr(fn.Params, fn.Variadic))
+		e.ln("%s %s(%s);", cType(fn.RetType), modCFnName(mb.Path, fn.Name), buildParamStr(fn.Params, fn.Variadic))
 	}
-	// NEW: forward-declare init function if present
 	if mb.Init != nil {
-		e.ln("static void %s(void);", modCFnName(mb.Name, mb.Init.Name))
+		e.ln("static void %s(void);", modCFnName(mb.Path, mb.Init.Name))
 	}
+	// Recurse into nested mods.
 	for _, nested := range mb.Mods {
 		e.fwdDeclModFns(nested)
 	}
 }
 
+// emitModFns emits the bodies of all functions in a mod block and its
+// nested mod blocks.
 func (e *Emitter) emitModFns(mb *ModBlock) {
 	for _, fn := range mb.Fns {
-		e.emitModFn(mb.Name, fn)
+		e.emitModFn(mb.Path, fn)
 		e.ln("")
 	}
 	for _, td := range mb.Tests {
-		e.emitModFn(mb.Name, td.Fn)
+		e.emitModFn(mb.Path, td.Fn)
 		e.ln("")
 	}
-	// NEW: emit init function
 	if mb.Init != nil {
-		e.ln("static void %s(void) {", modCFnName(mb.Name, mb.Init.Name))
+		e.ln("static void %s(void) {", modCFnName(mb.Path, mb.Init.Name))
 		e.indent++
 		e.emitBlockStmts(mb.Init.Body)
 		e.indent--
 		e.ln("}")
 		e.ln("")
 	}
+	// Recurse into nested mods.
 	for _, nested := range mb.Mods {
 		e.emitModFns(nested)
 	}
 }
 
-func (e *Emitter) emitModFn(modName string, fn *FnDecl) {
-	// NEW: doc comment
+// emitModFn emits a single mod function.
+// modPath is the full "::"-separated path (e.g. "Outer::Inner").
+// modCFnName converts it to a flat C identifier (e.g. "Outer_Inner_foo").
+func (e *Emitter) emitModFn(modPath string, fn *FnDecl) {
 	if fn.Doc != "" {
 		e.ln("/* %s */", fn.Doc)
 	}
-	cName := modCFnName(modName, fn.Name)
+	cName := modCFnName(modPath, fn.Name)
 	sig := fmt.Sprintf("%s %s(%s)", cType(fn.RetType), cName, buildParamStr(fn.Params, fn.Variadic))
 	e.ln("%s {", sig)
 	e.indent++

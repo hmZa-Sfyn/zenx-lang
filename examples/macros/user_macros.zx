@@ -37,6 +37,7 @@ macro fn square |n: int| -> int {
 macro fn negate |b: int| -> int {
     return !b;
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  PIPE OPERATOR |>
 //  value |> macroName!   feeds value as the first arg to the macro.

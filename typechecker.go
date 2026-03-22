@@ -7,6 +7,16 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Helper: convert a "::"-separated mod path to a C-safe "_"-separated name.
+//  "Outer"         → "Outer"
+//  "Outer::Inner"  → "Outer_Inner"
+// ─────────────────────────────────────────────────────────────────────────────
+
+func modPathToC(path string) string {
+	return strings.ReplaceAll(path, "::", "_")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Scope
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -23,10 +33,8 @@ type VarInfo struct {
 	Sp        Span
 	UsedCount int
 	Defined   bool
-	// NEW: which source file declared this (for priv enforcement)
-	DeclFile string
-	// NEW: visibility
-	Vis Vis
+	DeclFile  string
+	Vis       Vis
 }
 
 type Scope struct {
@@ -103,38 +111,28 @@ type TypeChecker struct {
 	importMods  map[string]bool
 	ok          bool
 
-	modFns   map[string]*FnDecl
+	// modFns keyed by "ModPath::fnName" e.g. "Outer::Inner::myFn"
+	modFns map[string]*FnDecl
+	// modNames: every registered mod path (including nested), e.g. "Outer", "Outer::Inner"
 	modNames map[string]bool
 
 	returnSeen bool
 
-	// NEW: current source file (set from program's source file path)
 	currentFile string
 
-	// NEW: call-stack trace builder
 	trace TraceBuilder
 
-	// NEW: map of imported file paths → their Program (for priv checks)
 	importedProgs map[string]*Program
 
-	// NEW: set of priv fn/struct/mod names by file, for import enforcement
 	// key = "filename::name" → true means it is private
 	privDecls map[string]bool
 
-	// NEW: map of fn name → declaring file path, for every priv fn that was
-	// skipped during import. Lets inferCall emit "this is private" instead of
-	// "undefined function" when the caller tries to use a priv import.
-	// key = fn name, value = file that declared it priv
-	privFns map[string]string
+	// priv fn/struct/macro names by declaring file
+	privFns     map[string]string
+	privStructs map[string]string
+	privMacros  map[string]string
 
-	// Same for priv structs, macros, and mod-level fns.
-	privStructs map[string]string // struct name → file
-	privMacros  map[string]string // macro name → file
-
-	// NEW: recursive call detection — tracks fn names in active call chain
-	callChain map[string]bool
-
-	// NEW: set of functions that have been seen to recurse (for infinite recursion warning)
+	callChain    map[string]bool
 	recursiveFns map[string]bool
 }
 
@@ -199,7 +197,6 @@ func TypeCheck(prog *Program, src, file string) bool {
 			if f.Type != nil && f.Type.Kind == TyStruct {
 				tc.validateTypeExists(f.Type, f.Sp)
 			}
-			// NEW: warn on field named same as struct (common mistake)
 			if f.Name == s.Name {
 				warnCode("W90", f.Sp,
 					fmt.Sprintf("field %q has the same name as its containing struct %q — this is usually a mistake",
@@ -217,7 +214,6 @@ func TypeCheck(prog *Program, src, file string) bool {
 				fmt.Sprintf("struct %q has %d fields — consider splitting it into smaller structs", s.Name, len(s.Fields)),
 				"large structs are harder to maintain and may hurt cache performance")
 		}
-		// NEW: register priv structs
 		if s.Vis == VisPrivate {
 			tc.privDecls[file+"::"+s.Name] = true
 		}
@@ -262,7 +258,6 @@ func TypeCheck(prog *Program, src, file string) bool {
 						fn.Name, len(fn.Params)),
 					fmt.Sprintf("example: fn %s(cfg Config) { ... }", fn.Name))
 			}
-			// NEW: register priv fns
 			if fn.Vis == VisPrivate {
 				tc.privDecls[file+"::"+fn.Name] = true
 			}
@@ -293,6 +288,7 @@ func TypeCheck(prog *Program, src, file string) bool {
 	}
 
 	// ── mod block function registration ──────────────────────────────────────
+	// Pass the mod's own Path as the modPath key prefix.
 	for _, mb := range prog.ModBlocks {
 		tc.registerModFns(mb, file)
 	}
@@ -346,13 +342,8 @@ func TypeCheck(prog *Program, src, file string) bool {
 		tc.checkVarDecl(vd)
 	}
 
-	// NEW: recursion / infinite-loop analysis pass
 	tc.checkRecursion()
-
-	// NEW: dead-code detection (functions defined but never called)
 	tc.checkDeadCode()
-
-	// unused-variable lint
 	tc.checkUnusedVars()
 
 	return tc.ok
@@ -360,8 +351,6 @@ func TypeCheck(prog *Program, src, file string) bool {
 
 // ── Privacy enforcement ───────────────────────────────────────────────────────
 
-// isPrivateFrom returns true if the name declared in declFile is private
-// and the current file is different.
 func (tc *TypeChecker) isPrivateFrom(name, declFile string) bool {
 	if declFile == "" || declFile == tc.currentFile {
 		return false
@@ -372,12 +361,9 @@ func (tc *TypeChecker) isPrivateFrom(name, declFile string) bool {
 
 // ── Dead-code / unused-fn detection ──────────────────────────────────────────
 
-// checkDeadCode warns on private top-level functions that are never called.
-// Public functions are skipped — they may be called from other files.
 func (tc *TypeChecker) checkDeadCode() {
 	called := make(map[string]bool)
 
-	// Walk every function body in the whole program.
 	for _, fn := range tc.fns {
 		tc.walkBody(fn.Body, called)
 	}
@@ -387,7 +373,6 @@ func (tc *TypeChecker) checkDeadCode() {
 	for _, mb := range tc.prog.ModBlocks {
 		tc.walkModBlock(mb, called)
 	}
-	// Also walk top-level statements (script-style code outside any fn).
 	for _, stmt := range tc.prog.TopStmts {
 		if _, isFn := stmt.(*FnDecl); !isFn {
 			tc.walkNode(stmt, called)
@@ -402,7 +387,7 @@ func (tc *TypeChecker) checkDeadCode() {
 			continue
 		}
 		if fn.Vis == VisPublic {
-			continue // may be called from another file
+			continue
 		}
 		if !called[name] {
 			warnCode("W91", fn.Sp,
@@ -436,14 +421,11 @@ func (tc *TypeChecker) walkBody(b *Block, called map[string]bool) {
 	}
 }
 
-// walkNode is a complete, nil-safe recursive walker over every AST node type.
-// It records every function name that appears in a call position into `called`.
 func (tc *TypeChecker) walkNode(n Node, called map[string]bool) {
 	if n == nil {
 		return
 	}
 	switch s := n.(type) {
-	// ── declarations ────────────────────────────────────────────────────────
 	case *FnDecl:
 		tc.walkBody(s.Body, called)
 	case *VarDecl:
@@ -451,8 +433,6 @@ func (tc *TypeChecker) walkNode(n Node, called map[string]bool) {
 	case *AssignStmt:
 		tc.walkNode(s.LHS, called)
 		tc.walkNode(s.Value, called)
-
-	// ── call expressions ────────────────────────────────────────────────────
 	case *CallExpr:
 		if id, ok := s.Func.(*Ident); ok && id != nil {
 			called[id.Name] = true
@@ -492,8 +472,6 @@ func (tc *TypeChecker) walkNode(n Node, called map[string]bool) {
 		for _, a := range s.Args {
 			tc.walkNode(a, called)
 		}
-
-	// ── blocks & control flow ───────────────────────────────────────────────
 	case *Block:
 		tc.walkBody(s, called)
 	case *ExprStmt:
@@ -556,8 +534,6 @@ func (tc *TypeChecker) walkNode(n Node, called map[string]bool) {
 		tc.walkNode(s.Code, called)
 	case *SpawnStmt:
 		tc.walkNode(s.Call, called)
-
-	// ── expressions ─────────────────────────────────────────────────────────
 	case *BinExpr:
 		tc.walkNode(s.LHS, called)
 		tc.walkNode(s.RHS, called)
@@ -612,17 +588,14 @@ func (tc *TypeChecker) walkNode(n Node, called map[string]bool) {
 	case *WriteFileExpr:
 		tc.walkNode(s.Path, called)
 		tc.walkNode(s.Content, called)
-
-	// literals and leaf nodes — nothing to walk
 	case *Ident, *IntLit, *FloatLit, *BoolLit, *StrLit, *NilLit,
 		*SizeofExpr, *TypeofExpr, *BreakStmt, *ContinueStmt:
-		// no children
+		// leaf nodes
 	}
 }
 
 // ── Recursion analysis ────────────────────────────────────────────────────────
 
-// checkRecursion warns on direct recursion without a visible base case.
 func (tc *TypeChecker) checkRecursion() {
 	for name, fn := range tc.fns {
 		if fn.Body == nil {
@@ -630,7 +603,6 @@ func (tc *TypeChecker) checkRecursion() {
 		}
 		if tc.bodyCallsSelf(fn.Body.Stmts, name) {
 			tc.recursiveFns[name] = true
-			// Warn only if we cannot find an if/match guard (simple heuristic)
 			if !tc.bodyHasGuardedReturn(fn.Body.Stmts) {
 				warnCode("W92", fn.Sp,
 					fmt.Sprintf("function %q appears to recurse without an obvious base case — potential infinite recursion", name),
@@ -701,7 +673,6 @@ func (tc *TypeChecker) nodeCallsSelf(n Node, fnName string) bool {
 func (tc *TypeChecker) bodyHasGuardedReturn(stmts []Node) bool {
 	for _, n := range stmts {
 		if is, ok := n.(*IfStmt); ok {
-			// If there's a return directly inside the if body (not recursive), treat as base case
 			for _, st := range is.Then.Stmts {
 				if _, ok := st.(*ReturnStmt); ok {
 					return true
@@ -841,7 +812,6 @@ func (tc *TypeChecker) checkFn(fn *FnDecl) {
 			fmt.Sprintf("rename to avoid confusion: fn my_%s(...) { ... }", fn.Name))
 	}
 
-	// NEW: warn if fn body is empty
 	if fn.Body != nil && len(fn.Body.Stmts) == 0 && fn.RetType != nil && fn.RetType.Kind != TyVoid {
 		warnCode("W93", fn.Sp,
 			fmt.Sprintf("function %q has an empty body but declares return type %s", fn.Name, fn.RetType),
@@ -862,7 +832,6 @@ func (tc *TypeChecker) checkFn(fn *FnDecl) {
 		if t == nil {
 			t = TypAny
 		}
-		// NEW: warn if parameter type is void
 		if t.Kind == TyVoid {
 			errCode("E94", p2.Sp,
 				fmt.Sprintf("parameter %q in function %q has type void — void cannot be used as a parameter type",
@@ -1041,7 +1010,6 @@ func (tc *TypeChecker) checkStmt(n Node) {
 					"add a break statement or a condition that eventually becomes false")
 			}
 		}
-		// NEW: warn on while(false) — dead loop
 		if lit, ok := s.Cond.(*BoolLit); ok && !lit.Val {
 			warnCode("W95", s.Sp,
 				"while(false) loop will never execute — this is dead code",
@@ -1135,7 +1103,6 @@ func (tc *TypeChecker) checkStmt(n Node) {
 		tc.inferExpr(s)
 	case *RepeatStmt:
 		tc.inferExpr(s.Count)
-		// NEW: warn on repeat(0)
 		if lit, ok := s.Count.(*IntLit); ok && lit.Val <= 0 {
 			warnCode("W96", s.Sp,
 				fmt.Sprintf("repeat count is %d — the block will never execute", lit.Val),
@@ -1243,7 +1210,6 @@ func (tc *TypeChecker) checkVarDecl(v *VarDecl) {
 		}
 	}
 
-	// NEW: warn on single-char variable names (except i, j, k loop vars)
 	if len(v.Name) == 1 && v.Name != "i" && v.Name != "j" && v.Name != "k" &&
 		v.Name != "n" && v.Name != "x" && v.Name != "y" && v.Name != "z" {
 		warnCode("W97", v.Sp,
@@ -1257,7 +1223,6 @@ func (tc *TypeChecker) checkVarDecl(v *VarDecl) {
 			"consider a shorter, more descriptive name")
 	}
 
-	// NEW: warn if initializing a bool with a non-bool literal
 	if resolved != nil && resolved.Kind == TyBool && initType != nil {
 		if initType.Kind == TyInt {
 			warnCode("W98", v.Sp,
@@ -1339,7 +1304,6 @@ func (tc *TypeChecker) checkIf(s *IfStmt) {
 				"remove the if block or fix the condition")
 		}
 	}
-	// NEW: warn if if-body and else-body are identical
 	if s.Else != nil && blocksEqual(s.Then, s.Else) {
 		warnCode("W99", s.Sp,
 			"both branches of this if/else are identical — the condition has no effect",
@@ -1386,7 +1350,6 @@ func (tc *TypeChecker) checkForRange(s *ForRangeStmt) {
 					fmt.Sprintf("for-range %d..%d will never execute — start >= end", fromLit.Val, toLit.Val),
 					"check that the range is correct")
 			}
-			// NEW: very large range
 			if toLit.Val-fromLit.Val > 10_000_000 {
 				warnCode("WP1", s.Sp,
 					fmt.Sprintf("for-range %d..%d iterates %d times — this may be a performance issue",
@@ -1438,7 +1401,6 @@ func (tc *TypeChecker) checkMatch(s *MatchStmt) {
 		}
 		tc.checkBlock(arm.Body)
 	}
-	// NEW: warn on match with no wildcard (exhaustiveness hint)
 	if !hasWild && len(s.Arms) > 0 {
 		warnCode("WE1", s.Sp,
 			"match has no wildcard arm — unmatched values will silently fall through",
@@ -1502,7 +1464,6 @@ func (tc *TypeChecker) checkAssign(s *AssignStmt) {
 			tc.ok = false
 			return
 		}
-		// NEW: warn on assigning a variable to itself
 		if rhs, ok2 := s.Value.(*Ident); ok2 && rhs.Name == id.Name {
 			warnCode("W64", s.Sp,
 				fmt.Sprintf("assigning variable %q to itself — this has no effect", id.Name),
@@ -1644,6 +1605,7 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 				e.Typ = bd.Ret
 				return bd.Ret
 			}
+			// Check if it's a mod name (including nested mod paths registered with ::)
 			if tc.modNames[e.Name] {
 				errCodeTrace("E80", e.Sp,
 					fmt.Sprintf("%q is a mod block, not a value", e.Name),
@@ -1670,8 +1632,6 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 			if suggestion != "" {
 				hint = fmt.Sprintf("did you mean %q?", suggestion)
 			}
-			// Check if this name is a private declaration from an imported file
-			// and give a specific error instead of the generic "undefined name".
 			if declFile, isPriv := tc.privFns[e.Name]; isPriv {
 				errFull("EP1", e.Sp,
 					fmt.Sprintf("cannot use %q — it is declared 'priv' in %q and is not accessible from this file",
@@ -1711,7 +1671,6 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 			return TypUnknown
 		}
 
-		// NEW: priv access check
 		if vi.DeclFile != "" && vi.DeclFile != tc.currentFile &&
 			vi.Vis == VisPrivate {
 			errFull("EP1", e.Sp,
@@ -1772,7 +1731,6 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 					"use len(arr) - N for reverse indexing")
 			}
 		}
-		// NEW: index out of bounds for array literals with known size
 		if obj.Kind == TyArray && obj.ArrSize > 0 {
 			if idxLit, ok := e.Idx.(*IntLit); ok {
 				if idxLit.Val < 0 || idxLit.Val >= int64(obj.ArrSize) {
@@ -1892,7 +1850,6 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 		e.Typ = TypAny
 		return TypAny
 	case *LambdaExpr:
-		// NEW: type-check lambda body
 		saved := tc.scope
 		tc.scope = newScope(saved, "fn")
 		for _, p := range e.Params {
@@ -1916,6 +1873,12 @@ func (tc *TypeChecker) inferExpr(n Node) *ZXType {
 	}
 }
 
+// ── inferModCall ──────────────────────────────────────────────────────────────
+//
+// Supports nested mod calls:  Outer->fn()  and  Outer::Inner->fn()
+// The ModCallExpr.Mod field holds the full path (e.g. "Outer::Inner").
+// The lookup key in modFns is "Outer::Inner::fn".
+
 func (tc *TypeChecker) inferModCall(e *ModCallExpr) *ZXType {
 	if !tc.modNames[e.Mod] {
 		bestMod := tc.suggestModName(e.Mod)
@@ -1937,12 +1900,16 @@ func (tc *TypeChecker) inferModCall(e *ModCallExpr) *ZXType {
 		prefix := e.Mod + "::"
 		for k := range tc.modFns {
 			if strings.HasPrefix(k, prefix) {
-				available = append(available, strings.TrimPrefix(k, prefix))
+				// Only show direct children (no further nested ::)
+				rest := strings.TrimPrefix(k, prefix)
+				if !strings.Contains(rest, "::") {
+					available = append(available, rest)
+				}
 			}
 		}
 		hint := fmt.Sprintf("mod %q has no function %q", e.Mod, e.Fn)
 		if len(available) > 0 {
-			hint += fmt.Sprintf(" — available functions: %s", strings.Join(available, ", "))
+			hint += fmt.Sprintf(" — available: %s", strings.Join(available, ", "))
 		}
 		errCodeTrace("E83", e.Sp, hint,
 			fmt.Sprintf("define it: mod %s { fn %s() { ... } }", e.Mod, e.Fn),
@@ -1952,7 +1919,7 @@ func (tc *TypeChecker) inferModCall(e *ModCallExpr) *ZXType {
 		return TypUnknown
 	}
 
-	// NEW: priv mod fn access check
+	// priv mod fn access check
 	if fn.Vis == VisPrivate && fn.ModPath != tc.currentFile {
 		errFull("EP2", e.Sp,
 			fmt.Sprintf("cannot call private function %s->%s from file %q — it is declared priv",
@@ -2018,7 +1985,6 @@ func (tc *TypeChecker) suggestModName(name string) string {
 func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 	mc, ok := tc.macros[e.Name]
 	if !ok {
-		// Check if this is a private macro from an imported file.
 		if declFile, isPriv := tc.privMacros[e.Name]; isPriv {
 			errFull("EP3", e.Sp,
 				fmt.Sprintf("cannot call macro %q — it is declared 'priv' in %q and is not accessible from this file",
@@ -2040,7 +2006,6 @@ func (tc *TypeChecker) inferMacroCall(e *MacroCallExpr) *ZXType {
 		e.Typ = TypUnknown
 		return TypUnknown
 	}
-	// NEW: priv macro check
 	if mc.Vis == VisPrivate && tc.currentFile != "" {
 		if vi := tc.scope.lookup(e.Name); vi != nil && vi.DeclFile != tc.currentFile {
 			errFull("EP3", e.Sp,
@@ -2156,7 +2121,6 @@ func (tc *TypeChecker) inferBin(e *BinExpr) *ZXType {
 				fmt.Sprintf("comparing a variable to itself with %s — result is always %v", e.Op, e.Op == "=="),
 				"this comparison is redundant; check the variable names")
 		}
-		// NEW: warn on comparing str with == (should use str_eq)
 		if lhs.Kind == TyStr || rhs.Kind == TyStr {
 			warnCode("WS1", e.Sp,
 				"comparing strings with == compares pointers, not contents — use str_eq!(a, b) for value comparison",
@@ -2300,7 +2264,6 @@ func (tc *TypeChecker) inferUnary(e *UnaryExpr) *ZXType {
 				tc.trace.Snapshot())
 			tc.ok = false
 		}
-		// NEW: double-negation hint
 		if inner.Kind == TyBool {
 			if _, isBang := e.Operand.(*UnaryExpr); isBang {
 				warnCode("WN1", e.Sp,
@@ -2438,7 +2401,6 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 	}
 
 	if fn, ok := tc.fns[fnName]; ok {
-		// NEW: priv fn access check across files
 		if fn.Vis == VisPrivate && fn.ModPath != "" && fn.ModPath != tc.currentFile {
 			errFull("EP1", e.Sp,
 				fmt.Sprintf("cannot call private function %q from file %q", fnName, tc.currentFile),
@@ -2494,8 +2456,6 @@ func (tc *TypeChecker) inferCall(e *CallExpr) *ZXType {
 	if fnName != "" {
 		vi := tc.scope.lookup(fnName)
 		if vi == nil {
-			// Check if this name is a private function from an imported file.
-			// Give a specific "it's private" error instead of "undefined".
 			if declFile, isPriv := tc.privFns[fnName]; isPriv {
 				errFull("EP1", e.Sp,
 					fmt.Sprintf("cannot call %q — it is declared 'priv' in %q and is not accessible from this file",
@@ -2555,6 +2515,7 @@ func (tc *TypeChecker) inferBuiltin(e *BuiltinExpr) *ZXType {
 }
 
 func (tc *TypeChecker) inferMethodCall(e *MethodCallExpr) *ZXType {
+	// Check if receiver is a mod name (including nested paths like "Outer::Inner")
 	if id, ok := e.Recv.(*Ident); ok && tc.modNames[id.Name] {
 		modCall := &ModCallExpr{
 			Sp: e.Sp, Mod: id.Name, Fn: e.Method, Args: e.Args,
@@ -2655,10 +2616,7 @@ func (tc *TypeChecker) inferField(e *FieldExpr) *ZXType {
 		e.Typ = TypAny
 		return TypAny
 	}
-	// NEW: priv struct access check
-	if sd.Vis == VisPrivate && tc.privDecls[tc.currentFile+"::"+sd.Name] {
-		// Already in same file, allow
-	} else if sd.Vis == VisPrivate && sd.Sp.File != "" && sd.Sp.File != tc.currentFile {
+	if sd.Vis == VisPrivate && sd.Sp.File != "" && sd.Sp.File != tc.currentFile {
 		errFull("EP4", e.Sp,
 			fmt.Sprintf("cannot access fields of private struct %q from file %q",
 				sd.Name, tc.currentFile),
@@ -2705,7 +2663,6 @@ func (tc *TypeChecker) suggestField(sd *StructDecl, name string) string {
 func (tc *TypeChecker) inferStructInit(e *StructInit) *ZXType {
 	sd, ok := tc.structs[e.Name]
 	if !ok {
-		// Check if this is a private struct from an imported file.
 		if declFile, isPriv := tc.privStructs[e.Name]; isPriv {
 			errFull("EP5", e.Sp,
 				fmt.Sprintf("cannot construct struct %q — it is declared 'priv' in %q and is not accessible from this file",
@@ -2735,7 +2692,6 @@ func (tc *TypeChecker) inferStructInit(e *StructInit) *ZXType {
 		e.Typ = TypUnknown
 		return TypUnknown
 	}
-	// NEW: priv struct init from other file
 	if sd.Vis == VisPrivate && sd.Sp.File != "" && sd.Sp.File != tc.currentFile {
 		errFull("EP5", e.Sp,
 			fmt.Sprintf("cannot construct private struct %q from file %q", e.Name, tc.currentFile),
@@ -2939,8 +2895,6 @@ func isSameIdent(a, b Node) bool {
 	return oka && okb && ia.Name == ib.Name
 }
 
-// blocksEqual does a shallow structural equality check on two blocks.
-// Used to detect if/else branches that are identical.
 func blocksEqual(a, b *Block) bool {
 	if a == nil && b == nil {
 		return true
@@ -2951,7 +2905,6 @@ func blocksEqual(a, b *Block) bool {
 	if len(a.Stmts) != len(b.Stmts) {
 		return false
 	}
-	// simple tag-based check — good enough for the warning
 	for i := range a.Stmts {
 		if a.Stmts[i] == nil || b.Stmts[i] == nil {
 			continue
@@ -3001,7 +2954,6 @@ func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
 		return
 	}
 
-	// NEW: register priv declarations from the imported file so we can enforce them
 	tc.registerPrivDecls(imported, filePath)
 
 	alias := imp.Alias
@@ -3029,7 +2981,6 @@ func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
 			tc.ok = false
 			return
 		}
-		// NEW: block importing a priv mod block
 		if found.Vis == VisPrivate {
 			errFull("EP6", sp,
 				fmt.Sprintf("cannot import private mod %q from file %q — it is declared priv",
@@ -3047,8 +2998,6 @@ func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
 	}
 	for _, stmt := range imported.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok {
-			// priv functions: skip from import but record them so inferCall
-			// can give a proper "this function is private" error.
 			if fn.Vis == VisPrivate {
 				tc.privFns[fn.Name] = filePath
 				continue
@@ -3068,7 +3017,6 @@ func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
 			prog.TopStmts = append(prog.TopStmts, vd)
 		}
 	}
-	// Record priv structs and macros too so field-access / call errors are precise.
 	for _, s := range imported.Structs {
 		if s.Vis == VisPrivate {
 			tc.privStructs[s.Name] = filePath
@@ -3086,8 +3034,6 @@ func (tc *TypeChecker) resolveFileImport(imp *ImportDecl, prog *Program) {
 	prog.Macros = append(prog.Macros, filterPublicMacros(imported.Macros)...)
 }
 
-// registerPrivDecls walks an imported program and registers all priv names
-// so the typechecker can deny access attempts.
 func (tc *TypeChecker) registerPrivDecls(prog *Program, filePath string) {
 	for _, stmt := range prog.TopStmts {
 		if fn, ok := stmt.(*FnDecl); ok && fn.Vis == VisPrivate {
@@ -3105,14 +3051,22 @@ func (tc *TypeChecker) registerPrivDecls(prog *Program, filePath string) {
 		}
 	}
 	for _, mb := range prog.ModBlocks {
-		if mb.Vis == VisPrivate {
-			tc.privDecls[filePath+"::"+mb.Name] = true
+		tc.registerPrivDeclsInMod(mb, filePath)
+	}
+}
+
+// registerPrivDeclsInMod walks a mod block (and nested mods) to register priv decls.
+func (tc *TypeChecker) registerPrivDeclsInMod(mb *ModBlock, filePath string) {
+	if mb.Vis == VisPrivate {
+		tc.privDecls[filePath+"::"+mb.Path] = true
+	}
+	for _, fn := range mb.Fns {
+		if fn.Vis == VisPrivate {
+			tc.privDecls[filePath+"::"+mb.Path+"::"+fn.Name] = true
 		}
-		for _, fn := range mb.Fns {
-			if fn.Vis == VisPrivate {
-				tc.privDecls[filePath+"::"+mb.Name+"::"+fn.Name] = true
-			}
-		}
+	}
+	for _, nested := range mb.Mods {
+		tc.registerPrivDeclsInMod(nested, filePath)
 	}
 }
 
@@ -3142,15 +3096,16 @@ func filterPublicMods(mbs []*ModBlock) []*ModBlock {
 	var out []*ModBlock
 	for _, mb := range mbs {
 		if mb.Vis == VisPublic {
-			// Also filter priv fns within the mod
 			var pubFns []*FnDecl
 			for _, fn := range mb.Fns {
 				if fn.Vis == VisPublic {
 					pubFns = append(pubFns, fn)
 				}
 			}
+			// Also filter nested mods recursively
 			cloned := *mb
 			cloned.Fns = pubFns
+			cloned.Mods = filterPublicMods(mb.Mods)
 			out = append(out, &cloned)
 		}
 	}
@@ -3265,20 +3220,49 @@ func isValidIdent(s string) bool {
 }
 
 // ── Mod block registration ────────────────────────────────────────────────────
+//
+// registerModFns registers all functions in a mod block (and nested mods)
+// into tc.modFns and tc.modNames.
+//
+// Key design:
+//   - tc.modNames[mb.Path] = true        e.g. "Outer", "Outer::Inner"
+//   - tc.modFns["Outer::Inner::fn"] = fn
+//
+// This means call syntax  Outer::Inner->fn()  parses as
+// MethodCallExpr{Recv: Ident{"Outer::Inner"}, Method: "fn"} which
+// inferMethodCall redirects to inferModCall with Mod="Outer::Inner", Fn="fn".
+//
+// Alternatively  Outer->Inner  would need the parser to chain ::
+// into a ModCallExpr path — but since we use -> for mod calls, the
+// simpler approach is to register nested paths in modNames so a bare
+// identifier like "Outer::Inner" is resolved as a mod name, and then
+// ->fn() calls work naturally.
 
 func (tc *TypeChecker) registerModFns(mb *ModBlock, declFile string) {
-	tc.modNames[mb.Name] = true
+	// Register the mod's full path so it is recognised as a mod name.
+	tc.modNames[mb.Path] = true
+	// Also register the short (leaf) name for top-level mods, so
+	// existing single-level syntax "ModName->fn()" still works.
+	if mb.Name != mb.Path {
+		// nested mod — also register the leaf name so inner calls work
+		// only if it doesn't clash
+		if !tc.modNames[mb.Name] {
+			tc.modNames[mb.Name] = true
+		}
+	}
+
 	for _, fn := range mb.Fns {
-		fn.ModPath = declFile // track which file owns this fn
-		key := mb.Name + "::" + fn.Name
+		fn.ModPath = declFile
+		// Key uses the full mod path, e.g. "Outer::Inner::myFn"
+		key := mb.Path + "::" + fn.Name
 		tc.modFns[key] = fn
 		if fn.Vis == VisPrivate {
-			tc.privDecls[declFile+"::"+mb.Name+"::"+fn.Name] = true
+			tc.privDecls[declFile+"::"+mb.Path+"::"+fn.Name] = true
 		}
 	}
 	for _, td := range mb.Tests {
 		fn := td.Fn
-		key := mb.Name + "::" + fn.Name
+		key := mb.Path + "::" + fn.Name
 		tc.modFns[key] = fn
 	}
 	for _, s := range mb.Structs {
@@ -3289,13 +3273,14 @@ func (tc *TypeChecker) registerModFns(mb *ModBlock, declFile string) {
 			tc.privDecls[declFile+"::"+s.Name] = true
 		}
 	}
+	// Recurse into nested mods.
 	for _, nested := range mb.Mods {
 		tc.registerModFns(nested, declFile)
 	}
 }
 
 func (tc *TypeChecker) checkModFns(mb *ModBlock) {
-	tc.trace.Push(mb.Sp, fmt.Sprintf("in mod '%s'", mb.Name))
+	tc.trace.Push(mb.Sp, fmt.Sprintf("in mod '%s'", mb.Path))
 	for _, fn := range mb.Fns {
 		tc.checkFn(fn)
 	}
