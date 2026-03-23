@@ -1,0 +1,44 @@
+mod Counter {
+    // Simple auto get+set with default value
+    property count int = 0;
+
+    // Bare declaration — zero-initialized, get+set auto-generated
+    property name str;
+
+    // Custom getter and setter
+    property value int {
+        get { return __value; }         // __value is the backing field name
+        set(v) {
+            if v < 0 { v = 0; }        // validation in setter
+            __value = v;
+        }
+    }
+
+    // Read-only (no set block)
+    property version int {
+        get { return 42; }
+    }
+
+    // Private property — not accessible outside this file
+    priv property secret int = 0;
+
+    fn increment() -> void {
+        Counter::count += 1            // compound assignment works
+    }
+}
+
+// Reading a property:
+let x = Counter::count;
+
+// Writing a property:
+Counter::count = 10;
+Counter::count += 5 ;        // expands to Counter__count__set(Counter__count__get() + 5)
+
+// Nested mods work too:
+mod Outer {
+    mod Inner {
+        property x int = 0
+    }
+}
+Outer::Inner::x = 99;
+let v = Outer::Inner::x;

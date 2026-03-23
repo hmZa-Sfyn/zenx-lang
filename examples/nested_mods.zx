@@ -1,0 +1,29 @@
+mod outer {
+    mod inner {
+        mod more {
+            mod anathorone {
+                mod takethisonemore {
+                    fn abc() -> int {
+                        return 123*123;
+                    }
+                }
+                mod one {
+                    fn abc() -> int {
+                        return 123*123;
+                    }
+                }
+                mod two {
+                    fn abc() -> int {
+                        return 123*123;
+                    }
+                }
+            }
+        }
+    }
+}
+
+say outer::inner::more::anathorone::takethisonemore::abc();
+
+
+say outer::inner::more::anathorone::one::abc();
+say outer::inner::more::anathorone::two::abc();
