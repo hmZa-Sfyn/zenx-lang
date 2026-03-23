@@ -1,0 +1,17 @@
+type something struct {
+    iType any;
+    iLen  int;
+    iValue any;
+}
+
+mod Some {
+    fn thing(x: any) -> *something {
+        return &something{
+	        iType: type_of!(x),
+	        iLen: 2,
+	        iValue: x,
+	    }
+    } 
+}
+
+say Some->thing(234)->iType;

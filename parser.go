@@ -1169,7 +1169,8 @@ func (p *Parser) parseType() *ZXType {
 			p.expect(TK_GT)
 			return RefOf(elem)
 		}
-		if p.isTypeStart() {
+		// ref StructName  or  ref int  etc.
+		if p.isTypeStart() || p.at(TK_IDENT) {
 			return RefOf(p.parseType())
 		}
 		return RefOf(TypVoid)

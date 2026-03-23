@@ -1,0 +1,7 @@
+mod Some {
+    fn thing(x: any) -> any {
+        return type_of!(x)
+    } 
+}
+
+say type_of!(Some->thing(234));
