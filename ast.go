@@ -196,13 +196,11 @@ func isTruthy(t *ZXType) bool {
 //  Visibility
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Vis represents the visibility of a declaration.
-// By default everything is Public. The `priv` keyword makes it Private.
 type Vis int
 
 const (
-	VisPublic  Vis = iota // default — importable from other files
-	VisPrivate            // priv — not importable from other files
+	VisPublic Vis = iota
+	VisPrivate
 )
 
 func (v Vis) String() string {
@@ -259,29 +257,58 @@ type TestDecl struct {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  ModProperty  — mod-level property with optional getter/setter
+//
+//  Syntax inside a mod block:
+//    property count int = 0
+//    property name str {
+//      get { return __name; }
+//      set(v) { __name = v; }
+//    }
+// ─────────────────────────────────────────────────────────────────────────────
+
+type ModProperty struct {
+	Sp       Span
+	Name     string
+	Type     *ZXType
+	Init     Node // optional default value
+	Vis      Vis
+	HasGet   bool
+	HasSet   bool
+	GetBody  *Block // nil = auto (return field)
+	SetBody  *Block // nil = auto (assign field)
+	SetParam string // name of the setter parameter (default: "value")
+	// Internal C backing field name, filled in by emitter
+	CFieldName string
+}
+
+func (n *ModProperty) nodeSpan() Span  { return n.Sp }
+func (n *ModProperty) nodeTag() string { return "property" }
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  ModBlock
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ModBlock struct {
-	Sp        Span
-	Name      string
-	Path      string
-	Doc       string
-	Vis       Vis // NEW: pub (default) or priv
-	Mods      []*ModBlock
-	Structs   []*StructDecl
-	Methods   []*MethodDecl
-	Fns       []*FnDecl
-	Tests     []*TestDecl
-	Consts    []*VarDecl
-	Init      *FnDecl
-	Reexports []string
+	Sp         Span
+	Name       string
+	Path       string
+	Doc        string
+	Vis        Vis
+	Mods       []*ModBlock
+	Structs    []*StructDecl
+	Methods    []*MethodDecl
+	Fns        []*FnDecl
+	Tests      []*TestDecl
+	Consts     []*VarDecl
+	Properties []*ModProperty // NEW: mod-level properties
+	Init       *FnDecl
+	Reexports  []string
 }
 
 func (n *ModBlock) nodeSpan() Span  { return n.Sp }
 func (n *ModBlock) nodeTag() string { return "mod" }
 
-// IsExportable returns true if the mod can be imported by other files.
 func (n *ModBlock) IsExportable() bool { return n.Vis == VisPublic }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -300,7 +327,7 @@ type MacroDecl struct {
 	AlwaysInline bool
 	Aliases      []string
 	Guard        Node
-	Vis          Vis // NEW: pub (default) or priv
+	Vis          Vis
 }
 
 func (n *MacroDecl) nodeSpan() Span  { return n.Sp }
@@ -391,7 +418,7 @@ type ExternDecl struct {
 	Params   []Param
 	Variadic bool
 	RetType  *ZXType
-	Vis      Vis // NEW
+	Vis      Vis
 }
 
 func (n *ExternDecl) nodeSpan() Span  { return n.Sp }
@@ -404,7 +431,7 @@ type StructDecl struct {
 	Annotations []Annotation
 	Doc         string
 	Base        string
-	Vis         Vis // NEW: pub (default) or priv
+	Vis         Vis
 }
 
 func (n *StructDecl) nodeSpan() Span  { return n.Sp }
@@ -421,7 +448,7 @@ type FnDecl struct {
 	ModPath     string
 	Doc         string
 	CName       string
-	Vis         Vis // NEW: pub (default) or priv
+	Vis         Vis
 }
 
 func (n *FnDecl) nodeSpan() Span  { return n.Sp }
@@ -444,7 +471,6 @@ func (n *FnDecl) GetAnnotation(name string) *Annotation {
 	return nil
 }
 
-// IsExportable returns true if fn can be imported by other files.
 func (n *FnDecl) IsExportable() bool { return n.Vis == VisPublic }
 
 type MethodDecl struct {
@@ -458,7 +484,7 @@ type MethodDecl struct {
 	RetType     *ZXType
 	Body        *Block
 	Annotations []Annotation
-	Vis         Vis // NEW
+	Vis         Vis
 }
 
 func (n *MethodDecl) nodeSpan() Span  { return n.Sp }
@@ -491,7 +517,7 @@ type VarDecl struct {
 	IsGlobal     bool
 	ResolvedType *ZXType
 	IsModConst   bool
-	Vis          Vis // NEW: pub (default) or priv
+	Vis          Vis
 }
 
 func (n *VarDecl) nodeSpan() Span  { return n.Sp }
@@ -848,6 +874,29 @@ type ModCallExpr struct {
 func (n *ModCallExpr) nodeSpan() Span  { return n.Sp }
 func (n *ModCallExpr) nodeTag() string { return "modcall" }
 
+// ModPropGetExpr — read a mod property: MyMod::count
+type ModPropGetExpr struct {
+	Sp   Span
+	Mod  string
+	Prop string
+	Typ  *ZXType
+}
+
+func (n *ModPropGetExpr) nodeSpan() Span  { return n.Sp }
+func (n *ModPropGetExpr) nodeTag() string { return "modpropget" }
+
+// ModPropSetStmt — write a mod property: MyMod::count = 5
+type ModPropSetStmt struct {
+	Sp    Span
+	Mod   string
+	Prop  string
+	Op    string // "=" "+=" "-=" etc.
+	Value Node
+}
+
+func (n *ModPropSetStmt) nodeSpan() Span  { return n.Sp }
+func (n *ModPropSetStmt) nodeTag() string { return "modpropset" }
+
 type BuiltinExpr struct {
 	Sp   Span
 	Name string
@@ -989,11 +1038,6 @@ type MacroApplyExpr struct {
 
 func (n *MacroApplyExpr) nodeSpan() Span  { return n.Sp }
 func (n *MacroApplyExpr) nodeTag() string { return "macroapply" }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  PrivAccessExpr — NEW: explicit private access violation marker
-//  Used internally by typechecker to surface helpful error messages.
-// ─────────────────────────────────────────────────────────────────────────────
 
 type PrivAccessExpr struct {
 	Sp       Span

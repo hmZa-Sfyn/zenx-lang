@@ -1,0 +1,13 @@
+type Result struct {
+    iType int;
+    iValue any;
+    iLen int;
+}
+
+mod Some {
+    fn thing(x: any) -> *Result {
+        return &Result{iType: type_of!(x), iValue: x, iLen: len(x)}
+    } 
+}
+
+say Some.thing(234);

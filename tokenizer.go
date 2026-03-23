@@ -23,7 +23,7 @@ const (
 	TK_MY
 	TK_CONST
 	TK_OUR
-	TK_PRIV // NEW: priv visibility modifier
+	TK_PRIV
 	TK_FN
 	TK_SUB
 	TK_MACRO
@@ -79,6 +79,11 @@ const (
 	TK_STDIN
 	TK_STDOUT
 	TK_STDERR
+
+	// mod property keywords
+	TK_PROPERTY
+	TK_GET
+	TK_SET
 
 	TK_TYPE_INT
 	TK_TYPE_FLOAT
@@ -165,6 +170,8 @@ var tkNames = map[TK]string{
 	TK_CMD: "cmd!", TK_READFILE: "readfile!", TK_WRITEFILE: "writefile!", TK_BANG_MACRO: "macro!",
 	TK_INPUT: "input", TK_STDIN: "stdin", TK_STDOUT: "stdout", TK_STDERR: "stderr",
 
+	TK_PROPERTY: "property", TK_GET: "get", TK_SET: "set",
+
 	TK_TYPE_INT: "int", TK_TYPE_FLOAT: "float", TK_TYPE_BOOL: "bool",
 	TK_TYPE_STR: "str", TK_TYPE_VOID: "void", TK_TYPE_CHAR: "char",
 	TK_TYPE_REF: "ref", TK_TYPE_ANY: "any",
@@ -196,7 +203,7 @@ func (t TK) String() string {
 var keywords = map[string]TK{
 	"let": TK_LET, "my": TK_MY, "local": TK_MY,
 	"const": TK_CONST, "our": TK_OUR,
-	"priv": TK_PRIV, // NEW: priv visibility modifier
+	"priv": TK_PRIV,
 	"fn":   TK_FN, "func": TK_FN, "sub": TK_SUB, "macro": TK_MACRO,
 	"return": TK_RETURN,
 	"if":     TK_IF, "unless": TK_UNLESS,
@@ -214,6 +221,12 @@ var keywords = map[string]TK{
 	"input": TK_INPUT, "stdin": TK_STDIN, "stdout": TK_STDOUT, "stderr": TK_STDERR,
 	"true": TK_BOOL, "false": TK_BOOL,
 	"nil": TK_NIL, "null": TK_NIL, "NULL": TK_NIL, "undef": TK_NIL,
+
+	// mod property
+	"property": TK_PROPERTY,
+	"get":      TK_GET,
+	"set":      TK_SET,
+
 	"int": TK_TYPE_INT, "float": TK_TYPE_FLOAT, "bool": TK_TYPE_BOOL,
 	"str": TK_TYPE_STR, "string": TK_TYPE_STR,
 	"void": TK_TYPE_VOID, "char": TK_TYPE_CHAR,
@@ -301,9 +314,9 @@ func (t *Tokenizer) nextToken() {
 		return
 	}
 
-	// @`...` multiline string — ONLY when @ is followed immediately by backtick.
+	// @`...` multiline string
 	if ch == '@' && t.pos+1 < len(t.src) && t.src[t.pos+1] == '`' {
-		t.advance() // consume @
+		t.advance()
 		t.lexMultilineStr()
 		return
 	}
@@ -363,9 +376,6 @@ func (t *Tokenizer) nextToken() {
 		if t.tryEat('=') {
 			t.push(TK_SLASH_EQ, "/=", sp)
 		} else {
-			// NOTE: /=  is already handled above.
-			// Plain / is a path separator in imports AND arithmetic divide.
-			// We emit TK_SLASH for both — the parser disambiguates by context.
 			t.push(TK_SLASH, "/", sp)
 		}
 	case '%':
@@ -536,7 +546,7 @@ func (t *Tokenizer) lexMultilineStr() {
 			continue
 		}
 		if ch == '`' {
-			t.advance() // consume closing `
+			t.advance()
 			break
 		}
 		sb.WriteRune(ch)
@@ -556,22 +566,31 @@ func (t *Tokenizer) lexNumber() {
 
 	justOne := t.pos-start == 1 && t.src[start] == '0'
 
-	// hex: 0x...
 	if justOne && !t.eof() && (t.peek(0) == 'x' || t.peek(0) == 'X') {
 		t.advance()
+		hexStart := t.pos
 		for !t.eof() && (isHex(t.peek(0)) || t.peek(0) == '_') {
 			t.advance()
+		}
+		if t.pos == hexStart {
+			errAt(sp, "hex literal '0x' has no digits", "add hex digits after 0x, e.g. 0xFF")
+			t.ok = false
+			return
 		}
 		t.push(TK_INT, strings.ReplaceAll(string(t.src[start:t.pos]), "_", ""), sp)
 		return
 	}
 
-	// binary: 0b...
 	if justOne && !t.eof() && (t.peek(0) == 'b' || t.peek(0) == 'B') {
 		t.advance()
 		bs := t.pos
 		for !t.eof() && (t.peek(0) == '0' || t.peek(0) == '1' || t.peek(0) == '_') {
 			t.advance()
+		}
+		if t.pos == bs {
+			errAt(sp, "binary literal '0b' has no digits", "add binary digits after 0b, e.g. 0b1010")
+			t.ok = false
+			return
 		}
 		binStr := strings.ReplaceAll(string(t.src[bs:t.pos]), "_", "")
 		val := int64(0)
@@ -582,7 +601,6 @@ func (t *Tokenizer) lexNumber() {
 		return
 	}
 
-	// octal: 0o...
 	if justOne && !t.eof() && (t.peek(0) == 'o' || t.peek(0) == 'O') {
 		t.advance()
 		for !t.eof() && (t.peek(0) >= '0' && t.peek(0) <= '7' || t.peek(0) == '_') {
@@ -592,7 +610,6 @@ func (t *Tokenizer) lexNumber() {
 		return
 	}
 
-	// float: 1.5  or  1e10
 	if !t.eof() && t.peek(0) == '.' && t.pos+1 < len(t.src) && t.src[t.pos+1] != '.' {
 		isFloat = true
 		t.advance()
@@ -605,6 +622,11 @@ func (t *Tokenizer) lexNumber() {
 		t.advance()
 		if !t.eof() && (t.peek(0) == '+' || t.peek(0) == '-') {
 			t.advance()
+		}
+		if t.eof() || !isDigit(t.peek(0)) {
+			errAt(sp, "float exponent has no digits", "add digits after e, e.g. 1e10")
+			t.ok = false
+			return
 		}
 		for !t.eof() && isDigit(t.peek(0)) {
 			t.advance()
@@ -765,7 +787,6 @@ func (t *Tokenizer) skipWS() {
 			t.advance()
 			continue
 		}
-		// single-line comment: # or //
 		if ch == '#' {
 			for !t.eof() && t.peek(0) != '\n' {
 				t.advance()
@@ -778,7 +799,6 @@ func (t *Tokenizer) skipWS() {
 			}
 			continue
 		}
-		// block comment: /* ... */
 		if ch == '/' && t.pos+1 < len(t.src) && t.src[t.pos+1] == '*' {
 			sp2 := t.here(2)
 			t.advance()

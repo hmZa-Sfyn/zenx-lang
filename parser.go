@@ -46,9 +46,7 @@ func (p *Parser) peekN(n int) Token {
 	}
 	return p.tokens[p.pos+n]
 }
-func (p *Parser) at(k TK) bool { return p.peek().Kind == k }
-
-// check is an alias for at — used by parseVis.
+func (p *Parser) at(k TK) bool    { return p.peek().Kind == k }
 func (p *Parser) check(k TK) bool { return p.peek().Kind == k }
 
 func (p *Parser) atAny(ks ...TK) bool {
@@ -98,12 +96,6 @@ func (p *Parser) eatSemi() {
 		p.advance()
 	}
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Visibility — parseVis()
-//  Consumes `priv` if present; returns VisPrivate.
-//  Otherwise returns VisPublic (the default) without consuming anything.
-// ─────────────────────────────────────────────────────────────────────────────
 
 func (p *Parser) parseVis() Vis {
 	if p.check(TK_PRIV) {
@@ -201,7 +193,6 @@ func (p *Parser) parseProgram() *Program {
 	for !p.at(TK_EOF) && p.ok {
 		anns := p.parseAnnotations()
 
-		// consume optional `priv` before any declaration
 		vis := VisPublic
 		if p.at(TK_PRIV) {
 			vis = p.parseVis()
@@ -293,14 +284,19 @@ func (p *Parser) isFnMethod() bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Mod block — supports:
-//    • priv on each item inside the mod
-//    • nested mod blocks (arbitrary depth)
-//    • priv mod blocks (nested)
+//  Mod block
 //
-//  parentPath is the dot-joined path of ancestor mods, e.g. "Outer::Middle".
-//  The full path of the new block becomes parentPath + "::" + name (or just
-//  name when parentPath is empty).
+//  Supports:
+//    • nested mod blocks (arbitrary depth)
+//    • priv on each item
+//    • property declarations (module-level variables with optional get/set)
+//
+//  Syntax examples inside a mod block:
+//    property count int = 0
+//    property name str {
+//        get { return __name; }
+//        set(v) { __name = v; }
+//    }
 // ─────────────────────────────────────────────────────────────────────────────
 
 func (p *Parser) parseModBlock(parentPath string) *ModBlock {
@@ -316,18 +312,21 @@ func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 	for !p.at(TK_RBRACE) && !p.at(TK_EOF) && p.ok {
 		anns := p.parseAnnotations()
 
-		// consume optional priv before each item inside the mod
 		itemVis := VisPublic
 		if p.at(TK_PRIV) {
 			itemVis = p.parseVis()
 		}
 
 		switch p.peek().Kind {
-		// ── nested mod block ──────────────────────────────────────────────
 		case TK_MOD:
 			nested := p.parseModBlock(path)
 			nested.Vis = itemVis
 			mb.Mods = append(mb.Mods, nested)
+
+		case TK_PROPERTY:
+			prop := p.parseModProperty()
+			prop.Vis = itemVis
+			mb.Properties = append(mb.Properties, prop)
 
 		case TK_STRUCT:
 			sd := p.parseStruct()
@@ -354,30 +353,25 @@ func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 		case TK_SEMI:
 			p.advance()
 
-		// const/our/let/my inside mod block → synthetic init fn
 		case TK_CONST, TK_OUR, TK_LET, TK_MY:
 			isConst := p.peek().Kind == TK_CONST || p.peek().Kind == TK_OUR
 			vd := p.parseVarDecl(isConst)
 			vd.Vis = itemVis
-			mb.Fns = append(mb.Fns, &FnDecl{
-				Sp:   vd.Sp,
-				Name: "__zx_const_init_" + vd.Name,
-				Body: &Block{Sp: vd.Sp, Stmts: []Node{vd}},
-			})
+			mb.Consts = append(mb.Consts, vd)
 
 		default:
 			t := p.peek()
 			if itemVis == VisPrivate {
 				errAt(t.Span,
 					fmt.Sprintf("'priv' cannot be applied to %q inside a mod block", t.Value),
-					"valid inside mod: priv fn, priv struct, priv type, priv mod, priv let/const")
+					"valid inside mod: priv fn, priv struct, priv type, priv mod, priv let/const, priv property")
 				p.ok = false
 				break
 			}
 			if t.Kind != TK_RBRACE && t.Kind != TK_EOF {
 				warnAt(t.Span,
 					fmt.Sprintf("unexpected %q inside mod block — move this outside the mod, or use a fn", t.Value),
-					"mod blocks can contain: fn, struct, type, const, let, and nested mod")
+					"mod blocks can contain: fn, struct, type, const, let, property, and nested mod")
 				p.advance()
 			}
 		}
@@ -387,13 +381,109 @@ func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 	return mb
 }
 
+// parseModProperty parses:
+//
+//	property <name> [type] [= <init>]
+//	property <name> [type] {
+//	    get { ... }
+//	    set[(param)] { ... }
+//	}
+func (p *Parser) parseModProperty() *ModProperty {
+	sp := p.peek().Span
+	p.expect(TK_PROPERTY)
+	name := p.expect(TK_IDENT).Value
+
+	// optional type
+	var typ *ZXType
+	if p.isTypeStart() {
+		typ = p.parseType()
+	} else if !p.at(TK_ASSIGN) && !p.at(TK_LBRACE) && !p.at(TK_SEMI) {
+		// try ident as struct type
+		if p.at(TK_IDENT) {
+			typ = StructType(p.advance().Value)
+		}
+	}
+	if typ == nil {
+		typ = TypAny
+	}
+
+	prop := &ModProperty{Sp: sp, Name: name, Type: typ, SetParam: "value"}
+
+	// property name int = 42
+	if p.at(TK_ASSIGN) {
+		p.advance()
+		prop.Init = p.parseExpr()
+		p.expectSemi()
+		// auto get/set
+		prop.HasGet = true
+		prop.HasSet = true
+		return prop
+	}
+
+	// property name int { get { ... } set(v) { ... } }
+	if p.at(TK_LBRACE) {
+		p.advance()
+		for !p.at(TK_RBRACE) && !p.at(TK_EOF) && p.ok {
+			switch {
+			case p.at(TK_GET):
+				if prop.HasGet {
+					errAt(p.peek().Span,
+						fmt.Sprintf("property %q has duplicate 'get' block", name),
+						"remove the extra get block")
+					p.ok = false
+				}
+				p.advance()
+				prop.HasGet = true
+				prop.GetBody = p.parseBlock()
+			case p.at(TK_SET):
+				if prop.HasSet {
+					errAt(p.peek().Span,
+						fmt.Sprintf("property %q has duplicate 'set' block", name),
+						"remove the extra set block")
+					p.ok = false
+				}
+				p.advance()
+				if p.at(TK_LPAREN) {
+					p.advance()
+					prop.SetParam = p.expect(TK_IDENT).Value
+					p.expect(TK_RPAREN)
+				}
+				prop.HasSet = true
+				prop.SetBody = p.parseBlock()
+			case p.at(TK_SEMI):
+				p.advance()
+			default:
+				errAt(p.peek().Span,
+					fmt.Sprintf("unexpected %q inside property block — expected 'get' or 'set'", p.peek().Value),
+					"write: property foo int { get { return __foo; } set(v) { __foo = v; } }")
+				p.ok = false
+				p.advance()
+			}
+		}
+		p.expect(TK_RBRACE)
+		p.eatSemi()
+		// if neither get nor set given, default to both auto
+		if !prop.HasGet && !prop.HasSet {
+			prop.HasGet = true
+			prop.HasSet = true
+		}
+		return prop
+	}
+
+	// bare: property count int;  — auto get+set, zero init
+	p.expectSemi()
+	prop.HasGet = true
+	prop.HasSet = true
+	return prop
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-//  Import parsing  (unchanged from original)
+//  Import parsing
 // ─────────────────────────────────────────────────────────────────────────────
 
 func (p *Parser) parseImport() *ImportDecl {
 	sp := p.peek().Span
-	kw := p.advance() // consume 'import' or 'use'
+	kw := p.advance()
 	_ = kw
 	imp := &ImportDecl{Sp: sp}
 
@@ -405,7 +495,6 @@ func (p *Parser) parseImport() *ImportDecl {
 	}
 
 	switch {
-	// ── use "stdio.h" — raw C header ─────────────────────────────────────────
 	case p.at(TK_STRING):
 		raw := p.advance().Value
 		if raw == "" {
@@ -417,16 +506,13 @@ func (p *Parser) parseImport() *ImportDecl {
 		imp.IsCHeader = true
 		imp.IsLocal = false
 
-	// ── underscore-prefix: _/a  __/a  ___/a ─────────────────────────────────
 	case p.at(TK_IDENT) && len(p.peek().Value) > 0 && p.peek().Value[0] == '_':
 		p.parseLocalImport(sp, imp)
 
-	// ── env-var prefix: std/x/y  usr/x/y ────────────────────────────────────
 	case p.at(TK_IDENT) && (p.peek().Value == "std" || p.peek().Value == "usr") &&
 		p.peekN(1).Kind == TK_SLASH:
 		p.parseEnvImport(sp, imp)
 
-	// ── use std::str — built-in ZX stdlib modules ────────────────────────────
 	case p.at(TK_IDENT) || p.at(TK_TYPE_STR):
 		p.parseStdModuleImport(sp, imp)
 
@@ -434,9 +520,7 @@ func (p *Parser) parseImport() *ImportDecl {
 		errAt(sp, fmt.Sprintf("unexpected token %q after import/use", p.peek().Value),
 			`valid forms:
   import std/net/socket
-  import std/net/socket (socServ)
   import _/a
-  import _/a (ModName)
   import __/a
   use std::str
   use "stdio.h"`)
@@ -601,8 +685,7 @@ func (p *Parser) parseImportModSelector(sp Span, imp *ImportDecl, filePath strin
 
 		if p.at(TK_RPAREN) {
 			errAt(sp, "expected a mod name inside parentheses",
-				fmt.Sprintf("example: import _/%s (ModName) — where ModName is the mod block to import",
-					imp.Module))
+				fmt.Sprintf("example: import _/%s (ModName)", imp.Module))
 			p.ok = false
 			p.advance()
 			return
@@ -626,14 +709,14 @@ func (p *Parser) parseImportModSelector(sp Span, imp *ImportDecl, filePath strin
 
 		if len(modName) > 0 && modName[0] >= 'a' && modName[0] <= 'z' {
 			warnAt(p.peek().Span,
-				fmt.Sprintf("imported mod name %q starts with lowercase — mod blocks are usually PascalCase or UPPER_CASE", modName),
-				"example: import _/logger (Logger)  not  import _/logger (logger)")
+				fmt.Sprintf("imported mod name %q starts with lowercase — mod blocks are usually PascalCase", modName),
+				"example: import _/logger (Logger)")
 		}
 
 		if !p.at(TK_RPAREN) {
 			errAt(p.peek().Span,
 				fmt.Sprintf("expected ')' to close the mod selector, got %q", p.peek().Value),
-				"only one mod name can be imported per import statement — use multiple import lines for multiple mods")
+				"only one mod name can be imported per import statement")
 			p.ok = false
 			for !p.at(TK_RPAREN) && !p.at(TK_EOF) && !p.at(TK_SEMI) {
 				p.advance()
@@ -912,7 +995,7 @@ func (p *Parser) tryParseMacroChain(recv Node) Node {
 		if !p.at(TK_LBRACE) {
 			errAt(p.peek().Span,
 				fmt.Sprintf("expected a block '{ }' after '%s:'", macroName),
-				fmt.Sprintf("write: %s: { /* your code */ }  or  %s: do { }", macroName, macroName))
+				fmt.Sprintf("write: %s: { /* your code */ }", macroName))
 			p.ok = false
 			break
 		}
@@ -1126,7 +1209,6 @@ func (p *Parser) parseStmt() Node {
 		}
 	}
 
-	// priv inside a function body is a clear error
 	if p.at(TK_PRIV) {
 		errAt(p.peek().Span,
 			"'priv' cannot appear inside a function body — use it at top level or inside a mod block",
@@ -1447,6 +1529,18 @@ func (p *Parser) parseDie() Node {
 func (p *Parser) parseExprOrAssign() Node {
 	sp := p.peek().Span
 	expr := p.parsePipeExpr()
+
+	// Detect mod property set: if expr resolved to a ModPropGetExpr and next is assign op
+	if mpg, ok := expr.(*ModPropGetExpr); ok {
+		switch p.peek().Kind {
+		case TK_ASSIGN, TK_PLUS_EQ, TK_MINUS_EQ, TK_STAR_EQ, TK_SLASH_EQ, TK_PERCENT_EQ:
+			op := p.advance().Value
+			val := p.parsePipeExpr()
+			p.expectSemi()
+			return &ModPropSetStmt{Sp: sp, Mod: mpg.Mod, Prop: mpg.Prop, Op: op, Value: val}
+		}
+	}
+
 	switch p.peek().Kind {
 	case TK_ASSIGN, TK_PLUS_EQ, TK_MINUS_EQ, TK_STAR_EQ, TK_SLASH_EQ, TK_PERCENT_EQ:
 		op := p.advance().Value
@@ -1668,11 +1762,10 @@ func (p *Parser) parsePostfix() Node {
 			}
 
 		case TK_DCOLON:
+			// Handle Mod::prop access or Mod::fn() or nested Mod::Sub::fn()
 			p.advance()
 			if p.at(TK_IDENT) {
 				seg := p.advance()
-				// Build receiver path: fold current expr name + "::" + seg
-				// e.g.  Ident{"Math"} + "Int"  →  Ident{"Math::Int"}
 				recvName := ""
 				if id, ok := expr.(*Ident); ok {
 					recvName = id.Name
@@ -1683,24 +1776,20 @@ func (p *Parser) parsePostfix() Node {
 				} else {
 					fullPath = seg.Value
 				}
-				// Keep consuming ::ident segments (but NOT if next token after :: is
-				// an ident followed by '(' — that would be the function call segment).
+				// consume more ::ident path segments (not the final fn call)
 				for p.at(TK_DCOLON) && p.peekN(1).Kind == TK_IDENT {
-					// peek ahead: if the ident is followed by '(' it is the fn name, stop
 					if p.peekN(2).Kind == TK_LPAREN {
 						break
 					}
-					// also stop if ident is the last segment before '(' (checked above)
-					// but keep consuming plain path segments
-					p.advance() // consume ::
+					p.advance()
 					nextSeg := p.advance()
 					fullPath = fullPath + "::" + nextSeg.Value
 				}
-				// Now check: are we at :: fn_name ( ?
+				// Mod::nested::fn(...)
 				if p.at(TK_DCOLON) && p.peekN(1).Kind == TK_IDENT && p.peekN(2).Kind == TK_LPAREN {
-					p.advance()          // consume ::
-					fnTok := p.advance() // consume fn name
-					p.advance()          // consume (
+					p.advance()
+					fnTok := p.advance()
+					p.advance()
 					var args []Node
 					for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
 						args = append(args, p.parseExpr())
@@ -1715,7 +1804,7 @@ func (p *Parser) parsePostfix() Node {
 						Args:   args,
 					}
 				} else if p.at(TK_LPAREN) {
-					// Math::Int style where fullPath IS the function (unlikely but handle)
+					// direct call: last segment is the fn name
 					p.advance()
 					var args []Node
 					for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
@@ -1725,7 +1814,6 @@ func (p *Parser) parsePostfix() Node {
 						}
 					}
 					p.expect(TK_RPAREN)
-					// split fullPath into mod + fn at last ::
 					lastSep := strings.LastIndex(fullPath, "::")
 					if lastSep >= 0 {
 						modPart := fullPath[:lastSep]
@@ -1742,7 +1830,16 @@ func (p *Parser) parsePostfix() Node {
 						}
 					}
 				} else {
-					expr = &Ident{Sp: seg.Span, Name: fullPath}
+					// Mod::propName — mod property get
+					// Split fullPath into mod + prop at the last ::
+					lastSep := strings.LastIndex(fullPath, "::")
+					if lastSep >= 0 {
+						modPart := fullPath[:lastSep]
+						propPart := fullPath[lastSep+2:]
+						expr = &ModPropGetExpr{Sp: sp, Mod: modPart, Prop: propPart}
+					} else {
+						expr = &Ident{Sp: seg.Span, Name: fullPath}
+					}
 				}
 			}
 
