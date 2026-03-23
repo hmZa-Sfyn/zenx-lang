@@ -113,6 +113,8 @@ func (p *Parser) isTypeStart() bool {
 	switch p.peek().Kind {
 	case TK_TYPE_INT, TK_TYPE_FLOAT, TK_TYPE_BOOL, TK_TYPE_STR,
 		TK_TYPE_VOID, TK_TYPE_CHAR, TK_TYPE_REF, TK_TYPE_ANY,
+		TK_TYPE_INT8, TK_TYPE_INT16, TK_TYPE_INT32,
+		TK_TYPE_UINT8, TK_TYPE_UINT16, TK_TYPE_UINT32,
 		TK_LBRACKET, TK_STAR:
 		return true
 	}
@@ -1174,6 +1176,24 @@ func (p *Parser) parseType() *ZXType {
 			return RefOf(p.parseType())
 		}
 		return RefOf(TypVoid)
+	case TK_TYPE_INT8:
+		p.advance()
+		return TypInt8
+	case TK_TYPE_INT16:
+		p.advance()
+		return TypInt16
+	case TK_TYPE_INT32:
+		p.advance()
+		return TypInt32
+	case TK_TYPE_UINT8:
+		p.advance()
+		return TypUint8
+	case TK_TYPE_UINT16:
+		p.advance()
+		return TypUint16
+	case TK_TYPE_UINT32:
+		p.advance()
+		return TypUint32
 	case TK_IDENT:
 		p.advance()
 		return StructType(t.Value)
@@ -1584,7 +1604,7 @@ func (p *Parser) parseTernary() Node {
 	return &TernaryExpr{Sp: sp, Cond: cond, Then: then, Else: els}
 }
 
-func (p *Parser) parseExpr() Node { return p.parseOr() }
+func (p *Parser) parseExpr() Node      { return p.parseOr() }
 func (p *Parser) parseOr() Node {
 	lhs := p.parseAnd()
 	for p.at(TK_OR) && p.ok {
@@ -2166,6 +2186,18 @@ func tokenToType(t Token) *ZXType {
 		return TypChar
 	case TK_TYPE_STR:
 		return TypStr
+	case TK_TYPE_INT8:
+		return TypInt8
+	case TK_TYPE_INT16:
+		return TypInt16
+	case TK_TYPE_INT32:
+		return TypInt32
+	case TK_TYPE_UINT8:
+		return TypUint8
+	case TK_TYPE_UINT16:
+		return TypUint16
+	case TK_TYPE_UINT32:
+		return TypUint32
 	default:
 		return TypUnknown
 	}

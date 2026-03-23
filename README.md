@@ -5,7 +5,7 @@
 ▒ ▒ ▒ ▄▀░ ▒▒ █ █ ▒░
 ░ ▒ ▄▀▒░  ░░  █   ░
   ▄▀▒   ░  ░ █ █  ░
-▒███████▒ ▒██▒ ▒██▒  v3.2.0
+▒███████▒ ▒██▒ ▒██▒  v3.5.0
 ```
 
 A fast, small language that compiles to C. Perl-flavored syntax, full C interop, Rust-style errors.

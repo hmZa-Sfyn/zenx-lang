@@ -21,4 +21,4 @@ const PI = 3.14;
 PI = 2.71;
 
 // E13: const without init
-const MISSING_VAL: float = 23.23;
+const MISSING_VAL: float = 23.53;

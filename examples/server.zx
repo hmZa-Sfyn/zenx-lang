@@ -1,5 +1,7 @@
-// server.zx — tiny HTTP server demo
-// Shows: multiline adjacent string concat, C socket interop, extern fns
+// server.zx — working HTTP server in ZX
+// Compiles to C and serves a page on http://localhost:8080
+//
+// Uses fixed-width types (uint16, uint32) for correct sockaddr_in layout.
 
 import "stdio.h"
 import "stdlib.h"
@@ -8,68 +10,141 @@ import "unistd.h"
 import "sys/socket.h"
 import "netinet/in.h"
 import "arpa/inet.h"
+import "stdint.h"
+
+// ── sockaddr_in layout (16 bytes, must match the C struct exactly) ──────────
+//
+//   struct sockaddr_in {
+//       uint16_t sin_family;   // 2 bytes  — AF_INET = 2
+//       uint16_t sin_port;     // 2 bytes  — network byte order
+//       uint32_t sin_addr;     // 4 bytes  — INADDR_ANY = 0
+//       uint32_t sin_zero1;    // 4 bytes  — padding (must be zero)
+//       uint32_t sin_zero2;    // 4 bytes  — padding (must be zero)
+//   };  // total = 16 bytes
+//
+// ZX struct fields use their exact declared types, so uint16/uint32 here
+// emit as uint16_t / uint32_t — the layout is byte-perfect.
+
+type SockAddrIn struct {
+    sin_family  uint16;
+    sin_port    uint16;
+    sin_addr    uint32;
+    sin_zero1   uint32;
+    sin_zero2   uint32;
+}
+
+// ── extern C functions ───────────────────────────────────────────────────────
 
 extern fn socket(domain: int, type_: int, protocol: int) -> int
 extern fn bind(sockfd: int, addr: *void, addrlen: int) -> int
 extern fn listen(sockfd: int, backlog: int) -> int
 extern fn accept(sockfd: int, addr: *void, addrlen: *int) -> int
 extern fn send(sockfd: int, buf: *void, len_: int, flags: int) -> int
+extern fn recv(sockfd: int, buf: *void, len_: int, flags: int) -> int
 extern fn close(fd: int) -> int
 extern fn htons(hostshort: int) -> int
-extern fn htonl(hostlong: int) -> int
-extern fn memset(s: *void, c: int, n: int) -> *void
-extern fn printf(fmt: str, ...) -> int
-extern fn strlen(s: str) -> int
+extern fn setsockopt(sockfd: int, level: int, optname: int, optval: *void, optlen: int) -> int
 extern fn perror(s: str) -> void
+extern fn puts(s: str) -> int
 
-// ── Adjacent string literal concatenation ───────────────────────────────────
-// All these strings are merged at compile time into one const char*
+// ── HTTP response (adjacent string literals merged at compile time) ──────────
 
 const RESPONSE: str =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: text/html; charset=utf-8\r\n"
     "Connection: close\r\n"
+    "Server: ZX/1.0\r\n"
     "\r\n"
     "<!DOCTYPE html>\n"
     "<html lang=\"en\">\n"
-    "<head\n"
+    "<head>\n"
     "  <meta charset=\"utf-8\">\n"
-    "  <title>ZX Tiny Server</title>\n"
-    "</head\n"
+    "  <meta name=\"viewport\" content=\"width=device-width\">\n"
+    "  <title>ZX Server</title>\n"
+    "  <style>\n"
+    "    body { font-family: sans-serif; max-width: 600px; margin: 60px auto; }\n"
+    "    h1   { color: #5b21b6; }\n"
+    "    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; }\n"
+    "  </style>\n"
+    "</head>\n"
     "<body>\n"
-    "  <h1>Hello from ZX language! 🚀</h1>\n"
-    "  <p>This is a tiny web server written in ZX (compiles to C).</p>\n"
-    "  <p>Refresh the page or open in another tab.</p>\n"
+    "  <h1>Hello from ZX! \360\237\232\200</h1>\n"
+    "  <p>This HTTP server is written in <strong>ZX</strong>, a language\n"
+    "     that compiles to C.</p>\n"
+    "  <ul>\n"
+    "    <li>Struct layout: <code>uint16 / uint32</code> fields \342\206\222 exact <code>sockaddr_in</code></li>\n"
+    "    <li>Adjacent string literals merged at compile time</li>\n"
+    "    <li>Externs for POSIX socket API</li>\n"
+    "  </ul>\n"
+    "  <p>Refresh to see it serve again!</p>\n"
     "</body>\n"
     "</html>\n";
 
-const PORT: int = 8080;
-const BACKLOG: int = 10;
-const AF_INET_VAL: int = 2;
-const SOCK_STREAM_VAL: int = 1;
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-println("ZX tiny HTTP server — listening on port 8080");
-println("Open http://localhost:8080 in your browser");
+const PORT:        int = 8080;
+const BACKLOG:     int = 10;
+const AF_INET:     int = 2;    // Linux AF_INET
+const SOCK_STREAM: int = 1;    // TCP
+const SOL_SOCKET:  int = 1;
+const SO_REUSEADDR: int = 2;
 
-// Create socket
+// ── Create socket ─────────────────────────────────────────────────────────────
 
-let server_fd: int = socket(AF_INET_VAL, SOCK_STREAM_VAL, 0);
+let server_fd: int = socket(AF_INET, SOCK_STREAM, 0);
 if server_fd < 0 {
+    perror("socket");
     die "socket() failed";
 }
 
-// Set SO_REUSEADDR so we can restart quickly
-extern fn setsockopt(sockfd: int, level: int, optname: int, optval: *void, optlen: int) -> int;
+// SO_REUSEADDR so the port is freed immediately on restart
 let opt: int = 1;
-setsockopt(server_fd, 1, 2, &opt, sizeof(int));
+setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int));
 
-// Build sockaddr_in using raw C via printf trick — we just emit C directly
-// For demo purposes use printf to show the address
-printf("Binding to 0.0.0.0:%lld\n", PORT);
+// ── Build sockaddr_in and bind ────────────────────────────────────────────────
 
-println("(run: zxc emit examples/server.zx  to see the generated C)");
-println("Note: full socket bind/listen requires inline C for struct layout.");
-println("This demo shows the string concat + extern interop features.");
+let addr = SockAddrIn{
+    sin_family  AF_INET,
+    sin_port    htons(PORT),
+    sin_addr    0,
+    sin_zero1   0,
+    sin_zero2   0,
+};
+
+if bind(server_fd, &addr, sizeof(SockAddrIn)) < 0 {
+    perror("bind");
+    die "bind() failed";
+}
+
+if listen(server_fd, BACKLOG) < 0 {
+    perror("listen");
+    die "listen() failed";
+}
+
+println "ZX HTTP server started!";
+println f"Listening on http://localhost:{PORT}";
+println "Press Ctrl-C to stop.";
+println "";
+
+// ── Accept loop ───────────────────────────────────────────────────────────────
+
+while 1 {
+    let client_fd: int = accept(server_fd, 0, 0);
+    if client_fd < 0 {
+        perror("accept");
+        continue;
+    }
+
+    // Read the request (we don't really need to parse it for this demo,
+    // but we must consume it so the browser doesn't hang)
+    let buf: [4096]char;
+    recv(client_fd, &buf, 4095, 0);
+
+    // Send the HTTP response
+    send(client_fd, RESPONSE, len(RESPONSE), 0);
+    close(client_fd);
+
+    puts("  -> Served a request");
+}
 
 close(server_fd);
-println("Server closed.");

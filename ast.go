@@ -23,6 +23,13 @@ const (
 	TyUnknown
 	TyTuple
 	TyFn
+	// Fixed-width C integer types — correct struct layout for C interop
+	TyInt8
+	TyInt16
+	TyInt32
+	TyUint8
+	TyUint16
+	TyUint32
 )
 
 type ZXType struct {
@@ -44,6 +51,13 @@ var (
 	TypVoid    = &ZXType{Kind: TyVoid}
 	TypAny     = &ZXType{Kind: TyAny}
 	TypUnknown = &ZXType{Kind: TyUnknown}
+	// Fixed-width singletons
+	TypInt8   = &ZXType{Kind: TyInt8}
+	TypInt16  = &ZXType{Kind: TyInt16}
+	TypInt32  = &ZXType{Kind: TyInt32}
+	TypUint8  = &ZXType{Kind: TyUint8}
+	TypUint16 = &ZXType{Kind: TyUint16}
+	TypUint32 = &ZXType{Kind: TyUint32}
 )
 
 func RefOf(elem *ZXType) *ZXType          { return &ZXType{Kind: TyRef, Elem: elem} }
@@ -77,6 +91,18 @@ func (t *ZXType) String() string {
 		return "void"
 	case TyAny:
 		return "any"
+	case TyInt8:
+		return "int8"
+	case TyInt16:
+		return "int16"
+	case TyInt32:
+		return "int32"
+	case TyUint8:
+		return "uint8"
+	case TyUint16:
+		return "uint16"
+	case TyUint32:
+		return "uint32"
 	case TyRef:
 		if t.Elem != nil {
 			return "ref " + t.Elem.String()
@@ -105,7 +131,16 @@ func (t *ZXType) String() string {
 		return "unknown"
 	}
 }
-
+func isFixedWidth(t *ZXType) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind {
+	case TyInt8, TyInt16, TyInt32, TyUint8, TyUint16, TyUint32:
+		return true
+	}
+	return false
+}
 func typeEq(a, b *ZXType) bool {
 	if a == nil || b == nil {
 		return false
@@ -169,6 +204,13 @@ func coercible(from, to *ZXType) bool {
 	if from.Kind == TyFn || to.Kind == TyFn {
 		return true
 	}
+	// Fixed-width integers are coercible to/from each other and TyInt
+	if isFixedWidth(from) && (isFixedWidth(to) || to.Kind == TyInt || to.Kind == TyChar || to.Kind == TyBool) {
+		return true
+	}
+	if isFixedWidth(to) && (isFixedWidth(from) || from.Kind == TyInt || from.Kind == TyChar || from.Kind == TyBool) {
+		return true
+	}
 	return false
 }
 
@@ -176,20 +218,26 @@ func isNumeric(t *ZXType) bool {
 	if t == nil {
 		return false
 	}
-	return t.Kind == TyInt || t.Kind == TyFloat || t.Kind == TyChar || t.Kind == TyAny
+	return t.Kind == TyInt || t.Kind == TyFloat || t.Kind == TyChar || t.Kind == TyAny ||
+		t.Kind == TyInt8 || t.Kind == TyInt16 || t.Kind == TyInt32 ||
+		t.Kind == TyUint8 || t.Kind == TyUint16 || t.Kind == TyUint32
 }
 func isInteger(t *ZXType) bool {
 	if t == nil {
 		return false
 	}
-	return t.Kind == TyInt || t.Kind == TyChar || t.Kind == TyBool || t.Kind == TyAny
+	return t.Kind == TyInt || t.Kind == TyChar || t.Kind == TyBool || t.Kind == TyAny ||
+		t.Kind == TyInt8 || t.Kind == TyInt16 || t.Kind == TyInt32 ||
+		t.Kind == TyUint8 || t.Kind == TyUint16 || t.Kind == TyUint32
 }
 func isTruthy(t *ZXType) bool {
 	if t == nil {
 		return false
 	}
 	return t.Kind == TyInt || t.Kind == TyBool || t.Kind == TyChar ||
-		t.Kind == TyFloat || t.Kind == TyRef || t.Kind == TyAny
+		t.Kind == TyFloat || t.Kind == TyRef || t.Kind == TyAny ||
+		t.Kind == TyInt8 || t.Kind == TyInt16 || t.Kind == TyInt32 ||
+		t.Kind == TyUint8 || t.Kind == TyUint16 || t.Kind == TyUint32
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

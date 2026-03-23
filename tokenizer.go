@@ -93,6 +93,13 @@ const (
 	TK_TYPE_CHAR
 	TK_TYPE_REF
 	TK_TYPE_ANY
+	// Fixed-width integer type tokens
+	TK_TYPE_INT8
+	TK_TYPE_INT16
+	TK_TYPE_INT32
+	TK_TYPE_UINT8
+	TK_TYPE_UINT16
+	TK_TYPE_UINT32
 
 	TK_PLUS
 	TK_MINUS
@@ -175,6 +182,8 @@ var tkNames = map[TK]string{
 	TK_TYPE_INT: "int", TK_TYPE_FLOAT: "float", TK_TYPE_BOOL: "bool",
 	TK_TYPE_STR: "str", TK_TYPE_VOID: "void", TK_TYPE_CHAR: "char",
 	TK_TYPE_REF: "ref", TK_TYPE_ANY: "any",
+	TK_TYPE_INT8: "int8", TK_TYPE_INT16: "int16", TK_TYPE_INT32: "int32",
+	TK_TYPE_UINT8: "uint8", TK_TYPE_UINT16: "uint16", TK_TYPE_UINT32: "uint32",
 
 	TK_PLUS: "+", TK_MINUS: "-", TK_STAR: "*", TK_SLASH: "/", TK_PERCENT: "%",
 	TK_AMP: "&", TK_PIPE: "|", TK_CARET: "^", TK_TILDE: "~",
@@ -231,8 +240,9 @@ var keywords = map[string]TK{
 	"str": TK_TYPE_STR, "string": TK_TYPE_STR,
 	"void": TK_TYPE_VOID, "char": TK_TYPE_CHAR,
 	"ref": TK_TYPE_REF, "ptr": TK_TYPE_REF, "pointer": TK_TYPE_REF, "any": TK_TYPE_ANY,
-	"int8": TK_TYPE_INT, "int16": TK_TYPE_INT, "int32": TK_TYPE_INT,
+	"int8": TK_TYPE_INT8, "int16": TK_TYPE_INT16, "int32": TK_TYPE_INT32,
 	"int64": TK_TYPE_INT, "uint": TK_TYPE_INT, "uint64": TK_TYPE_INT,
+	"uint8": TK_TYPE_UINT8, "uint16": TK_TYPE_UINT16, "uint32": TK_TYPE_UINT32,
 	"float32": TK_TYPE_FLOAT, "float64": TK_TYPE_FLOAT,
 	"byte": TK_TYPE_CHAR, "rune": TK_TYPE_INT, "boolean": TK_TYPE_BOOL,
 }
@@ -713,9 +723,53 @@ func (t *Tokenizer) lexString(quote rune) {
 				sb.WriteByte(0)
 			case 'a':
 				sb.WriteByte('\a')
+			case 'b':
+				sb.WriteByte('\b')
+			case 'f':
+				sb.WriteByte('\f')
+			case 'v':
+				sb.WriteByte('\v')
+			case 'x':
+				// \xNN — two hex digits
+				t.advance()
+				hi := t.peek(0)
+				if !isHex(hi) {
+					warnAt(sp, `\x escape needs two hex digits, e.g. \x41`, "")
+					sb.WriteByte('\\')
+					sb.WriteByte('x')
+					continue
+				}
+				t.advance()
+				lo := t.peek(0)
+				if !isHex(lo) {
+					warnAt(sp, `\x escape needs two hex digits, e.g. \x41`, "")
+					sb.WriteByte('\\')
+					sb.WriteByte('x')
+					sb.WriteRune(hi)
+					continue
+				}
+				t.advance()
+				val := hexVal(hi)*16 + hexVal(lo)
+				sb.WriteByte(byte(val))
+				continue
+			case '1', '2', '3', '4', '5', '6', '7':
+				// \NNN — up to three octal digits
+				d1 := t.peek(0)
+				t.advance()
+				val := int(d1 - '0')
+				if !t.eof() && t.peek(0) >= '0' && t.peek(0) <= '7' {
+					val = val*8 + int(t.peek(0)-'0')
+					t.advance()
+					if !t.eof() && t.peek(0) >= '0' && t.peek(0) <= '7' {
+						val = val*8 + int(t.peek(0)-'0')
+						t.advance()
+					}
+				}
+				sb.WriteByte(byte(val))
+				continue
 			default:
 				warnAt(sp, fmt.Sprintf("unknown escape \\%c in string", t.peek(0)),
-					"valid escapes: \\n \\t \\r \\\\ \\\" \\0 \\a")
+					"valid escapes: \\n \\t \\r \\\\ \\\" \\0 \\a \\xNN \\NNN")
 				sb.WriteByte('\\')
 				sb.WriteRune(t.peek(0))
 			}
@@ -871,4 +925,16 @@ func isAlpha(r rune) bool    { return (r >= 'a' && r <= 'z') || (r >= 'A' && r <
 func isAlphaNum(r rune) bool { return isAlpha(r) || isDigit(r) }
 func isHex(r rune) bool {
 	return isDigit(r) || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+}
+
+func hexVal(r rune) int {
+	switch {
+	case r >= '0' && r <= '9':
+		return int(r - '0')
+	case r >= 'a' && r <= 'f':
+		return int(r-'a') + 10
+	case r >= 'A' && r <= 'F':
+		return int(r-'A') + 10
+	}
+	return 0
 }
