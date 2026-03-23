@@ -3154,35 +3154,83 @@ func (tc *TypeChecker) checkModFns(mb *ModBlock) {
 
 // checkModPropertyBodies checks user-supplied get/set bodies for a property.
 func (tc *TypeChecker) checkModPropertyBodies(prop *ModProperty, modPath string) {
+	// The C backing field name (e.g. "Counter__value" for mod Counter, property value).
 	cFieldName := modPathToC(modPath) + "__" + prop.Name
 
+	// The user-facing alias inside get/set bodies is "__propName"
+	// (double underscore + property name). Much friendlier than the full C name.
+	userAlias := "__" + prop.Name
+
+	// Determine the property's C return type for the synthetic getter fn.
+	propType := prop.Type
+	if propType == nil {
+		propType = TypAny
+	}
+
 	if prop.GetBody != nil {
-		saved := tc.scope
-		tc.scope = newScope(saved, "fn")
-		// expose the backing field as a readable name inside get
+		// Push a synthetic FnDecl so that checkReturn() knows we're inside a fn
+		// and accepts `return` statements without firing E14.
+		syntheticGet := &FnDecl{
+			Sp:      prop.Sp,
+			Name:    "__get_" + prop.Name,
+			RetType: propType,
+			Body:    prop.GetBody,
+		}
+		tc.fnStack = append(tc.fnStack, syntheticGet)
+		tc.trace.Push(prop.Sp, fmt.Sprintf("in property '%s' getter", prop.Name))
+
+		savedScope := tc.scope
+		tc.scope = newScope(savedScope, "fn")
+		// Expose both the C backing field name and the friendly __propName alias.
 		tc.scope.define(cFieldName, &VarInfo{
-			Type: prop.Type, Sp: prop.Sp, Defined: true, DeclFile: tc.currentFile,
+			Type: propType, Sp: prop.Sp, Defined: true, DeclFile: tc.currentFile,
+		})
+		tc.scope.define(userAlias, &VarInfo{
+			Type: propType, Sp: prop.Sp, Defined: true, DeclFile: tc.currentFile,
 		})
 		tc.checkBlock(prop.GetBody)
-		tc.scope = saved
+		tc.scope = savedScope
+
+		tc.trace.Pop()
+		tc.fnStack = tc.fnStack[:len(tc.fnStack)-1]
 	}
 
 	if prop.SetBody != nil {
-		saved := tc.scope
-		tc.scope = newScope(saved, "fn")
-		// expose the setter parameter
-		tc.scope.define(prop.SetParam, &VarInfo{
-			Type: prop.Type, Sp: prop.Sp, Defined: true, DeclFile: tc.currentFile,
+		// Push a synthetic FnDecl so return statements work inside set bodies.
+		syntheticSet := &FnDecl{
+			Sp:      prop.Sp,
+			Name:    "__set_" + prop.Name,
+			RetType: TypVoid,
+			Body:    prop.SetBody,
+		}
+		tc.fnStack = append(tc.fnStack, syntheticSet)
+		tc.trace.Push(prop.Sp, fmt.Sprintf("in property '%s' setter", prop.Name))
+
+		savedScope := tc.scope
+		tc.scope = newScope(savedScope, "fn")
+		// Expose the setter parameter (e.g. "v" or "value").
+		param := prop.SetParam
+		if param == "" {
+			param = "value"
+		}
+		tc.scope.define(param, &VarInfo{
+			Type: propType, Sp: prop.Sp, Defined: true, DeclFile: tc.currentFile,
 		})
-		// expose the backing field as writable inside set
+		// Expose both the C backing field name and the friendly __propName alias.
 		tc.scope.define(cFieldName, &VarInfo{
-			Type: prop.Type, Sp: prop.Sp, Defined: true, DeclFile: tc.currentFile,
+			Type: propType, Sp: prop.Sp, Defined: true, DeclFile: tc.currentFile,
+		})
+		tc.scope.define(userAlias, &VarInfo{
+			Type: propType, Sp: prop.Sp, Defined: true, DeclFile: tc.currentFile,
 		})
 		tc.checkBlock(prop.SetBody)
-		tc.scope = saved
+		tc.scope = savedScope
+
+		tc.trace.Pop()
+		tc.fnStack = tc.fnStack[:len(tc.fnStack)-1]
 	}
 
-	// Store generated C field name on the property for the emitter
+	// Store the generated C field name on the property for the emitter.
 	prop.CFieldName = cFieldName
 }
 

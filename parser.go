@@ -470,8 +470,8 @@ func (p *Parser) parseModProperty() *ModProperty {
 		return prop
 	}
 
-	// bare: property count int;  — auto get+set, zero init
-	p.expectSemi()
+	// bare: property count int  — auto get+set, zero init, semicolon optional
+	p.eatSemi()
 	prop.HasGet = true
 	prop.HasSet = true
 	return prop

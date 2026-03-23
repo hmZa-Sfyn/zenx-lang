@@ -42,3 +42,5 @@ mod Outer {
 }
 Outer::Inner::x = 99;
 let v = Outer::Inner::x;
+
+say v;

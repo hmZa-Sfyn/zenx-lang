@@ -500,20 +500,129 @@ func (e *Emitter) emitOneProperty(modPath string, prop *ModProperty) {
 	e.ln("")
 }
 
-// emitBlockStmtsWithPropBacking emits a block where any identifier starting
-// with "__" followed by a bare name is replaced with the actual C backing
-// field name.  This lets users write:
+// emitBlockStmtsWithPropBacking emits a block, rewriting any occurrence of
+// the user-facing alias __propName to the actual C backing field name.
 //
-//	get { return __count; }   →   return Counter__count;
-//	set(v) { __count = v; }   →   Counter__count = v;
+// Users write:
+//
+//	get { return __count; }       →  return Counter__count;
+//	set(v) { __count = v; }       →  Counter__count = v;
+//
+// propName is the ZX property name (e.g. "count").
+// backingName is the full C identifier (e.g. "Counter__count").
 func (e *Emitter) emitBlockStmtsWithPropBacking(b *Block, backingName string) {
 	if b == nil {
 		return
 	}
-	// We emit normally — the typechecker already scoped the backing field
-	// name into the body scope.  The raw identifier in user code is the C
-	// backing name (e.g. "Counter__count"), so emitExpr just emits it as-is.
-	e.emitBlockStmts(b)
+	// Extract the prop name from the backing name so we know the alias.
+	// backingName = "ModPath__propName", alias = "__propName"
+	// We rewrite Idents whose Name == "__propName" to backingName.
+	e.emitBlockWithPropRename(b, backingName)
+}
+
+// emitBlockWithPropRename emits a block, substituting the user alias __X
+// with the full C backing name wherever it appears as an Ident.
+func (e *Emitter) emitBlockWithPropRename(b *Block, backingName string) {
+	if b == nil {
+		return
+	}
+	// Find the user alias: it's "__" + the part after the last "__" in backingName.
+	// e.g. backingName = "Counter__count" → userAlias = "__count"
+	userAlias := ""
+	lastDDash := strings.LastIndex(backingName, "__")
+	if lastDDash >= 0 {
+		userAlias = "__" + backingName[lastDDash+2:]
+	}
+	for _, s := range b.Stmts {
+		e.emitStmtWithPropRename(s, userAlias, backingName)
+	}
+}
+
+func (e *Emitter) emitStmtWithPropRename(n Node, alias, backing string) {
+	if n == nil || alias == "" {
+		e.emitStmt(n)
+		return
+	}
+	// Temporarily rename any Ident with Name==alias to backing before emitting.
+	renamePropIdents(n, alias, backing)
+	e.emitStmt(n)
+	renamePropIdents(n, backing, alias) // restore (in case AST is reused)
+}
+
+// renamePropIdents walks the AST and renames Ident nodes whose Name==from to to.
+func renamePropIdents(n Node, from, to string) {
+	if n == nil {
+		return
+	}
+	switch s := n.(type) {
+	case *Ident:
+		if s.Name == from {
+			s.Name = to
+		}
+	case *ReturnStmt:
+		renamePropIdents(s.Value, from, to)
+	case *AssignStmt:
+		renamePropIdents(s.LHS, from, to)
+		renamePropIdents(s.Value, from, to)
+	case *VarDecl:
+		renamePropIdents(s.Init, from, to)
+	case *ExprStmt:
+		renamePropIdents(s.Expr, from, to)
+	case *IfStmt:
+		renamePropIdents(s.Cond, from, to)
+		if s.Then != nil {
+			for _, st := range s.Then.Stmts {
+				renamePropIdents(st, from, to)
+			}
+		}
+		for _, el := range s.Elifs {
+			renamePropIdents(el.Cond, from, to)
+			if el.Body != nil {
+				for _, st := range el.Body.Stmts {
+					renamePropIdents(st, from, to)
+				}
+			}
+		}
+		if s.Else != nil {
+			for _, st := range s.Else.Stmts {
+				renamePropIdents(st, from, to)
+			}
+		}
+	case *WhileStmt:
+		renamePropIdents(s.Cond, from, to)
+		if s.Body != nil {
+			for _, st := range s.Body.Stmts {
+				renamePropIdents(st, from, to)
+			}
+		}
+	case *Block:
+		for _, st := range s.Stmts {
+			renamePropIdents(st, from, to)
+		}
+	case *BinExpr:
+		renamePropIdents(s.LHS, from, to)
+		renamePropIdents(s.RHS, from, to)
+	case *UnaryExpr:
+		renamePropIdents(s.Operand, from, to)
+	case *CallExpr:
+		renamePropIdents(s.Func, from, to)
+		for _, a := range s.Args {
+			renamePropIdents(a, from, to)
+		}
+	case *FieldExpr:
+		renamePropIdents(s.Obj, from, to)
+	case *IndexExpr:
+		renamePropIdents(s.Obj, from, to)
+		renamePropIdents(s.Idx, from, to)
+	case *TernaryExpr:
+		renamePropIdents(s.Cond, from, to)
+		renamePropIdents(s.Then, from, to)
+		renamePropIdents(s.Else, from, to)
+	case *PrintStmt:
+		for _, a := range s.Args {
+			renamePropIdents(a, from, to)
+		}
+	}
 }
 
 // emitModPropGet emits the C expression for reading a mod property.
