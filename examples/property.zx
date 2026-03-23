@@ -30,14 +30,19 @@ mod Counter {
 // Reading a property:
 let x = Counter::count;
 
+Counter::value = 234;
+say Counter::value;
+
 // Writing a property:
 Counter::count = 10;
-Counter::count += 5 ;        // expands to Counter__count__set(Counter__count__get() + 5)
+Counter::count += x ;        // expands to Counter__count__set(Counter__count__get() + 5)
+
+say Counter::count;
 
 // Nested mods work too:
 mod Outer {
     mod Inner {
-        property x int = 0
+        property x int = 0;
     }
 }
 Outer::Inner::x = 99;
