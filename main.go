@@ -14,6 +14,8 @@ const version = "3.5.0"
 //  Usage / help
 // ─────────────────────────────────────────────────────────────────────────────
 
+var show_warnings = 1
+
 func printUsage() {
 	fmt.Printf(`
 %s▒███████▒ ▒██   ██▒
@@ -47,6 +49,7 @@ func printUsage() {
   -Oz         optimize aggressively for binary size (clang only)
   -v          verbose: print generated C before compiling
   -c "code"   execute a one-liner ZX snippet
+  -w          no warnings
 `,
 		colorCyan, colorReset,
 		colorBold+colorYellow, version, colorReset,
@@ -139,6 +142,8 @@ func main() {
 				fmt.Fprintln(os.Stderr, colorRed+"zxc: -c requires a code snippet"+colorReset)
 				os.Exit(1)
 			}
+		case "-w":
+			show_warnings = 0
 		default:
 			if sourceFile == "" {
 				sourceFile = args[i]

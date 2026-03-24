@@ -153,6 +153,12 @@ func printDiag(d Diagnostic) {
 		label = "???"
 	}
 
+	if label == "warning" {
+		if show_warnings == 0 {
+			return
+		}
+	}
+
 	// Header line
 	codeStr := ""
 	if d.Code != "" {

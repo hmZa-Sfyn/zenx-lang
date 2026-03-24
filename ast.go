@@ -23,13 +23,21 @@ const (
 	TyUnknown
 	TyTuple
 	TyFn
-	// Fixed-width C integer types — correct struct layout for C interop
+	// Fixed-width C integer types
 	TyInt8
 	TyInt16
 	TyInt32
 	TyUint8
 	TyUint16
 	TyUint32
+	// Generic type parameter (e.g. T in List<T>)
+	TyTypeParam
+	// Instantiated generic struct (e.g. List<int>)
+	TyGeneric
+	// Error/Result types
+	TyError
+	TyResult
+	TyOption
 )
 
 type ZXType struct {
@@ -40,6 +48,10 @@ type ZXType struct {
 	Params  []*ZXType
 	Ret     *ZXType
 	Elems   []*ZXType
+	// For TyTypeParam: the param name (e.g. "T")
+	TypeParam string
+	// For TyGeneric: the base struct name + type arguments
+	TypeArgs []*ZXType
 }
 
 var (
@@ -58,6 +70,10 @@ var (
 	TypUint8  = &ZXType{Kind: TyUint8}
 	TypUint16 = &ZXType{Kind: TyUint16}
 	TypUint32 = &ZXType{Kind: TyUint32}
+	// Error/Result/Option singletons
+	TypError  = &ZXType{Kind: TyError}
+	TypResult = &ZXType{Kind: TyResult}
+	TypOption = &ZXType{Kind: TyOption}
 )
 
 func RefOf(elem *ZXType) *ZXType          { return &ZXType{Kind: TyRef, Elem: elem} }
@@ -70,6 +86,18 @@ func FnType(params []*ZXType, ret *ZXType) *ZXType {
 }
 func TupleType(elems []*ZXType) *ZXType {
 	return &ZXType{Kind: TyTuple, Elems: elems}
+}
+func TypeParamType(name string) *ZXType {
+	return &ZXType{Kind: TyTypeParam, TypeParam: name}
+}
+func GenericType(name string, args []*ZXType) *ZXType {
+	return &ZXType{Kind: TyGeneric, Name: name, TypeArgs: args}
+}
+func ResultOf(inner *ZXType) *ZXType {
+	return &ZXType{Kind: TyResult, Elem: inner}
+}
+func OptionOf(inner *ZXType) *ZXType {
+	return &ZXType{Kind: TyOption, Elem: inner}
 }
 
 func (t *ZXType) String() string {
@@ -103,6 +131,32 @@ func (t *ZXType) String() string {
 		return "uint16"
 	case TyUint32:
 		return "uint32"
+	case TyError:
+		return "error"
+	case TyResult:
+		if t.Elem != nil {
+			return "result<" + t.Elem.String() + ">"
+		}
+		return "result"
+	case TyOption:
+		if t.Elem != nil {
+			return "option<" + t.Elem.String() + ">"
+		}
+		return "option"
+	case TyTypeParam:
+		return t.TypeParam
+	case TyGeneric:
+		if len(t.TypeArgs) > 0 {
+			args := ""
+			for i, a := range t.TypeArgs {
+				if i > 0 {
+					args += ", "
+				}
+				args += a.String()
+			}
+			return t.Name + "<" + args + ">"
+		}
+		return t.Name
 	case TyRef:
 		if t.Elem != nil {
 			return "ref " + t.Elem.String()
@@ -131,6 +185,7 @@ func (t *ZXType) String() string {
 		return "unknown"
 	}
 }
+
 func isFixedWidth(t *ZXType) bool {
 	if t == nil {
 		return false
@@ -141,6 +196,7 @@ func isFixedWidth(t *ZXType) bool {
 	}
 	return false
 }
+
 func typeEq(a, b *ZXType) bool {
 	if a == nil || b == nil {
 		return false
@@ -151,6 +207,9 @@ func typeEq(a, b *ZXType) bool {
 	if a.Kind == TyAny || b.Kind == TyAny {
 		return true
 	}
+	if a.Kind == TyTypeParam || b.Kind == TyTypeParam {
+		return true // type params match anything during generic expansion
+	}
 	if a.Kind != b.Kind {
 		return false
 	}
@@ -159,6 +218,16 @@ func typeEq(a, b *ZXType) bool {
 		return typeEq(a.Elem, b.Elem)
 	case TyStruct:
 		return a.Name == b.Name
+	case TyGeneric:
+		if a.Name != b.Name || len(a.TypeArgs) != len(b.TypeArgs) {
+			return false
+		}
+		for i := range a.TypeArgs {
+			if !typeEq(a.TypeArgs[i], b.TypeArgs[i]) {
+				return false
+			}
+		}
+		return true
 	default:
 		return true
 	}
@@ -175,6 +244,9 @@ func coercible(from, to *ZXType) bool {
 		return true
 	}
 	if from.Kind == TyUnknown || to.Kind == TyUnknown {
+		return true
+	}
+	if from.Kind == TyTypeParam || to.Kind == TyTypeParam {
 		return true
 	}
 	if from.Kind == TyInt && to.Kind == TyFloat {
@@ -202,6 +274,26 @@ func coercible(from, to *ZXType) bool {
 		return true
 	}
 	if from.Kind == TyFn || to.Kind == TyFn {
+		return true
+	}
+	// result/option coercions
+	if from.Kind == TyResult || to.Kind == TyResult {
+		return true
+	}
+	if from.Kind == TyOption || to.Kind == TyOption {
+		return true
+	}
+	if from.Kind == TyError || to.Kind == TyError {
+		return true
+	}
+	// generic instantiation coercions
+	if from.Kind == TyGeneric && to.Kind == TyStruct && from.Name == to.Name {
+		return true
+	}
+	if from.Kind == TyStruct && to.Kind == TyGeneric && from.Name == to.Name {
+		return true
+	}
+	if from.Kind == TyGeneric && to.Kind == TyGeneric && from.Name == to.Name {
 		return true
 	}
 	// Fixed-width integers are coercible to/from each other and TyInt
@@ -305,28 +397,20 @@ type TestDecl struct {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  ModProperty  — mod-level property with optional getter/setter
-//
-//  Syntax inside a mod block:
-//    property count int = 0
-//    property name str {
-//      get { return __name; }
-//      set(v) { __name = v; }
-//    }
+//  ModProperty
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ModProperty struct {
-	Sp       Span
-	Name     string
-	Type     *ZXType
-	Init     Node // optional default value
-	Vis      Vis
-	HasGet   bool
-	HasSet   bool
-	GetBody  *Block // nil = auto (return field)
-	SetBody  *Block // nil = auto (assign field)
-	SetParam string // name of the setter parameter (default: "value")
-	// Internal C backing field name, filled in by emitter
+	Sp         Span
+	Name       string
+	Type       *ZXType
+	Init       Node
+	Vis        Vis
+	HasGet     bool
+	HasSet     bool
+	GetBody    *Block
+	SetBody    *Block
+	SetParam   string
 	CFieldName string
 }
 
@@ -349,14 +433,13 @@ type ModBlock struct {
 	Fns        []*FnDecl
 	Tests      []*TestDecl
 	Consts     []*VarDecl
-	Properties []*ModProperty // NEW: mod-level properties
+	Properties []*ModProperty
 	Init       *FnDecl
 	Reexports  []string
 }
 
-func (n *ModBlock) nodeSpan() Span  { return n.Sp }
-func (n *ModBlock) nodeTag() string { return "mod" }
-
+func (n *ModBlock) nodeSpan() Span     { return n.Sp }
+func (n *ModBlock) nodeTag() string    { return "mod" }
 func (n *ModBlock) IsExportable() bool { return n.Vis == VisPublic }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -472,6 +555,7 @@ type ExternDecl struct {
 func (n *ExternDecl) nodeSpan() Span  { return n.Sp }
 func (n *ExternDecl) nodeTag() string { return "extern" }
 
+// StructDecl now supports generic type parameters (e.g. type List<T> struct { ... })
 type StructDecl struct {
 	Sp          Span
 	Name        string
@@ -480,11 +564,71 @@ type StructDecl struct {
 	Doc         string
 	Base        string
 	Vis         Vis
+	// Generic type parameters, e.g. ["T", "U"]
+	TypeParams []string
 }
 
 func (n *StructDecl) nodeSpan() Span  { return n.Sp }
 func (n *StructDecl) nodeTag() string { return "struct" }
 
+func (n *StructDecl) IsGeneric() bool { return len(n.TypeParams) > 0 }
+
+// MangledName returns the C-safe name for a generic instantiation.
+// e.g. List<int> -> List__int
+func MangleGenericName(baseName string, typeArgs []*ZXType) string {
+	if len(typeArgs) == 0 {
+		return baseName
+	}
+	s := baseName
+	for _, a := range typeArgs {
+		s += "__" + mangleType(a)
+	}
+	return s
+}
+
+func mangleType(t *ZXType) string {
+	if t == nil {
+		return "void"
+	}
+	switch t.Kind {
+	case TyInt:
+		return "int"
+	case TyFloat:
+		return "float"
+	case TyBool:
+		return "bool"
+	case TyStr:
+		return "str"
+	case TyChar:
+		return "char"
+	case TyVoid:
+		return "void"
+	case TyAny:
+		return "any"
+	case TyInt8:
+		return "i8"
+	case TyInt16:
+		return "i16"
+	case TyInt32:
+		return "i32"
+	case TyUint8:
+		return "u8"
+	case TyUint16:
+		return "u16"
+	case TyUint32:
+		return "u32"
+	case TyStruct:
+		return t.Name
+	case TyGeneric:
+		return MangleGenericName(t.Name, t.TypeArgs)
+	case TyRef:
+		return "ptr_" + mangleType(t.Elem)
+	default:
+		return "any"
+	}
+}
+
+// FnDecl now supports generic type parameters and named-argument defaults.
 type FnDecl struct {
 	Sp          Span
 	Name        string
@@ -497,6 +641,10 @@ type FnDecl struct {
 	Doc         string
 	CName       string
 	Vis         Vis
+	// Generic type parameters for this function (e.g. ["T"])
+	TypeParams []string
+	// For generic method specializations: the concrete type arg (e.g. "int")
+	GenericRecvType *ZXType
 }
 
 func (n *FnDecl) nodeSpan() Span  { return n.Sp }
@@ -518,13 +666,13 @@ func (n *FnDecl) GetAnnotation(name string) *Annotation {
 	}
 	return nil
 }
-
 func (n *FnDecl) IsExportable() bool { return n.Vis == VisPublic }
 
+// MethodDecl supports generic receiver types (e.g. fn (this List<int>) sum())
 type MethodDecl struct {
 	Sp          Span
 	RecvName    string
-	RecvType    string
+	RecvType    string // base struct name, e.g. "List"
 	RecvRef     bool
 	Name        string
 	Params      []Param
@@ -533,17 +681,37 @@ type MethodDecl struct {
 	Body        *Block
 	Annotations []Annotation
 	Vis         Vis
+	// Generic type arguments on the receiver, e.g. [TyInt] for List<int>
+	RecvTypeArgs []*ZXType
+	// For generic methods on all T: the bound type param name, e.g. "T"
+	RecvTypeParam string
 }
 
 func (n *MethodDecl) nodeSpan() Span  { return n.Sp }
 func (n *MethodDecl) nodeTag() string { return "method" }
-func (n *MethodDecl) CName() string   { return n.RecvType + "_" + n.Name }
 
+// CName returns the C function name for a method.
+// For generic instantiations, includes the mangled type args.
+func (n *MethodDecl) CName() string {
+	if len(n.RecvTypeArgs) > 0 {
+		return MangleGenericName(n.RecvType, n.RecvTypeArgs) + "_" + n.Name
+	}
+	return n.RecvType + "_" + n.Name
+}
+
+// Param supports default values (for named/optional args)
 type Param struct {
 	Sp      Span
 	Name    string
 	Type    *ZXType
 	Default Node
+}
+
+// NamedArg is used in call expressions when the caller uses name=value syntax
+type NamedArg struct {
+	Sp    Span
+	Name  string
+	Value Node
 }
 
 // ── Statements ────────────────────────────────────────────────────────────────
@@ -814,11 +982,15 @@ type UnaryExpr struct {
 func (n *UnaryExpr) nodeSpan() Span  { return n.Sp }
 func (n *UnaryExpr) nodeTag() string { return "unary" }
 
+// CallExpr now supports named arguments via NamedArgs.
+// If NamedArgs is non-empty, Args will be filled in by the typechecker after
+// resolving the parameter order from the function signature.
 type CallExpr struct {
-	Sp   Span
-	Func Node
-	Args []Node
-	Typ  *ZXType
+	Sp        Span
+	Func      Node
+	Args      []Node
+	NamedArgs []NamedArg // name=value syntax
+	Typ       *ZXType
 }
 
 func (n *CallExpr) nodeSpan() Span  { return n.Sp }
@@ -871,6 +1043,8 @@ type StructInit struct {
 	Fields    []FieldInit
 	HeapAlloc bool
 	Typ       *ZXType
+	// For generic structs: the type arguments at the call site
+	TypeArgs []*ZXType
 }
 
 type FieldInit struct {
@@ -900,23 +1074,26 @@ type SizeofExpr struct {
 func (n *SizeofExpr) nodeSpan() Span  { return n.Sp }
 func (n *SizeofExpr) nodeTag() string { return "sizeof" }
 
+// MethodCallExpr supports named args too
 type MethodCallExpr struct {
-	Sp     Span
-	Recv   Node
-	Method string
-	Args   []Node
-	Typ    *ZXType
+	Sp        Span
+	Recv      Node
+	Method    string
+	Args      []Node
+	NamedArgs []NamedArg
+	Typ       *ZXType
 }
 
 func (n *MethodCallExpr) nodeSpan() Span  { return n.Sp }
 func (n *MethodCallExpr) nodeTag() string { return "methodcall" }
 
 type ModCallExpr struct {
-	Sp   Span
-	Mod  string
-	Fn   string
-	Args []Node
-	Typ  *ZXType
+	Sp        Span
+	Mod       string
+	Fn        string
+	Args      []Node
+	NamedArgs []NamedArg
+	Typ       *ZXType
 }
 
 func (n *ModCallExpr) nodeSpan() Span  { return n.Sp }
@@ -938,7 +1115,7 @@ type ModPropSetStmt struct {
 	Sp    Span
 	Mod   string
 	Prop  string
-	Op    string // "=" "+=" "-=" etc.
+	Op    string
 	Value Node
 }
 
@@ -1096,3 +1273,15 @@ type PrivAccessExpr struct {
 
 func (n *PrivAccessExpr) nodeSpan() Span  { return n.Sp }
 func (n *PrivAccessExpr) nodeTag() string { return "privaccess" }
+
+// ForEachStmt iterates over an array/slice: for x in arr { ... }
+type ForEachStmt struct {
+	Sp     Span
+	Var    string
+	IdxVar string // optional: for i, x in arr
+	Expr   Node
+	Body   *Block
+}
+
+func (n *ForEachStmt) nodeSpan() Span  { return n.Sp }
+func (n *ForEachStmt) nodeTag() string { return "foreach" }
