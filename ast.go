@@ -1,6 +1,8 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Type system
@@ -38,6 +40,8 @@ const (
 	TyError
 	TyResult
 	TyOption
+	// Runtime type descriptor (returned by type_of!, typeof, etc.)
+	TyType
 )
 
 type ZXType struct {
@@ -63,6 +67,8 @@ var (
 	TypVoid    = &ZXType{Kind: TyVoid}
 	TypAny     = &ZXType{Kind: TyAny}
 	TypUnknown = &ZXType{Kind: TyUnknown}
+	// Runtime type descriptor
+	TypType = &ZXType{Kind: TyType}
 	// Fixed-width singletons
 	TypInt8   = &ZXType{Kind: TyInt8}
 	TypInt16  = &ZXType{Kind: TyInt16}
@@ -119,6 +125,8 @@ func (t *ZXType) String() string {
 		return "void"
 	case TyAny:
 		return "any"
+	case TyType:
+		return "_Type"
 	case TyInt8:
 		return "int8"
 	case TyInt16:
@@ -247,6 +255,13 @@ func coercible(from, to *ZXType) bool {
 		return true
 	}
 	if from.Kind == TyTypeParam || to.Kind == TyTypeParam {
+		return true
+	}
+	// _Type is coercible to/from str (it's a const char* at runtime)
+	if from.Kind == TyType && to.Kind == TyStr {
+		return true
+	}
+	if from.Kind == TyStr && to.Kind == TyType {
 		return true
 	}
 	if from.Kind == TyInt && to.Kind == TyFloat {
@@ -555,7 +570,7 @@ type ExternDecl struct {
 func (n *ExternDecl) nodeSpan() Span  { return n.Sp }
 func (n *ExternDecl) nodeTag() string { return "extern" }
 
-// StructDecl now supports generic type parameters (e.g. type List<T> struct { ... })
+// StructDecl supports generic type parameters (e.g. type List<T> struct { ... })
 type StructDecl struct {
 	Sp          Span
 	Name        string
@@ -605,6 +620,8 @@ func mangleType(t *ZXType) string {
 		return "void"
 	case TyAny:
 		return "any"
+	case TyType:
+		return "type"
 	case TyInt8:
 		return "i8"
 	case TyInt16:
@@ -628,7 +645,7 @@ func mangleType(t *ZXType) string {
 	}
 }
 
-// FnDecl now supports generic type parameters and named-argument defaults.
+// FnDecl supports generic type parameters and named-argument defaults.
 type FnDecl struct {
 	Sp          Span
 	Name        string
@@ -982,14 +999,13 @@ type UnaryExpr struct {
 func (n *UnaryExpr) nodeSpan() Span  { return n.Sp }
 func (n *UnaryExpr) nodeTag() string { return "unary" }
 
-// CallExpr now supports named arguments via NamedArgs.
-// If NamedArgs is non-empty, Args will be filled in by the typechecker after
-// resolving the parameter order from the function signature.
+// CallExpr supports named arguments via NamedArgs.
+// The typechecker resolves NamedArgs into positional Args using the function signature.
 type CallExpr struct {
 	Sp        Span
 	Func      Node
 	Args      []Node
-	NamedArgs []NamedArg // name=value syntax
+	NamedArgs []NamedArg // name=value syntax; resolved to Args by typechecker
 	Typ       *ZXType
 }
 
@@ -1275,13 +1291,27 @@ func (n *PrivAccessExpr) nodeSpan() Span  { return n.Sp }
 func (n *PrivAccessExpr) nodeTag() string { return "privaccess" }
 
 // ForEachStmt iterates over an array/slice: for x in arr { ... }
+// Also handles: for i, x in arr { ... }
 type ForEachStmt struct {
 	Sp     Span
-	Var    string
-	IdxVar string // optional: for i, x in arr
-	Expr   Node
+	Var    string // element variable
+	IdxVar string // optional index variable (e.g. "i" in "for i, x in arr")
+	Expr   Node   // the collection expression
+	Len    Node   // optional explicit length (for plain pointer arrays)
 	Body   *Block
 }
 
 func (n *ForEachStmt) nodeSpan() Span  { return n.Sp }
 func (n *ForEachStmt) nodeTag() string { return "foreach" }
+
+// GenericInstStmt represents a generic struct instantiation used as a statement
+// (rarely needed, but kept for completeness)
+type GenericInstExpr struct {
+	Sp       Span
+	Name     string    // base name, e.g. "List"
+	TypeArgs []*ZXType // concrete type args
+	Typ      *ZXType
+}
+
+func (n *GenericInstExpr) nodeSpan() Span  { return n.Sp }
+func (n *GenericInstExpr) nodeTag() string { return "genericinst" }

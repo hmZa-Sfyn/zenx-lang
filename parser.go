@@ -115,6 +115,7 @@ func (p *Parser) isTypeStart() bool {
 		TK_TYPE_VOID, TK_TYPE_CHAR, TK_TYPE_REF, TK_TYPE_ANY,
 		TK_TYPE_INT8, TK_TYPE_INT16, TK_TYPE_INT32,
 		TK_TYPE_UINT8, TK_TYPE_UINT16, TK_TYPE_UINT32,
+		TK_TYPE_TYPE,
 		TK_LBRACKET, TK_STAR:
 		return true
 	}
@@ -287,18 +288,6 @@ func (p *Parser) isFnMethod() bool {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Mod block
-//
-//  Supports:
-//    • nested mod blocks (arbitrary depth)
-//    • priv on each item
-//    • property declarations (module-level variables with optional get/set)
-//
-//  Syntax examples inside a mod block:
-//    property count int = 0
-//    property name str {
-//        get { return __name; }
-//        set(v) { __name = v; }
-//    }
 // ─────────────────────────────────────────────────────────────────────────────
 
 func (p *Parser) parseModBlock(parentPath string) *ModBlock {
@@ -383,24 +372,15 @@ func (p *Parser) parseModBlock(parentPath string) *ModBlock {
 	return mb
 }
 
-// parseModProperty parses:
-//
-//	property <name> [type] [= <init>]
-//	property <name> [type] {
-//	    get { ... }
-//	    set[(param)] { ... }
-//	}
 func (p *Parser) parseModProperty() *ModProperty {
 	sp := p.peek().Span
 	p.expect(TK_PROPERTY)
 	name := p.expect(TK_IDENT).Value
 
-	// optional type
 	var typ *ZXType
 	if p.isTypeStart() {
 		typ = p.parseType()
 	} else if !p.at(TK_ASSIGN) && !p.at(TK_LBRACE) && !p.at(TK_SEMI) {
-		// try ident as struct type
 		if p.at(TK_IDENT) {
 			typ = StructType(p.advance().Value)
 		}
@@ -411,39 +391,24 @@ func (p *Parser) parseModProperty() *ModProperty {
 
 	prop := &ModProperty{Sp: sp, Name: name, Type: typ, SetParam: "value"}
 
-	// property name int = 42
 	if p.at(TK_ASSIGN) {
 		p.advance()
 		prop.Init = p.parseExpr()
 		p.expectSemi()
-		// auto get/set
 		prop.HasGet = true
 		prop.HasSet = true
 		return prop
 	}
 
-	// property name int { get { ... } set(v) { ... } }
 	if p.at(TK_LBRACE) {
 		p.advance()
 		for !p.at(TK_RBRACE) && !p.at(TK_EOF) && p.ok {
 			switch {
 			case p.at(TK_GET):
-				if prop.HasGet {
-					errAt(p.peek().Span,
-						fmt.Sprintf("property %q has duplicate 'get' block", name),
-						"remove the extra get block")
-					p.ok = false
-				}
 				p.advance()
 				prop.HasGet = true
 				prop.GetBody = p.parseBlock()
 			case p.at(TK_SET):
-				if prop.HasSet {
-					errAt(p.peek().Span,
-						fmt.Sprintf("property %q has duplicate 'set' block", name),
-						"remove the extra set block")
-					p.ok = false
-				}
 				p.advance()
 				if p.at(TK_LPAREN) {
 					p.advance()
@@ -464,7 +429,6 @@ func (p *Parser) parseModProperty() *ModProperty {
 		}
 		p.expect(TK_RBRACE)
 		p.eatSemi()
-		// if neither get nor set given, default to both auto
 		if !prop.HasGet && !prop.HasSet {
 			prop.HasGet = true
 			prop.HasSet = true
@@ -472,7 +436,6 @@ func (p *Parser) parseModProperty() *ModProperty {
 		return prop
 	}
 
-	// bare: property count int  — auto get+set, zero init, semicolon optional
 	p.eatSemi()
 	prop.HasGet = true
 	prop.HasSet = true
@@ -709,12 +672,6 @@ func (p *Parser) parseImportModSelector(sp Span, imp *ImportDecl, filePath strin
 
 		modName := p.advance().Value
 
-		if len(modName) > 0 && modName[0] >= 'a' && modName[0] <= 'z' {
-			warnAt(p.peek().Span,
-				fmt.Sprintf("imported mod name %q starts with lowercase — mod blocks are usually PascalCase", modName),
-				"example: import _/logger (Logger)")
-		}
-
 		if !p.at(TK_RPAREN) {
 			errAt(p.peek().Span,
 				fmt.Sprintf("expected ')' to close the mod selector, got %q", p.peek().Value),
@@ -761,28 +718,64 @@ func (p *Parser) parseStruct() *StructDecl {
 	sp := p.peek().Span
 	p.expect(TK_STRUCT)
 	name := p.expect(TK_IDENT)
+	// optional generic type params: struct Foo<T, U> { ... }
+	typeParams := p.parseOptionalTypeParams()
 	p.expect(TK_LBRACE)
-	fields := p.parseStructFields()
+	fields := p.parseStructFields(typeParams)
 	p.expect(TK_RBRACE)
 	p.eatSemi()
-	return &StructDecl{Sp: sp, Name: name.Value, Fields: fields}
+	return &StructDecl{Sp: sp, Name: name.Value, Fields: fields, TypeParams: typeParams}
 }
 
 func (p *Parser) parseTypeStruct() *StructDecl {
 	sp := p.peek().Span
 	p.expect(TK_TYPE)
 	name := p.expect(TK_IDENT)
+	// optional generic type params: type List<T> struct { ... }
+	typeParams := p.parseOptionalTypeParams()
 	if p.at(TK_STRUCT) {
 		p.advance()
 	}
 	p.expect(TK_LBRACE)
-	fields := p.parseStructFields()
+	fields := p.parseStructFields(typeParams)
 	p.expect(TK_RBRACE)
 	p.eatSemi()
-	return &StructDecl{Sp: sp, Name: name.Value, Fields: fields}
+	return &StructDecl{Sp: sp, Name: name.Value, Fields: fields, TypeParams: typeParams}
 }
 
-func (p *Parser) parseStructFields() []Param {
+// parseOptionalTypeParams parses optional <T, U, ...> after a struct/fn name.
+// Returns nil if no angle brackets present.
+func (p *Parser) parseOptionalTypeParams() []string {
+	if !p.at(TK_LT) {
+		return nil
+	}
+	p.advance() // consume <
+	var params []string
+	for !p.at(TK_GT) && !p.at(TK_EOF) && p.ok {
+		if p.at(TK_IDENT) {
+			params = append(params, p.advance().Value)
+		} else {
+			errAt(p.peek().Span, "expected a type parameter name", "example: <T> or <T, U>")
+			p.ok = false
+			break
+		}
+		if p.at(TK_COMMA) {
+			p.advance()
+		}
+	}
+	if p.at(TK_GT) {
+		p.advance()
+	}
+	return params
+}
+
+// parseStructFields parses struct body. typeParams is passed so that bare
+// idents matching a type param are parsed as TyTypeParam rather than TyStruct.
+func (p *Parser) parseStructFields(typeParams []string) []Param {
+	tpSet := make(map[string]bool)
+	for _, tp := range typeParams {
+		tpSet[tp] = true
+	}
 	var fields []Param
 	for !p.at(TK_RBRACE) && !p.at(TK_EOF) && p.ok {
 		fsp := p.peek().Span
@@ -790,9 +783,12 @@ func (p *Parser) parseStructFields() []Param {
 		var ftype *ZXType
 		if p.at(TK_COLON) {
 			p.advance()
-			ftype = p.parseType()
+			ftype = p.parseTypeWithParams(tpSet)
 		} else if p.isTypeStart() {
-			ftype = p.parseType()
+			ftype = p.parseTypeWithParams(tpSet)
+		} else if p.at(TK_IDENT) && tpSet[p.peek().Value] {
+			// bare type param like `items T[]` — the T part
+			ftype = TypeParamType(p.advance().Value)
 		} else {
 			ftype = TypAny
 		}
@@ -1034,16 +1030,21 @@ func (p *Parser) parseFnDecl(anns []Annotation) *FnDecl {
 			fmt.Sprintf("function name %q is a C keyword — it will be compiled as __zx_%s", name.Value, name.Value),
 			fmt.Sprintf("rename to avoid confusion: fn to_%s(...) or fn my_%s(...)", name.Value, name.Value))
 	}
+	// optional generic type params on fn: fn foo<T>(x T) -> T { }
+	typeParams := p.parseOptionalTypeParams()
 	p.expect(TK_LPAREN)
-	params, variadic := p.parseParamList()
+	params, variadic := p.parseParamListWithTypeParams(typeParams)
 	p.expect(TK_RPAREN)
 	ret := TypVoid
 	if p.at(TK_ARROW) {
 		p.advance()
-		ret = p.parseType()
+		ret = p.parseTypeWithParams(stringSetToMap(typeParams))
 	}
 	body := p.parseBlock()
-	fn := &FnDecl{Sp: sp, Name: name.Value, Params: params, Variadic: variadic, RetType: ret, Body: body, Annotations: anns}
+	fn := &FnDecl{
+		Sp: sp, Name: name.Value, Params: params, Variadic: variadic,
+		RetType: ret, Body: body, Annotations: anns, TypeParams: typeParams,
+	}
 	validateFnAnnotations(fn)
 	return fn
 }
@@ -1061,9 +1062,11 @@ func validateFnAnnotations(fn *FnDecl) {
 	}
 }
 
+// parseMethod handles: fn (recv RecvType) methodName(params) -> ret { body }
+// Also handles generic receivers: fn (this List<int>) sum() -> int { }
 func (p *Parser) parseMethod() *MethodDecl {
 	sp := p.peek().Span
-	p.advance()
+	p.advance() // consume fn/sub
 	p.expect(TK_LPAREN)
 	recvName := p.expect(TK_IDENT).Value
 	recvRef := false
@@ -1072,6 +1075,28 @@ func (p *Parser) parseMethod() *MethodDecl {
 		recvRef = true
 	}
 	recvType := p.expect(TK_IDENT).Value
+
+	// Parse optional generic type args on receiver: List<int>, List<T>
+	var recvTypeArgs []*ZXType
+	var recvTypeParam string
+	if p.at(TK_LT) {
+		p.advance()
+		for !p.at(TK_GT) && !p.at(TK_EOF) && p.ok {
+			arg := p.parseType()
+			// If arg is a TyTypeParam (bare ident like T), record recvTypeParam
+			if arg.Kind == TyTypeParam {
+				recvTypeParam = arg.TypeParam
+			}
+			recvTypeArgs = append(recvTypeArgs, arg)
+			if p.at(TK_COMMA) {
+				p.advance()
+			}
+		}
+		if p.at(TK_GT) {
+			p.advance()
+		}
+	}
+
 	p.expect(TK_RPAREN)
 	methodName := p.expect(TK_IDENT).Value
 	p.expect(TK_LPAREN)
@@ -1083,11 +1108,19 @@ func (p *Parser) parseMethod() *MethodDecl {
 		ret = p.parseType()
 	}
 	body := p.parseBlock()
-	return &MethodDecl{Sp: sp, RecvName: recvName, RecvType: recvType, RecvRef: recvRef,
-		Name: methodName, Params: params, Variadic: variadic, RetType: ret, Body: body}
+	return &MethodDecl{
+		Sp: sp, RecvName: recvName, RecvType: recvType, RecvRef: recvRef,
+		Name: methodName, Params: params, Variadic: variadic, RetType: ret, Body: body,
+		RecvTypeArgs: recvTypeArgs, RecvTypeParam: recvTypeParam,
+	}
 }
 
 func (p *Parser) parseParamList() ([]Param, bool) {
+	return p.parseParamListWithTypeParams(nil)
+}
+
+func (p *Parser) parseParamListWithTypeParams(typeParams []string) ([]Param, bool) {
+	tpSet := stringSetToMap(typeParams)
 	var params []Param
 	variadic := false
 	for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
@@ -1101,12 +1134,15 @@ func (p *Parser) parseParamList() ([]Param, bool) {
 		var ptype *ZXType
 		if p.at(TK_COLON) {
 			p.advance()
-			ptype = p.parseType()
+			ptype = p.parseTypeWithParams(tpSet)
 		} else if p.isTypeStart() && !p.at(TK_COMMA) && !p.at(TK_RPAREN) {
-			ptype = p.parseType()
+			ptype = p.parseTypeWithParams(tpSet)
+		} else if p.at(TK_IDENT) && tpSet[p.peek().Value] {
+			ptype = TypeParamType(p.advance().Value)
 		} else {
 			ptype = TypAny
 		}
+		// Default value: param = expr
 		var def Node
 		if p.at(TK_ASSIGN) {
 			p.advance()
@@ -1118,6 +1154,41 @@ func (p *Parser) parseParamList() ([]Param, bool) {
 		}
 	}
 	return params, variadic
+}
+
+func stringSetToMap(ss []string) map[string]bool {
+	m := make(map[string]bool)
+	for _, s := range ss {
+		m[s] = true
+	}
+	return m
+}
+
+// parseTypeWithParams is like parseType but recognises bare idents that are
+// type parameters and returns TyTypeParam nodes for them.
+func (p *Parser) parseTypeWithParams(tpSet map[string]bool) *ZXType {
+	// If the next token is an ident that is a type param, return TypeParamType.
+	if p.at(TK_IDENT) && tpSet[p.peek().Value] {
+		name := p.advance().Value
+		// Could be followed by [] for a slice/array of the type param
+		if p.at(TK_LBRACKET) {
+			p.advance()
+			size := 0
+			if p.at(TK_INT) {
+				n, _ := strconv.Atoi(p.peek().Value)
+				size = n
+				p.advance()
+			}
+			p.expect(TK_RBRACKET)
+			tp := TypeParamType(name)
+			if size == 0 {
+				return SliceOf(tp)
+			}
+			return ArrayOf(tp, size)
+		}
+		return TypeParamType(name)
+	}
+	return p.parseType()
 }
 
 func (p *Parser) parseType() *ZXType {
@@ -1163,6 +1234,9 @@ func (p *Parser) parseType() *ZXType {
 	case TK_TYPE_ANY:
 		p.advance()
 		return TypAny
+	case TK_TYPE_TYPE:
+		p.advance()
+		return TypType
 	case TK_TYPE_REF:
 		p.advance()
 		if p.at(TK_LT) {
@@ -1171,7 +1245,6 @@ func (p *Parser) parseType() *ZXType {
 			p.expect(TK_GT)
 			return RefOf(elem)
 		}
-		// ref StructName  or  ref int  etc.
 		if p.isTypeStart() || p.at(TK_IDENT) {
 			return RefOf(p.parseType())
 		}
@@ -1195,11 +1268,26 @@ func (p *Parser) parseType() *ZXType {
 		p.advance()
 		return TypUint32
 	case TK_IDENT:
-		p.advance()
-		return StructType(t.Value)
+		name := p.advance().Value
+		// Generic instantiation in type position: List<int>
+		if p.at(TK_LT) {
+			p.advance()
+			var typeArgs []*ZXType
+			for !p.at(TK_GT) && !p.at(TK_EOF) && p.ok {
+				typeArgs = append(typeArgs, p.parseType())
+				if p.at(TK_COMMA) {
+					p.advance()
+				}
+			}
+			if p.at(TK_GT) {
+				p.advance()
+			}
+			return GenericType(name, typeArgs)
+		}
+		return StructType(name)
 	default:
 		errAt(t.Span, fmt.Sprintf("expected a type name, got %q", t.Value),
-			"valid types: int float bool str char void any ref T [N]T or a struct name")
+			"valid types: int float bool str char void any _Type ref T [N]T or a struct name")
 		p.ok = false
 		return TypUnknown
 	}
@@ -1387,21 +1475,57 @@ func (p *Parser) parseUntil() *UntilStmt {
 	return &UntilStmt{Sp: sp, Cond: p.parseExpr(), Body: p.parseBlock()}
 }
 
+// parseFor handles both:
+//   - for i in 0..10 { }           → ForRangeStmt
+//   - for x in arr { }             → ForEachStmt
+//   - for i, x in arr { }          → ForEachStmt (with index)
 func (p *Parser) parseFor() Node {
 	sp := p.peek().Span
-	p.advance()
-	varName := p.expect(TK_IDENT)
-	p.expect(TK_IN)
-	from := p.parseExpr()
-	p.expect(TK_DOTDOT)
-	to := p.parseExpr()
-	var step Node
-	if p.at(TK_COLON) {
-		p.advance()
-		step = p.parseExpr()
+	p.advance() // consume for/foreach
+
+	// Peek ahead to determine if it's range or foreach.
+	// Pattern:
+	//   for IDENT in EXPR..EXPR  → range
+	//   for IDENT in EXPR        → foreach (if no .. follows)
+	//   for IDENT, IDENT in EXPR → foreach with index
+
+	var firstName string
+	var secondName string // optional index
+	if p.at(TK_IDENT) {
+		firstName = p.advance().Value
+	} else {
+		errAt(sp, "expected a variable name after 'for'", "example: for x in 0..10 { }")
+		p.ok = false
+		return nil
 	}
+
+	// Check for "for i, x in arr" pattern
+	if p.at(TK_COMMA) {
+		p.advance()
+		secondName = firstName
+		firstName = p.expect(TK_IDENT).Value
+	}
+
+	p.expect(TK_IN)
+	expr := p.parseExpr()
+
+	// If expr is followed by .., it's a range loop
+	if p.at(TK_DOTDOT) && secondName == "" {
+		p.advance()
+		to := p.parseExpr()
+		var step Node
+		if p.at(TK_COLON) {
+			p.advance()
+			step = p.parseExpr()
+		}
+		body := p.parseBlock()
+		return &ForRangeStmt{Sp: sp, Var: firstName, From: expr, To: to, Step: step, Body: body}
+	}
+
+	// Otherwise it's a foreach over array/slice
 	body := p.parseBlock()
-	return &ForRangeStmt{Sp: sp, Var: varName.Value, From: from, To: to, Step: step, Body: body}
+	fe := &ForEachStmt{Sp: sp, Var: firstName, IdxVar: secondName, Expr: expr, Body: body}
+	return fe
 }
 
 func (p *Parser) parseMatch() *MatchStmt {
@@ -1604,7 +1728,7 @@ func (p *Parser) parseTernary() Node {
 	return &TernaryExpr{Sp: sp, Cond: cond, Then: then, Else: els}
 }
 
-func (p *Parser) parseExpr() Node      { return p.parseOr() }
+func (p *Parser) parseExpr() Node { return p.parseOr() }
 func (p *Parser) parseOr() Node {
 	lhs := p.parseAnd()
 	for p.at(TK_OR) && p.ok {
@@ -1728,15 +1852,8 @@ func (p *Parser) parsePostfix() Node {
 		switch p.peek().Kind {
 		case TK_LPAREN:
 			p.advance()
-			var args []Node
-			for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
-				args = append(args, p.parseExpr())
-				if p.at(TK_COMMA) {
-					p.advance()
-				}
-			}
-			p.expect(TK_RPAREN)
-			expr = &CallExpr{Sp: sp, Func: expr, Args: args}
+			args, namedArgs := p.parseArgList()
+			expr = &CallExpr{Sp: sp, Func: expr, Args: args, NamedArgs: namedArgs}
 		case TK_LBRACKET:
 			p.advance()
 			idx := p.parseExpr()
@@ -1747,15 +1864,8 @@ func (p *Parser) parsePostfix() Node {
 			field := p.expect(TK_IDENT)
 			if p.at(TK_LPAREN) {
 				p.advance()
-				var args []Node
-				for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
-					args = append(args, p.parseExpr())
-					if p.at(TK_COMMA) {
-						p.advance()
-					}
-				}
-				p.expect(TK_RPAREN)
-				expr = &MethodCallExpr{Sp: sp, Recv: expr, Method: field.Value, Args: args}
+				args, namedArgs := p.parseArgList()
+				expr = &MethodCallExpr{Sp: sp, Recv: expr, Method: field.Value, Args: args, NamedArgs: namedArgs}
 			} else {
 				expr = &FieldExpr{Sp: sp, Obj: expr, Field: field.Value, UsedDot: true}
 			}
@@ -1765,15 +1875,8 @@ func (p *Parser) parsePostfix() Node {
 				field := p.advance()
 				if p.at(TK_LPAREN) {
 					p.advance()
-					var args []Node
-					for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
-						args = append(args, p.parseExpr())
-						if p.at(TK_COMMA) {
-							p.advance()
-						}
-					}
-					p.expect(TK_RPAREN)
-					expr = &MethodCallExpr{Sp: sp, Recv: expr, Method: field.Value, Args: args}
+					args, namedArgs := p.parseArgList()
+					expr = &MethodCallExpr{Sp: sp, Recv: expr, Method: field.Value, Args: args, NamedArgs: namedArgs}
 				} else {
 					expr = &FieldExpr{Sp: sp,
 						Obj:   &AddrExpr{Sp: sp, Operand: expr, Deref: true},
@@ -1811,48 +1914,36 @@ func (p *Parser) parsePostfix() Node {
 					p.advance()
 					fnTok := p.advance()
 					p.advance()
-					var args []Node
-					for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
-						args = append(args, p.parseExpr())
-						if p.at(TK_COMMA) {
-							p.advance()
-						}
-					}
-					p.expect(TK_RPAREN)
+					args, namedArgs := p.parseArgList()
 					expr = &MethodCallExpr{Sp: sp,
-						Recv:   &Ident{Sp: seg.Span, Name: fullPath},
-						Method: fnTok.Value,
-						Args:   args,
+						Recv:      &Ident{Sp: seg.Span, Name: fullPath},
+						Method:    fnTok.Value,
+						Args:      args,
+						NamedArgs: namedArgs,
 					}
 				} else if p.at(TK_LPAREN) {
 					// direct call: last segment is the fn name
 					p.advance()
-					var args []Node
-					for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
-						args = append(args, p.parseExpr())
-						if p.at(TK_COMMA) {
-							p.advance()
-						}
-					}
-					p.expect(TK_RPAREN)
+					args, namedArgs := p.parseArgList()
 					lastSep := strings.LastIndex(fullPath, "::")
 					if lastSep >= 0 {
 						modPart := fullPath[:lastSep]
 						fnPart := fullPath[lastSep+2:]
 						expr = &MethodCallExpr{Sp: sp,
-							Recv:   &Ident{Sp: seg.Span, Name: modPart},
-							Method: fnPart,
-							Args:   args,
+							Recv:      &Ident{Sp: seg.Span, Name: modPart},
+							Method:    fnPart,
+							Args:      args,
+							NamedArgs: namedArgs,
 						}
 					} else {
 						expr = &CallExpr{Sp: sp,
-							Func: &Ident{Sp: seg.Span, Name: fullPath},
-							Args: args,
+							Func:      &Ident{Sp: seg.Span, Name: fullPath},
+							Args:      args,
+							NamedArgs: namedArgs,
 						}
 					}
 				} else {
 					// Mod::propName — mod property get
-					// Split fullPath into mod + prop at the last ::
 					lastSep := strings.LastIndex(fullPath, "::")
 					if lastSep >= 0 {
 						modPart := fullPath[:lastSep]
@@ -1869,6 +1960,41 @@ func (p *Parser) parsePostfix() Node {
 		}
 	}
 	return expr
+}
+
+// parseArgList parses a function argument list up to the closing ')'.
+// It detects named arguments: name = expr  (only if name is followed by =).
+// Returns (positional args, named args). If any named args are found, positional
+// args contains only the explicitly positional ones (before any named arg).
+func (p *Parser) parseArgList() ([]Node, []NamedArg) {
+	var args []Node
+	var namedArgs []NamedArg
+	seenNamed := false
+
+	for !p.at(TK_RPAREN) && !p.at(TK_EOF) && p.ok {
+		// Detect named arg: IDENT = expr  (but NOT ==)
+		if p.at(TK_IDENT) && p.peekN(1).Kind == TK_ASSIGN {
+			argSp := p.peek().Span
+			name := p.advance().Value
+			p.advance() // consume =
+			val := p.parseExpr()
+			namedArgs = append(namedArgs, NamedArg{Sp: argSp, Name: name, Value: val})
+			seenNamed = true
+		} else {
+			if seenNamed {
+				errAt(p.peek().Span,
+					"positional argument after named argument",
+					"all named arguments must come last: f(a, b, name=val)")
+				p.ok = false
+			}
+			args = append(args, p.parseExpr())
+		}
+		if p.at(TK_COMMA) {
+			p.advance()
+		}
+	}
+	p.expect(TK_RPAREN)
+	return args, namedArgs
 }
 
 func (p *Parser) parsePrimary() Node {
@@ -2128,19 +2254,47 @@ func (p *Parser) parseNew() Node {
 	sp := p.peek().Span
 	p.expect(TK_NEW)
 	name := p.expect(TK_IDENT)
+	// optional generic type args: new List<int> { ... }
+	var typeArgs []*ZXType
+	if p.at(TK_LT) {
+		p.advance()
+		for !p.at(TK_GT) && !p.at(TK_EOF) && p.ok {
+			typeArgs = append(typeArgs, p.parseType())
+			if p.at(TK_COMMA) {
+				p.advance()
+			}
+		}
+		if p.at(TK_GT) {
+			p.advance()
+		}
+	}
 	p.expect(TK_LBRACE)
 	fields := p.parseFieldInits()
 	p.expect(TK_RBRACE)
-	return &StructInit{Sp: sp, Name: name.Value, Fields: fields, HeapAlloc: false}
+	return &StructInit{Sp: sp, Name: name.Value, Fields: fields, HeapAlloc: false, TypeArgs: typeArgs}
 }
 
 func (p *Parser) parseHeapStructInit() Node {
 	sp := p.peek().Span
 	name := p.advance().Value
+	// optional generic type args: @List<int> { ... }
+	var typeArgs []*ZXType
+	if p.at(TK_LT) {
+		p.advance()
+		for !p.at(TK_GT) && !p.at(TK_EOF) && p.ok {
+			typeArgs = append(typeArgs, p.parseType())
+			if p.at(TK_COMMA) {
+				p.advance()
+			}
+		}
+		if p.at(TK_GT) {
+			p.advance()
+		}
+	}
 	p.expect(TK_LBRACE)
 	fields := p.parseFieldInits()
 	p.expect(TK_RBRACE)
-	return &StructInit{Sp: sp, Name: name, Fields: fields, HeapAlloc: true}
+	return &StructInit{Sp: sp, Name: name, Fields: fields, HeapAlloc: true, TypeArgs: typeArgs}
 }
 
 func (p *Parser) parseFieldInits() []FieldInit {

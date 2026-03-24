@@ -93,6 +93,8 @@ const (
 	TK_TYPE_CHAR
 	TK_TYPE_REF
 	TK_TYPE_ANY
+	// _Type — runtime type descriptor
+	TK_TYPE_TYPE
 	// Fixed-width integer type tokens
 	TK_TYPE_INT8
 	TK_TYPE_INT16
@@ -104,7 +106,7 @@ const (
 	TK_PLUS
 	TK_MINUS
 	TK_STAR
-	TK_SLASH
+	//TK_SLASH
 	TK_PERCENT
 	TK_AMP
 	TK_PIPE
@@ -147,6 +149,8 @@ const (
 	TK_COLON
 	TK_DCOLON
 	TK_PIPE_MACRO
+	// path separator (used in imports: std/net/socket)
+	TK_SLASH
 
 	TK_EOF
 )
@@ -181,7 +185,7 @@ var tkNames = map[TK]string{
 
 	TK_TYPE_INT: "int", TK_TYPE_FLOAT: "float", TK_TYPE_BOOL: "bool",
 	TK_TYPE_STR: "str", TK_TYPE_VOID: "void", TK_TYPE_CHAR: "char",
-	TK_TYPE_REF: "ref", TK_TYPE_ANY: "any",
+	TK_TYPE_REF: "ref", TK_TYPE_ANY: "any", TK_TYPE_TYPE: "_Type",
 	TK_TYPE_INT8: "int8", TK_TYPE_INT16: "int16", TK_TYPE_INT32: "int32",
 	TK_TYPE_UINT8: "uint8", TK_TYPE_UINT16: "uint16", TK_TYPE_UINT32: "uint32",
 
@@ -199,7 +203,8 @@ var tkNames = map[TK]string{
 	TK_LBRACKET: "[", TK_RBRACKET: "]",
 	TK_COMMA: ",", TK_SEMI: ";", TK_COLON: ":", TK_DCOLON: "::",
 	TK_PIPE_MACRO: "|param|",
-	TK_EOF:        "<EOF>",
+	//TK_SLASH:      "/",
+	TK_EOF: "<EOF>",
 }
 
 func (t TK) String() string {
@@ -240,7 +245,9 @@ var keywords = map[string]TK{
 	"str": TK_TYPE_STR, "string": TK_TYPE_STR,
 	"void": TK_TYPE_VOID, "char": TK_TYPE_CHAR,
 	"ref": TK_TYPE_REF, "ptr": TK_TYPE_REF, "pointer": TK_TYPE_REF, "any": TK_TYPE_ANY,
-	"int8": TK_TYPE_INT8, "int16": TK_TYPE_INT16, "int32": TK_TYPE_INT32,
+	// _Type — runtime type descriptor token
+	"_Type": TK_TYPE_TYPE,
+	"int8":  TK_TYPE_INT8, "int16": TK_TYPE_INT16, "int32": TK_TYPE_INT32,
 	"int64": TK_TYPE_INT, "uint": TK_TYPE_INT, "uint64": TK_TYPE_INT,
 	"uint8": TK_TYPE_UINT8, "uint16": TK_TYPE_UINT16, "uint32": TK_TYPE_UINT32,
 	"float32": TK_TYPE_FLOAT, "float64": TK_TYPE_FLOAT,
@@ -386,6 +393,9 @@ func (t *Tokenizer) nextToken() {
 		if t.tryEat('=') {
 			t.push(TK_SLASH_EQ, "/=", sp)
 		} else {
+			// Emit TK_SLASH (also used as path separator in imports).
+			// In expression context this is the division operator; the parser
+			// handles disambiguation based on context — both map to TK_SLASH.
 			t.push(TK_SLASH, "/", sp)
 		}
 	case '%':
@@ -730,11 +740,9 @@ func (t *Tokenizer) lexString(quote rune) {
 			case 'v':
 				sb.WriteByte('\v')
 			case 'x':
-				// \xNN — two hex digits
 				t.advance()
 				hi := t.peek(0)
 				if !isHex(hi) {
-					warnAt(sp, `\x escape needs two hex digits, e.g. \x41`, "")
 					sb.WriteByte('\\')
 					sb.WriteByte('x')
 					continue
@@ -742,7 +750,6 @@ func (t *Tokenizer) lexString(quote rune) {
 				t.advance()
 				lo := t.peek(0)
 				if !isHex(lo) {
-					warnAt(sp, `\x escape needs two hex digits, e.g. \x41`, "")
 					sb.WriteByte('\\')
 					sb.WriteByte('x')
 					sb.WriteRune(hi)
@@ -753,7 +760,6 @@ func (t *Tokenizer) lexString(quote rune) {
 				sb.WriteByte(byte(val))
 				continue
 			case '1', '2', '3', '4', '5', '6', '7':
-				// \NNN — up to three octal digits
 				d1 := t.peek(0)
 				t.advance()
 				val := int(d1 - '0')
@@ -768,8 +774,6 @@ func (t *Tokenizer) lexString(quote rune) {
 				sb.WriteByte(byte(val))
 				continue
 			default:
-				warnAt(sp, fmt.Sprintf("unknown escape \\%c in string", t.peek(0)),
-					"valid escapes: \\n \\t \\r \\\\ \\\" \\0 \\a \\xNN \\NNN")
 				sb.WriteByte('\\')
 				sb.WriteRune(t.peek(0))
 			}
