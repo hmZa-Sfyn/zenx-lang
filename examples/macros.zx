@@ -59,6 +59,10 @@ type USER struct {
     id int;
 }
 
+fn whoami() -> *USER {
+    return &USER{id:0};
+}
+
 fn (this *USER) isroot() -> bool {
     return this->id == 0;
 }
@@ -90,9 +94,7 @@ dbg!(x);
 // Chain syntax — do { } blocks run inline (capture all local vars!)
 say "--- Chain syntax ---";
 
-my user = &USER{id:0};
-
-user->isroot() ifTrue: do {
+whoami()->isroot() ifTrue: do {
         say "You are root!"
     }
     ifFalse: do {

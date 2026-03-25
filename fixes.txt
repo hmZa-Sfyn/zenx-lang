@@ -1,0 +1,40 @@
+new updates and features and bug fixes:
+
+- allow users to call functions wirth named params like: `fn abc(x:int=2,y:int,z:int=x) -> int { ... }; abc(x=54,y=128); // z has a default value so it is not nessary, neither is x, but i f user likes hw can!`
+
+- add <T> types, struct with types, and their go like impl-s with types: 
+```go
+type List<T> struct { 
+	items T[]; // array of type!
+	type  T;
+}
+
+
+fn (this List<T>) type() -> _Type {
+	return this->type_of!(type);
+}
+
+fn (this List<int>) sum() -> int {
+	my _sum: int = 0;
+	// for loops to sum them!
+	for x in this.items {
+		_sum += x;	
+	}
+	return _sum;
+}
+
+fn (this List<float>) sum() -> float {
+	my _sum: float = 0;
+	// for loops to sum them!
+	for x in this.items {
+		_sum += x;	
+	}
+	return _sum;	
+}
+
+// sum for string type is not implemented! show error when called! add more features for types, add a error type, a any type and others as well!
+
+
+```
+i have attached some of my codefiles, try to fix them, i have other files as well, dont try to redeclare anuthing, all these files work, just add more features and add more safety checks and remove the stupid or useless or annoying safetychecks!
+
