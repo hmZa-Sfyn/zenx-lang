@@ -24,12 +24,12 @@ type List<T> struct {
 
 // Returns the runtime type name of the element type as a _Type (const char*).
 fn (this List<T>) elem_type() -> _Type {
-    return type_of!(T)
+    return type_of!(T);
 }
 
 // Returns the length of the list.
 fn (this List<T>) len() -> int {
-    return this.length
+    return this.length;
 }
 
 
