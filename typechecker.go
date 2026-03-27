@@ -954,6 +954,8 @@ func (tc *TypeChecker) checkStmt(n Node) {
 		tc.checkBlockInLoop(s.Body)
 	case *ForRangeStmt:
 		tc.checkForRange(s)
+	case *ForEachStmt:
+		tc.checkForEach(s)
 	case *MatchStmt:
 		tc.checkMatch(s)
 	case *TryCatchStmt:
@@ -2435,6 +2437,16 @@ func (tc *TypeChecker) inferMethodCall(e *MethodCallExpr) *ZXType {
 	}
 
 	recvType := tc.inferExpr(e.Recv)
+	// Generic receiver: List<int>, List<float>, etc.
+	if recvType != nil && recvType.Kind == TyGeneric {
+		t, ok := tc.checkGenericMethodCall(
+			recvType.Name, e.Method, recvType.TypeArgs, e.Sp)
+		e.Typ = t
+		if !ok {
+			return TypUnknown
+		}
+		return t
+	}
 
 	if _, isNil := e.Recv.(*NilLit); isNil {
 		errCodeTrace("E78", e.Sp,
@@ -3328,4 +3340,127 @@ func isCReservedFnTC(name string) bool {
 		return true
 	}
 	return false
+}
+
+// containsTypeParam returns true if any element of ts is a TyTypeParam.
+func containsTypeParam(ts []*ZXType) bool {
+	for _, t := range ts {
+		if t != nil && t.Kind == TyTypeParam {
+			return true
+		}
+	}
+	return false
+}
+
+// ── _Type inference ───────────────────────────────────────────────────────────
+
+// inferTypeDescriptor handles type_of!() and _Type field accesses.
+// Returns TypType (const char* at the C level).
+func (tc *TypeChecker) inferTypeDescriptor(n Node) *ZXType {
+	if n == nil {
+		return TypType
+	}
+	tc.inferExpr(n)
+	return TypType
+}
+
+// ── ForEachStmt type-checking ─────────────────────────────────────────────────
+
+// checkForEach validates the for-each statement:
+//   - The collection must be array, slice, str, or a generic/struct with items.
+//   - The element variable is introduced into a loop scope.
+func (tc *TypeChecker) checkForEach(s *ForEachStmt) {
+	if s == nil {
+		return
+	}
+	collType := tc.inferExpr(s.Expr)
+
+	var elemType *ZXType
+	switch collType.Kind {
+	case TyArray, TySlice:
+		elemType = collType.Elem
+		if elemType == nil {
+			elemType = TypAny
+		}
+	case TyStr:
+		elemType = TypChar
+	case TyGeneric:
+		// Generic struct: try to find the items field element type.
+		sd := tc.structs[collType.Name]
+		if sd == nil {
+			sd = tc.structs[MangleGenericName(collType.Name, collType.TypeArgs)]
+		}
+		if sd != nil {
+			for _, f := range sd.Fields {
+				if f.Type != nil && (f.Type.Kind == TyArray || f.Type.Kind == TySlice) {
+					bindings := make(map[string]*ZXType)
+					if len(sd.TypeParams) > 0 && len(collType.TypeArgs) > 0 {
+						bindings[sd.TypeParams[0]] = collType.TypeArgs[0]
+					}
+					elemType = substituteTypeParams(f.Type.Elem, bindings)
+					break
+				}
+			}
+		}
+		if elemType == nil {
+			elemType = TypAny
+		}
+	case TyStruct:
+		sd := tc.structs[collType.Name]
+		if sd != nil {
+			for _, f := range sd.Fields {
+				if f.Type != nil && (f.Type.Kind == TyArray || f.Type.Kind == TySlice) {
+					elemType = f.Type.Elem
+					break
+				}
+			}
+		}
+		if elemType == nil {
+			elemType = TypAny
+		}
+	case TyAny, TyUnknown:
+		elemType = TypAny
+	default:
+		if !tc.ok {
+			return
+		}
+		errCodeTrace("EG02", s.Sp,
+			fmt.Sprintf("cannot iterate over type %s — expected array, slice, string, or a generic collection", collType),
+			"use an array [1,2,3] or a string",
+			tc.trace.Snapshot())
+		tc.ok = false
+		elemType = TypAny
+	}
+
+	saved := tc.scope
+	tc.scope = newScope(saved, "loop")
+	tc.scope.define(s.Var, &VarInfo{
+		Type:     elemType,
+		Sp:       s.Sp,
+		Defined:  true,
+		DeclFile: tc.currentFile,
+	})
+	if s.IdxVar != "" {
+		tc.scope.define(s.IdxVar, &VarInfo{
+			Type:     TypInt,
+			Sp:       s.Sp,
+			Defined:  true,
+			DeclFile: tc.currentFile,
+		})
+	}
+	tc.checkBlockInLoop(s.Body)
+	tc.scope = saved
+}
+
+// hookCheckStmt is called from TypeCheck's stmt checking for nodes not
+// handled by the original checkStmt switch.
+// Add to checkStmt:  case *ForEachStmt: tc.checkForEach(s)
+func (tc *TypeChecker) hookCheckStmt(n Node) {
+	if n == nil {
+		return
+	}
+	switch s := n.(type) {
+	case *ForEachStmt:
+		tc.checkForEach(s)
+	}
 }

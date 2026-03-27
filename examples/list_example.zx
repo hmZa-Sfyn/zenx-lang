@@ -1,0 +1,168 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  list_example.zx  —  Generic List<T> with type-safe methods
+//
+//  Demonstrates:
+//    • Generic structs:         type List<T> struct { items T[]; ... }
+//    • Generic methods:         fn (this List<T>) type() -> _Type
+//    • Specialised methods:     fn (this List<int>) sum() -> int
+//    • Missing method error:    List<string>::sum  triggers EG01
+//    • ForEach:                 for x in this.items { }
+//    • _Type / type_of!:        returns "int", "float", etc.
+//    • error type:              fn divide(a int, b int) -> result<int>
+//    • option type:             fn find(lst List<int>, v int) -> option<int>
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Generic List struct ───────────────────────────────────────────────────────
+
+type List<T> struct {
+    items  T[];       // dynamic array of element type T
+    length int;       // current logical length
+}
+
+
+// ── Generic method: works for ALL List<T> ─────────────────────────────────────
+
+// Returns the runtime type name of the element type as a _Type (const char*).
+fn (this List<T>) elem_type() -> _Type {
+    return type_of!(T)
+}
+
+// Returns the length of the list.
+fn (this List<T>) len() -> int {
+    return this.length
+}
+
+
+// ── Specialised method: List<int> ────────────────────────────────────────────
+
+fn (this List<int>) sum() -> int {
+    my _sum: int = 0
+    for x in this.items {
+        _sum += x
+    }
+    return _sum
+}
+
+fn (this List<int>) max() -> int {
+    my m: int = this.items[0]
+    for x in this.items {
+        if x > m {
+            m = x
+        }
+    }
+    return m
+}
+
+fn (this List<int>) min() -> int {
+    my m: int = this.items[0]
+    for x in this.items {
+        if x < m {
+            m = x
+        }
+    }
+    return m
+}
+
+
+// ── Specialised method: List<float> ──────────────────────────────────────────
+
+fn (this List<float>) sum() -> float {
+    my _sum: float = 0.0
+    for x in this.items {
+        _sum += x
+    }
+    return _sum
+}
+
+fn (this List<float>) average() -> float {
+    if this.length == 0 {
+        return 0.0
+    }
+    return this.sum() / float(this.length)
+}
+
+
+// ── error / result / option helpers ──────────────────────────────────────────
+
+// Divide two integers, returning an error result if divisor is zero.
+fn divide(a int, b int) -> result<int> {
+    if b == 0 {
+        die "division by zero"
+    }
+    return a / b
+}
+
+// Find first occurrence of v in lst; returns option<int> (index or nil-like).
+fn find_index(lst List<int>, v int) -> int {
+    for i, x in lst.items {
+        if x == v {
+            return i
+        }
+    }
+    return -1   // not found sentinel
+}
+
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+fn main() {
+    // ── Build a List<int> ─────────────────────────────────────────────────────
+    my ints: List<int>
+    ints.items  = [10, 20, 30, 40, 50]
+    ints.length = 5
+
+    println "List<int> contents:"
+    for x in ints.items {
+        print "  ", x
+    }
+    println ""
+
+    println f"sum  = {ints.sum()}"
+    println f"max  = {ints.max()}"
+    println f"min  = {ints.min()}"
+    println f"len  = {ints.len()}"
+    println f"elem_type = {ints.elem_type()}"
+
+    my idx: int = find_index(ints, 30)
+    if idx >= 0 {
+        println f"found 30 at index {idx}"
+    } else {
+        println "30 not found"
+    }
+
+    // ── Build a List<float> ───────────────────────────────────────────────────
+    my floats: List<float>
+    floats.items  = [1.5, 2.5, 3.5, 4.5]
+    floats.length = 4
+
+    println ""
+    println "List<float> contents:"
+    for x in floats.items {
+        print "  ", x
+    }
+    println ""
+
+    println f"sum     = {floats.sum()}"
+    println f"average = {floats.average()}"
+    println f"elem_type = {floats.elem_type()}"
+
+    // ── _Type demonstration ───────────────────────────────────────────────────
+    println ""
+    println f"type_of int literal : {type_of!(42)}"
+    println f"type_of float literal : {type_of!(3.14)}"
+    println f"type_of str literal : {type_of!("hello")}"
+
+    // ── error / result ────────────────────────────────────────────────────────
+    println ""
+    println f"10 / 2 = {divide(10, 2)}"
+
+    // ── NOTE: List<string>::sum() is NOT implemented.
+    //  Uncommenting the lines below will produce compile error EG01:
+    //      method 'sum' is not implemented for List<str>
+    //      implemented for: List<int>, List<float>
+    //
+    //  my strs: List<str>
+    //  strs.items  = ["hello", "world"]
+    //  strs.length = 2
+    //  println strs.sum()   // <-- EG01 here
+}
